@@ -1,0 +1,36 @@
+# Ports and the project name deliberately avoid the sibling Java implementation's: both
+# stacks run on the same machine, and Compose container names are global rather than
+# scoped to a project.
+name: ai-customer-service-go
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: csagent-go-postgres
+    environment:
+      POSTGRES_DB: csagent
+      POSTGRES_USER: csagent
+      POSTGRES_PASSWORD: csagent
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U csagent -d csagent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Jaeger ingests OTLP directly, so no separate collector is needed locally. A real
+  # deployment would put an OpenTelemetry Collector in front.
+  jaeger:
+    image: jaegertracing/jaeger:2.11.0
+    container_name: csagent-go-jaeger
+    ports:
+      - "16687:16686"   # UI
+      - "4319:4318"     # OTLP/HTTP
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
+volumes:
+  pgdata:
