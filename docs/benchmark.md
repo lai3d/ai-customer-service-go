@@ -92,6 +92,40 @@ resource-exhaustion shape, and 11% of throughput on a path whose real cost is a
 multi-second model call is not the constraint. `EMBEDDING_MAX_CONCURRENCY` changes it;
 `0` means `GOMAXPROCS`.
 
+### A constant delay flatters everything
+
+Every row above uses a fixed 1000 ms model delay, because that is what the Java
+implementation published and the comparison is the point. It is also unrealistic in a
+specific way: when every request takes exactly as long as every other, no request ever
+waits behind a slow one. Real model latency is heavy-tailed.
+
+The same run with the delay drawn from `300 ms + Exp(mean 700 ms)`, capped at 8 s — the
+same 1000 ms mean, a median near 785 ms, and a tail of several seconds:
+
+| | wall | req/s | p50 | p95 | p99 | OS threads |
+| --- | --- | --- | --- | --- | --- | --- |
+| fixed 1000 ms | 1667 ms | 600 | 1648 ms | 1663 ms | 1665 ms | 13 → 135 |
+| heavy-tailed, same mean | 4544–5963 ms | 168–220 | 1372–1489 ms | 2933–3157 ms | 3800–4586 ms | 13 → 101–133 |
+
+**Read only p50 and p95 from that second row.** Wall time and req/s are not throughput
+when the delay is heavy-tailed: a thousand requests finish when the slowest one does, so
+"wall" is measuring the worst draw from the distribution and "req/s" is measuring the
+same thing upside down.
+
+What the row does say is worth having. p50 *improves* — 1372 ms against 1648 ms — because
+most requests draw a shorter delay than the constant one, and the queueing that a
+constant delay hides is not, at this concurrency, the dominant effect. And the OS thread
+count *falls*, to 101–133 from 135–276.
+
+That last one sharpens the cgo finding rather than softening it: **the thread count is a
+function of how concentrated the arrivals are, not of how many there are.** Spreading the
+same thousand embedding calls across 5 seconds instead of packing them into 1.7 means
+fewer of them are inside the native call simultaneously. The 276-thread figure is the
+worst case — a thousand genuinely simultaneous arrivals — and a realistic latency spread
+roughly halves it. It also means the number will not reproduce if your traffic has any
+shape to it at all, which is a good reason to bound it rather than to tune a limit to a
+measured peak.
+
 ### What this is not
 
 The model is stubbed, so this measures scheduling rather than an assistant. Everything

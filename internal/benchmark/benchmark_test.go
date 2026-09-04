@@ -14,6 +14,7 @@ package benchmark
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -78,6 +79,37 @@ func (slowModel) Stream(ctx context.Context, _ llm.Request, onText func(string) 
 		Usage: llm.Usage{InputTokens: 1000, OutputTokens: 10}}, nil
 }
 
+// varyingModel is the same stub with a realistic spread instead of a constant.
+//
+// A fixed delay flatters every runtime, because nothing ever queues behind something
+// slow: every request is identical, so no request waits on another's tail. Real model
+// latency is heavy-tailed -- most turns are quick, a few are several seconds -- and that
+// is what makes a scheduler's behaviour visible.
+//
+// 300 ms plus an exponential with a 700 ms mean: same 1000 ms mean as the fixed run, a
+// median near 785 ms, and a tail that reaches several seconds. Capped at 8 s so one
+// unlucky draw does not dominate the wall time.
+type varyingModel struct{}
+
+func (varyingModel) Provider() string { return "stub" }
+func (varyingModel) Model() string    { return "stub-model" }
+func (varyingModel) Stream(ctx context.Context, _ llm.Request, onText func(string) error) (llm.Result, error) {
+	delay := 300*time.Millisecond + time.Duration(rand.ExpFloat64()*float64(700*time.Millisecond))
+	if delay > 8*time.Second {
+		delay = 8 * time.Second
+	}
+	select {
+	case <-time.After(delay):
+	case <-ctx.Done():
+		return llm.Result{}, ctx.Err()
+	}
+	if err := onText("ok"); err != nil {
+		return llm.Result{}, err
+	}
+	return llm.Result{Text: "ok", StopReason: "end_turn",
+		Usage: llm.Usage{InputTokens: 1000, OutputTokens: 10}}, nil
+}
+
 // stubEmbedder isolates the cost of the in-process embedding model. Everything else in
 // the path is identical between the two runs.
 type stubEmbedder struct{}
@@ -100,6 +132,7 @@ func (stubEmbedder) Close() error    { return nil }
 
 type result struct {
 	name           string
+	delayNote      string
 	wall           time.Duration
 	requestsPerSec float64
 	p50, p95, p99  time.Duration
@@ -138,6 +171,15 @@ func TestConcurrencyUnderLoad(t *testing.T) {
 	switch os.Getenv("BENCH_EMBEDDER") {
 	case "stub":
 		report(t, run(t, "stubbed embedding", func() rag.Embedder { return stubEmbedder{} }))
+	case "varying":
+		// Not comparable with the rows above or with the Java implementation's
+		// published numbers, which all use a fixed delay. It is a better model of
+		// reality and a worse basis for a side-by-side.
+		r := runWith(t, "ONNX, varying model delay", newONNX, varyingModel{})
+		r.delayNote = "300ms + Exp(mean 700ms) model delay, capped at 8s"
+		report(t, r)
+		t.Log("wall and req/s are not throughput here: with a heavy tail the wall time " +
+			"is the slowest single request. p50 and p95 are the numbers that mean something.")
 	case "bounded":
 		// The production wrapper, not a copy of it: the whole point is to measure what
 		// the deployed configuration does.
@@ -151,6 +193,10 @@ func TestConcurrencyUnderLoad(t *testing.T) {
 }
 
 func run(t *testing.T, name string, newEmbedder func() rag.Embedder) result {
+	return runWith(t, name, newEmbedder, slowModel{})
+}
+
+func runWith(t *testing.T, name string, newEmbedder func() rag.Embedder, model llm.Client) result {
 	t.Helper()
 	ctx := context.Background()
 
@@ -168,7 +214,7 @@ func run(t *testing.T, name string, newEmbedder func() rag.Embedder) result {
 	service := chat.NewService(
 		chat.NewMemory(pool, 40),
 		rag.NewRetriever(embedder, vectors, 8, 0),
-		slowModel{},
+		model,
 		cost.NewBudget(0, 20_000),
 		obs.NewMetrics(),
 		1024,
@@ -279,8 +325,12 @@ func osThreads() int { return pprof.Lookup("threadcreate").Count() }
 
 func report(t *testing.T, results ...result) {
 	t.Helper()
-	t.Logf("%d concurrent requests, %v stubbed model delay, GOMAXPROCS=%d, %d CPUs",
-		concurrency, modelDelay, runtime.GOMAXPROCS(0), runtime.NumCPU())
+	note := results[0].delayNote
+	if note == "" {
+		note = modelDelay.String() + " fixed stubbed model delay"
+	}
+	t.Logf("%d concurrent requests, %s, GOMAXPROCS=%d, %d CPUs",
+		concurrency, note, runtime.GOMAXPROCS(0), runtime.NumCPU())
 	t.Logf("%-28s %8s %8s %9s %9s %9s %11s %9s %8s",
 		"run", "wall", "req/s", "p50", "p95", "p99", "goroutines", "threads", "failed")
 	for _, r := range results {

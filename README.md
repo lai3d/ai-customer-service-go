@@ -30,6 +30,7 @@ recorded too.
 | A similarity threshold that "nearly worked" flipped sign on a re-drawn sample of the same size | [Retrieval](docs/retrieval.md#no-similarity-threshold-is-worth-setting-with-this-model) |
 | Four samples made a threshold look defensible; the eleventh disproved it | [Retrieval](docs/retrieval.md#the-sample-size-is-a-lesson-in-both-directions) |
 | Bounding cgo concurrency cut threads 3–7×, cost 11% throughput, and *improved* p50 | [Benchmark](docs/benchmark.md#asking-go-for-the-jvms-behaviour) |
+| A constant benchmark delay flatters every runtime — and the OS thread count turns out to measure arrival concentration, not load | [Benchmark](docs/benchmark.md#a-constant-delay-flatters-everything) |
 | The customer's words reach no span — checked by grepping the backend, not by reading docs | [Observability](docs/observability.md#the-customers-words-are-not-in-the-trace-and-that-was-checked-rather-than-assumed) |
 | Every provider's current model rejects `temperature`, and the OpenAI protocol hides usage unless asked | [Chat providers](docs/providers.md#what-only-a-live-call-found) |
 | A cost meter that silently reads zero is worse than none, so the misses are counted | [Cost and failure](docs/reliability.md#the-model-in-the-metrics-is-not-the-model-you-asked-for) |
