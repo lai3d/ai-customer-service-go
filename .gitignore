@@ -1,0 +1,13 @@
+# The embedding model and the native libraries `make deps` fetches. Large, and
+# reproducible from scripts/fetch-deps.sh.
+/model-cache/
+/third_party/
+
+/bin/
+/dist/
+
+# Real credentials. .env.example is the committed one.
+.env
+
+*.test
+coverage.out

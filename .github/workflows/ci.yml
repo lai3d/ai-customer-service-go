@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      # The embedding model is 470 MB and the native libraries are a few tens of MB.
+      # Downloading them on every run would dominate the build.
+      - name: Cache native dependencies and embedding model
+        uses: actions/cache@v4
+        with:
+          path: |
+            model-cache
+            third_party
+          key: deps-${{ runner.os }}-${{ hashFiles('scripts/fetch-deps.sh') }}
+
+      - name: Fetch native dependencies and embedding model
+        run: make deps
+
+      # A skipped test is not a passing test. The suite skips when the model is absent,
+      # which is right for a contributor who has not run `make deps` and wrong for CI.
+      - name: Assert the embedding model is present
+        run: test -f model-cache/multilingual-e5-small/model.onnx
+
+      - run: make lint
+
+      # No API key is configured for this job, deliberately. Everything up to the model
+      # call is testable, and Testcontainers supplies a real pgvector for the retrieval
+      # measurements. Anything that needs a key is opt-in and excluded.
+      - name: Test
+        run: make test
+        env:
+          ONNXRUNTIME_LIB_PATH: ${{ github.workspace }}/third_party/onnxruntime/lib/libonnxruntime.so

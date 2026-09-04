@@ -1,0 +1,294 @@
+{
+  "version": "2026-09-01-bilingual",
+  "notice": "Sample corpus for demonstration. Replace with your own before using this for anything real.",
+  "entries": [
+    {
+      "id": "returns-window",
+      "category": "returns",
+      "localized": [
+        {
+          "language": "en",
+          "question": "How long do I have to return an item?",
+          "answer": "You can return most items within 30 days of delivery for a full refund. The item must be unused and in its original packaging. Final-sale items, gift cards, and perishable goods cannot be returned."
+        },
+        {
+          "language": "zh",
+          "question": "退货有时间限制吗？",
+          "answer": "大部分商品在签收后 30 天内可以退货并全额退款，商品需未使用且保留原包装。特价清仓品、礼品卡和生鲜类商品不支持退货。"
+        }
+      ]
+    },
+    {
+      "id": "returns-how",
+      "category": "returns",
+      "localized": [
+        {
+          "language": "en",
+          "question": "How do I start a return?",
+          "answer": "Open your order in the Orders page and choose Return this item. We email you a prepaid shipping label within one business day. Drop the parcel at any carrier location; no appointment is needed."
+        },
+        {
+          "language": "zh",
+          "question": "怎么申请退货？",
+          "answer": "在「我的订单」页面找到该订单，点击「申请退货」。我们会在一个工作日内把预付运费的寄回面单发到你邮箱。打印后交给任意快递网点即可，不需要预约上门。"
+        }
+      ]
+    },
+    {
+      "id": "returns-refund-timing",
+      "category": "returns",
+      "localized": [
+        {
+          "language": "en",
+          "question": "When will I get my refund after returning something?",
+          "answer": "Refunds are issued within 3 business days of the return arriving at our warehouse. Your bank may take a further 5 to 10 business days to post the credit to your statement."
+        },
+        {
+          "language": "zh",
+          "question": "退货后多久能收到退款？",
+          "answer": "包裹到达我们仓库后 3 个工作日内会发起退款。之后银行入账通常还需要 5 到 10 个工作日，具体以发卡行为准。"
+        }
+      ]
+    },
+    {
+      "id": "returns-damaged",
+      "category": "returns",
+      "localized": [
+        {
+          "language": "en",
+          "question": "My item arrived damaged or faulty. What should I do?",
+          "answer": "Report it within 48 hours of delivery through the Orders page, with photographs of the damage. We ship a replacement immediately at no cost and do not require the damaged item to be returned first."
+        },
+        {
+          "language": "zh",
+          "question": "收到的商品破损或有质量问题怎么办？",
+          "answer": "请在签收后 48 小时内通过「我的订单」页面提交，并附上破损部位的照片。我们会立即免费补发，不需要你先把坏的寄回来。"
+        }
+      ]
+    },
+    {
+      "id": "returns-exchange",
+      "category": "returns",
+      "localized": [
+        {
+          "language": "en",
+          "question": "Can I exchange an item for a different size or colour?",
+          "answer": "We do not process exchanges directly. Return the original item for a refund and place a new order for the size or colour you want. Placing the new order right away is the fastest route, since stock is not reserved during a return."
+        },
+        {
+          "language": "zh",
+          "question": "可以换个尺码或颜色吗？",
+          "answer": "我们不直接办理换货。请先申请退货拿到退款，再重新下单你想要的尺码或颜色。建议立刻下新订单，因为退货期间不会为你锁定库存。"
+        }
+      ]
+    },
+    {
+      "id": "shipping-times",
+      "category": "shipping",
+      "localized": [
+        {
+          "language": "en",
+          "question": "How long does delivery take?",
+          "answer": "Standard delivery arrives in 3 to 5 business days. Express delivery arrives the next business day when ordered before 2pm local time. Remote addresses may add 1 to 2 days."
+        },
+        {
+          "language": "zh",
+          "question": "送货要多久？",
+          "answer": "标准配送需要 3 到 5 个工作日。当地时间下午 2 点前下单选择加急配送，次个工作日送达。偏远地区可能会多 1 到 2 天。"
+        }
+      ]
+    },
+    {
+      "id": "shipping-cost",
+      "category": "shipping",
+      "localized": [
+        {
+          "language": "en",
+          "question": "How much does shipping cost?",
+          "answer": "Standard shipping is free on orders over 50 dollars and 4.90 dollars below that. Express shipping is 12.90 dollars regardless of order value."
+        },
+        {
+          "language": "zh",
+          "question": "运费怎么算？",
+          "answer": "订单满 50 美元标准配送免运费，未满则收取 4.90 美元。加急配送统一 12.90 美元，不论订单金额。"
+        }
+      ]
+    },
+    {
+      "id": "shipping-tracking",
+      "category": "shipping",
+      "localized": [
+        {
+          "language": "en",
+          "question": "How do I track my order?",
+          "answer": "A tracking link is emailed when your parcel leaves our warehouse, and the same link appears on the order in your account. Tracking can take up to 12 hours to show its first scan after dispatch."
+        },
+        {
+          "language": "zh",
+          "question": "怎么查物流？",
+          "answer": "包裹出库时我们会把物流查询链接发到你邮箱，账户里的订单详情页也能看到同一个链接。发货后物流信息最多可能要 12 小时才出现第一条扫描记录。"
+        }
+      ]
+    },
+    {
+      "id": "shipping-international",
+      "category": "shipping",
+      "localized": [
+        {
+          "language": "en",
+          "question": "Do you ship internationally?",
+          "answer": "We ship to 34 countries. International delivery takes 7 to 14 business days. Import duties and taxes are not included in the order total and are collected by the carrier on delivery."
+        },
+        {
+          "language": "zh",
+          "question": "支持寄到国外吗？",
+          "answer": "我们支持 34 个国家和地区，国际配送需要 7 到 14 个工作日。订单金额不含进口关税和税费，这部分由快递公司在派送时向你收取。"
+        }
+      ]
+    },
+    {
+      "id": "shipping-address-change",
+      "category": "shipping",
+      "localized": [
+        {
+          "language": "en",
+          "question": "Can I change my delivery address after ordering?",
+          "answer": "The address can be changed only while the order status is still Preparing. Once it shows Dispatched the parcel is with the carrier and the address is fixed; you would need to refuse delivery and reorder."
+        },
+        {
+          "language": "zh",
+          "question": "下单后还能改收货地址吗？",
+          "answer": "只有在订单状态还是「备货中」时才能修改地址。一旦变成「已发货」，包裹已经交给快递，地址就无法更改了，只能拒收后重新下单。"
+        }
+      ]
+    },
+    {
+      "id": "payment-methods",
+      "category": "payment",
+      "localized": [
+        {
+          "language": "en",
+          "question": "What payment methods do you accept?",
+          "answer": "We accept Visa, Mastercard, American Express, PayPal, Apple Pay, and Google Pay. Bank transfer is available for business accounts on request."
+        },
+        {
+          "language": "zh",
+          "question": "支持哪些付款方式？",
+          "answer": "支持 Visa、Mastercard、American Express、PayPal、Apple Pay 和 Google Pay。企业账户可以申请对公转账。"
+        }
+      ]
+    },
+    {
+      "id": "payment-declined",
+      "category": "payment",
+      "localized": [
+        {
+          "language": "en",
+          "question": "My payment was declined. Why?",
+          "answer": "The most common causes are an expired card, a billing address that does not match your bank's records, and your bank's fraud check. We never see the specific reason your bank gave. Try a different payment method or contact your bank."
+        },
+        {
+          "language": "zh",
+          "question": "我的付款被拒绝了，为什么？",
+          "answer": "最常见的原因是卡片过期、账单地址和银行记录不一致、以及银行的风控拦截。我们无法看到银行给出的具体原因，建议换一种付款方式或直接联系发卡行。"
+        }
+      ]
+    },
+    {
+      "id": "payment-double-charge",
+      "category": "payment",
+      "localized": [
+        {
+          "language": "en",
+          "question": "I was charged twice for one order.",
+          "answer": "A duplicate line on your statement is usually a pending authorisation rather than a second charge, and it disappears within 5 business days. If both entries have settled, contact us with both transaction dates and we will refund the duplicate."
+        },
+        {
+          "language": "zh",
+          "question": "同一笔订单被扣了两次款。",
+          "answer": "账单上出现两条记录通常是预授权而不是真的扣款，一般 5 个工作日内会自动消失。如果两笔都已经实际入账，请把两笔交易的日期发给我们，我们会退还重复的那笔。"
+        }
+      ]
+    },
+    {
+      "id": "payment-invoice",
+      "category": "payment",
+      "localized": [
+        {
+          "language": "en",
+          "question": "Can I get an invoice or receipt for my order?",
+          "answer": "A receipt is emailed when your order is confirmed. A formal invoice with your company name and tax number can be downloaded from the order page once the order has shipped."
+        },
+        {
+          "language": "zh",
+          "question": "能开发票或收据吗？",
+          "answer": "订单确认后我们会把收据发到你邮箱。需要抬头和税号的正式发票，可以在订单发货后到订单详情页下载。"
+        }
+      ]
+    },
+    {
+      "id": "account-password",
+      "category": "account",
+      "localized": [
+        {
+          "language": "en",
+          "question": "I forgot my password. How do I reset it?",
+          "answer": "Use Forgot password on the sign-in page. The reset link is valid for 30 minutes. If the email does not arrive, check your spam folder and confirm you are using the address the account was created with."
+        },
+        {
+          "language": "zh",
+          "question": "忘记密码了怎么办？",
+          "answer": "在登录页点击「忘记密码」，重置链接 30 分钟内有效。如果没收到邮件，请检查垃圾邮件文件夹，并确认使用的是注册时的邮箱地址。"
+        }
+      ]
+    },
+    {
+      "id": "account-delete",
+      "category": "account",
+      "localized": [
+        {
+          "language": "en",
+          "question": "How do I delete my account?",
+          "answer": "Request deletion from Settings, then Privacy. We remove your personal data within 30 days. Order records are retained for 7 years where tax law requires it, with personal identifiers removed."
+        },
+        {
+          "language": "zh",
+          "question": "如何注销账户？",
+          "answer": "在「设置」-「隐私」中提交注销申请，我们会在 30 天内删除你的个人数据。因税务法规要求，订单记录会保留 7 年，但其中的个人身份信息会被移除。"
+        }
+      ]
+    },
+    {
+      "id": "account-order-history",
+      "category": "account",
+      "localized": [
+        {
+          "language": "en",
+          "question": "Why can't I see an old order in my account?",
+          "answer": "Order history shows the last 24 months. Older orders are archived; contact support with the approximate date and we can retrieve the record."
+        },
+        {
+          "language": "zh",
+          "question": "为什么看不到以前的订单？",
+          "answer": "订单历史只显示最近 24 个月的记录。更早的订单已归档，请把大致下单日期告诉客服，我们可以帮你调取。"
+        }
+      ]
+    },
+    {
+      "id": "support-hours",
+      "category": "support",
+      "localized": [
+        {
+          "language": "en",
+          "question": "When can I reach a human agent?",
+          "answer": "Human agents are available Monday to Friday, 9am to 6pm Singapore time, excluding public holidays. Outside those hours you can leave a message and we reply on the next business day."
+        },
+        {
+          "language": "zh",
+          "question": "什么时候能联系到人工客服？",
+          "answer": "人工客服的服务时间是周一至周五新加坡时间 9:00 至 18:00，公众假期除外。其他时间可以留言，我们会在下一个工作日回复。"
+        }
+      ]
+    }
+  ]
+}
