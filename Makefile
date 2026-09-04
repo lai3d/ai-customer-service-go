@@ -26,8 +26,12 @@ test-race:
 
 # Excluded from `make test` because it measures a machine rather than asserting a
 # behaviour. See docs/benchmark.md.
+# Two processes, deliberately: the only OS-thread count Go exposes never decreases, so
+# a second variant in the same process inherits the first one's threads.
 bench:
-	$(GO) test -tags=benchmark -run '^$$' -bench . -benchtime 1x ./internal/benchmark/
+	BENCH_EMBEDDER=onnx $(GO) test -tags=benchmark -v -count=1 -timeout 20m -run TestConcurrencyUnderLoad ./internal/benchmark/
+	BENCH_EMBEDDER=bounded $(GO) test -tags=benchmark -v -count=1 -timeout 20m -run TestConcurrencyUnderLoad ./internal/benchmark/
+	BENCH_EMBEDDER=stub $(GO) test -tags=benchmark -v -count=1 -timeout 20m -run TestConcurrencyUnderLoad ./internal/benchmark/
 
 lint:
 	$(GO) vet ./...

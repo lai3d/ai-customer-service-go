@@ -62,7 +62,7 @@ func run() error {
 	}
 	defer pool.Close()
 
-	embedder, err := rag.NewONNXEmbedder(rag.ONNXOptions{
+	onnx, err := rag.NewONNXEmbedder(rag.ONNXOptions{
 		ModelPath:     cfg.RAG.ModelPath,
 		TokenizerPath: cfg.RAG.TokenizerPath,
 		Dimensions:    cfg.RAG.Dimensions,
@@ -72,7 +72,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer embedder.Close()
+	defer onnx.Close()
+
+	// Bounded on measurement, not on principle: see internal/rag/bounded.go.
+	embedder := rag.NewBounded(onnx, cfg.RAG.MaxConcurrentEmbeddings)
 
 	vectors := rag.NewStore(pool)
 	if cfg.RAG.IngestOnStartup {

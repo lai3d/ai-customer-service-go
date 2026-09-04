@@ -103,6 +103,15 @@ type RAG struct {
 	// applying them to one side only is worse than applying neither.
 	QueryPrefix   string
 	PassagePrefix string
+
+	// How many goroutines may be inside the native embedding call at once.
+	//
+	// 0 means GOMAXPROCS, which is the measured default: a goroutine blocked in cgo
+	// blocks its OS thread and the Go scheduler creates another, so a thousand
+	// simultaneous arrivals took the process to 146-276 OS threads. Bounding holds it
+	// at 40 for about 8% of throughput. The work is CPU-bound, so admitting more
+	// goroutines than cores buys threads and nothing else. See docs/benchmark.md.
+	MaxConcurrentEmbeddings int
 }
 
 type Cost struct {
@@ -149,15 +158,16 @@ func Load() (Config, error) {
 			KeepAliveInterval:       envDuration("SSE_KEEPALIVE", 15*time.Second),
 		},
 		RAG: RAG{
-			CorpusPath:          env("FAQ_CORPUS_PATH", "corpus/faq.json"),
-			IngestOnStartup:     envBool("FAQ_INGEST_ON_STARTUP", true),
-			ModelPath:           env("EMBEDDING_MODEL_PATH", "model-cache/multilingual-e5-small/model.onnx"),
-			TokenizerPath:       env("EMBEDDING_TOKENIZER_PATH", "model-cache/multilingual-e5-small/tokenizer.json"),
-			Dimensions:          envInt("EMBEDDING_DIMENSIONS", 384),
-			TopK:                envInt("RAG_TOP_K", 8),
-			SimilarityThreshold: envFloat("RAG_SIMILARITY_THRESHOLD", 0),
-			QueryPrefix:         env("EMBEDDING_QUERY_PREFIX", "query: "),
-			PassagePrefix:       env("EMBEDDING_PASSAGE_PREFIX", "passage: "),
+			CorpusPath:              env("FAQ_CORPUS_PATH", "corpus/faq.json"),
+			IngestOnStartup:         envBool("FAQ_INGEST_ON_STARTUP", true),
+			ModelPath:               env("EMBEDDING_MODEL_PATH", "model-cache/multilingual-e5-small/model.onnx"),
+			TokenizerPath:           env("EMBEDDING_TOKENIZER_PATH", "model-cache/multilingual-e5-small/tokenizer.json"),
+			Dimensions:              envInt("EMBEDDING_DIMENSIONS", 384),
+			TopK:                    envInt("RAG_TOP_K", 8),
+			SimilarityThreshold:     envFloat("RAG_SIMILARITY_THRESHOLD", 0),
+			QueryPrefix:             env("EMBEDDING_QUERY_PREFIX", "query: "),
+			PassagePrefix:           env("EMBEDDING_PASSAGE_PREFIX", "passage: "),
+			MaxConcurrentEmbeddings: envInt("EMBEDDING_MAX_CONCURRENCY", 0),
 		},
 		Cost: Cost{
 			ConversationTokenBudget: int64(envInt("CONVERSATION_TOKEN_BUDGET", 200_000)),
