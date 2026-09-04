@@ -32,5 +32,42 @@ services:
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
 
+  app:
+    build:
+      context: .
+    container_name: csagent-go-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      # Anything documented in .env.example has to be listed here or Compose silently
+      # does not pass it into the container -- an undeclared variable is not injected,
+      # and the symptom is a default quietly taking effect.
+      CHAT_PROVIDER: ${CHAT_PROVIDER:-anthropic}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_CHAT_MODEL: ${ANTHROPIC_CHAT_MODEL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      XAI_CHAT_MODEL: ${XAI_CHAT_MODEL:-}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-csagent}
+      POSTGRES_USER: ${POSTGRES_USER:-csagent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-csagent}
+      CONVERSATION_TOKEN_BUDGET: ${CONVERSATION_TOKEN_BUDGET:-200000}
+      EMBEDDING_MAX_CONCURRENCY: ${EMBEDDING_MAX_CONCURRENCY:-0}
+      # On here, because this is the stack that brings Jaeger up alongside the app.
+      OTLP_TRACING_EXPORT_ENABLED: "true"
+      OTLP_TRACING_ENDPOINT: http://jaeger:4318
+      TRACING_SAMPLE_RATE: ${TRACING_SAMPLE_RATE:-1.0}
+      TRACE_INCLUDE_QUERY_CONTENT: ${TRACE_INCLUDE_QUERY_CONTENT:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    # Must stay above the application's own SHUTDOWN_GRACE (30s), or the container is
+    # killed part-way through the grace period it was given.
+    stop_grace_period: 45s
+
 volumes:
   pgdata:

@@ -26,6 +26,12 @@ import (
 )
 
 func main() {
+	// A container healthcheck without adding curl to the image. The alternative is a
+	// shell and an HTTP client in the runtime layer for one GET.
+	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
+		os.Exit(healthcheck())
+	}
+
 	level := slog.LevelInfo
 	if err := level.UnmarshalText([]byte(os.Getenv("LOG_LEVEL"))); err != nil {
 		level = slog.LevelInfo
@@ -36,6 +42,26 @@ func main() {
 		slog.Error("startup failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+// healthcheck asks the local server whether it is ready. Exit code 0 means yes.
+func healthcheck() int {
+	addr := os.Getenv("HTTP_ADDR")
+	if addr == "" {
+		addr = ":8081"
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get("http://127.0.0.1" + addr + "/readyz")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "readyz returned %d\n", resp.StatusCode)
+		return 1
+	}
+	return 0
 }
 
 func run() error {
@@ -121,6 +147,7 @@ func run() error {
 	mux := http.NewServeMux()
 	httpapi.NewServer(service, cfg.Chat).Routes(mux)
 	mux.Handle("GET /metrics", promhttp.HandlerFor(metrics.Registry, promhttp.HandlerOpts{}))
+	mux.Handle("GET /", httpapi.DemoUI())
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, `{"status":"UP"}`)
 	})

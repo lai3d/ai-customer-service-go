@@ -1,0 +1,8 @@
+# Fetched inside the image, and 470 MB of it.
+model-cache/
+third_party/
+bin/
+.git/
+.env
+docs/
+*.md

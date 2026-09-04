@@ -130,7 +130,14 @@ make deps                    # native libraries + the 470 MB embedding model, on
 cp .env.example .env
 $EDITOR .env                 # set ANTHROPIC_API_KEY
 
-docker compose up -d         # Postgres on 5433, Jaeger on 16687
+docker compose up -d         # Postgres 5433, Jaeger 16687, the app on 8081
+open http://localhost:8081   # the demo UI
+```
+
+Or run the app from source against just the database:
+
+```bash
+docker compose up -d postgres jaeger
 make run
 ```
 
@@ -205,6 +212,7 @@ when someone debugging a bad answer needs it.
 | [Tool calling](docs/tools.md) | Why a missing order is a value, and why conversation identity is a parameter |
 | [Chat providers](docs/providers.md) | Anthropic, OpenAI and xAI — and why xAI is a provider rather than a base-URL trick |
 | [Observability](docs/observability.md) | GenAI spans over OTLP, and grepping the backend to prove the customer's words are not in it |
+| [The demo UI](docs/demo-ui.md) | A glass box rather than a chat widget, and why the score bars are normalised |
 
 ---
 
@@ -221,9 +229,10 @@ throughout.
 
 - **No Gemini.** Three providers, not four. The Java implementation's Gemini findings are
   linked and *not re-verified here*.
-- **No demo UI, no Dockerfile, no Kubernetes manifests.** The Java repository has all
-  three and they would be duplicates; this repository is the comparison, not a second
-  product.
+- **No Kubernetes manifests.** The Java repository has them and they would be a
+  duplicate; this repository is the comparison, not a second product. There is a
+  Dockerfile and a Compose stack, because the container is where the cost of an
+  in-process model becomes visible: 1.1 GB, of which 470 MB is the model.
 - **`top-k: 8` is inherited, not re-measured.** It comes from the Java implementation's
   recall-against-tokens table, and the multi-intent limit it documents — one of fourteen
   long questions still misses the passage that answers it — has not been re-measured here.
@@ -239,6 +248,8 @@ Deliberately out of scope: authentication, multi-tenancy, MCP.
 
 
 ```
+├── Dockerfile            # 4 stages; the model baked in, no runtime downloads
+├── docker-compose.yml    # Postgres, Jaeger, the app -- ports avoid the Java stack's
 ├── cmd/server/           # wiring, health, graceful shutdown
 ├── corpus/faq.json       # byte-identical to the Java implementation's
 ├── internal/
@@ -246,7 +257,7 @@ Deliberately out of scope: authentication, multi-tenancy, MCP.
 │   ├── chat/             # a turn, in order: memory, retrieval, the tool loop
 │   ├── config/           # every tunable, with the reasoning next to it
 │   ├── cost/             # conversation budget and prices
-│   ├── httpapi/          # validation, SSE, problem+json
+│   ├── httpapi/          # validation, SSE, problem+json, the embedded demo page
 │   ├── llm/              # the provider boundary: Anthropic, OpenAI, xAI
 │   ├── obs/              # metrics and traces
 │   ├── rag/              # corpus, ONNX embedder, pgvector, retriever

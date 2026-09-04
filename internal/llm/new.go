@@ -27,6 +27,9 @@ func New(cfg config.Chat) (Client, error) {
 	case "xai":
 		return NewXAI(opts), nil
 	default:
-		return nil, fmt.Errorf("provider %q is configured but not implemented yet", cfg.Provider)
+		// Unreachable: config.Load rejects an unknown provider by name. Here so that
+		// adding a case to one switch and not the other is a compile-time nil rather
+		// than a runtime surprise.
+		return nil, fmt.Errorf("provider %q has no client", cfg.Provider)
 	}
 }

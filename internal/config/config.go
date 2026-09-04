@@ -232,18 +232,11 @@ func resolveProvider(name string) (providerDefaults, error) {
 			baseURL: env("XAI_BASE_URL", "https://api.x.ai/v1"),
 			keyVar:  "XAI_API_KEY",
 		}, nil
-	case "gemini":
-		return providerDefaults{
-			// A flash model, because the free tier's quota for pro models is literally
-			// zero. List what a key can reach before hardcoding anything:
-			//   curl "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY"
-			model:  env("GEMINI_CHAT_MODEL", "gemini-3.8-flash"),
-			apiKey: os.Getenv("GEMINI_API_KEY"),
-			keyVar: "GEMINI_API_KEY",
-		}, nil
 	default:
+		// Gemini is not here on purpose. A provider that config accepts and the client
+		// layer cannot build would fail later and less clearly than this does.
 		return providerDefaults{}, fmt.Errorf(
-			"unknown CHAT_PROVIDER %q: want anthropic, openai, xai or gemini", name)
+			"unknown CHAT_PROVIDER %q: want anthropic, openai or xai", name)
 	}
 }
 
