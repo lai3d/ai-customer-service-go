@@ -14,6 +14,8 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/obs"
 	"github.com/lai3d/ai-customer-service-go/internal/rag"
 	"github.com/lai3d/ai-customer-service-go/internal/tools"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 // SystemPrompt is the one place a prompt is written.
@@ -93,6 +95,13 @@ func NewService(memory *Memory, retriever *rag.Retriever, client llm.Client,
 func (s *Service) Turn(ctx context.Context, conversationID, message string, emit func(Event)) error {
 	started := time.Now()
 
+	// The conversation id is on the span; the customer's message is not, here or
+	// anywhere else. A support question is often the most sensitive thing in a request,
+	// and traces are retained and read far more widely than a database is.
+	ctx, span := obs.Tracer().Start(ctx, "chat turn")
+	defer span.End()
+	span.SetAttributes(attribute.String("conversation.id", conversationID))
+
 	if err := s.budget.Check(conversationID); err != nil {
 		return err
 	}
@@ -104,6 +113,7 @@ func (s *Service) Turn(ctx context.Context, conversationID, message string, emit
 	retrievalStart := time.Now()
 	passages, err := s.retriever.Retrieve(ctx, message)
 	if err != nil {
+		span.SetStatus(codes.Error, "retrieval failed")
 		return fmt.Errorf("retrieval: %w", err)
 	}
 	s.metrics.Retrieval.Observe(time.Since(retrievalStart).Seconds())
@@ -149,12 +159,32 @@ func (s *Service) Turn(ctx context.Context, conversationID, message string, emit
 	}()
 
 	for round := 0; ; round++ {
-		result, callErr := s.client.Stream(ctx, request, func(text string) error {
+		// One span per model call, because a turn is not a model call. A trace that
+		// shows one span for a tool-calling turn hides half of what it cost.
+		callCtx, callSpan := obs.Tracer().Start(ctx, "chat "+s.client.Model())
+		callSpan.SetAttributes(
+			attribute.String(obs.AttrGenAISystem, s.client.Provider()),
+			attribute.String(obs.AttrGenAIRequestModel, s.client.Model()),
+			attribute.Int("chat.tool_round", round),
+		)
+
+		result, callErr := s.client.Stream(callCtx, request, func(text string) error {
 			reply.WriteString(text)
 			emit(Event{Type: EventMessage, Text: text})
 			return nil
 		})
 		modelCalls++
+
+		callSpan.SetAttributes(
+			attribute.String(obs.AttrGenAIResponseModel, result.Model),
+			attribute.Int64(obs.AttrGenAIInputTokens, result.Usage.InputTokens),
+			attribute.Int64(obs.AttrGenAIOutputTokens, result.Usage.OutputTokens),
+			attribute.String(obs.AttrGenAIFinishReason, result.StopReason),
+		)
+		if callErr != nil {
+			callSpan.SetStatus(codes.Error, "model call failed")
+		}
+		callSpan.End()
 
 		// Usage is recorded even when the call failed part-way: tokens spent on a
 		// failed call are still tokens spent. The Java implementation's blocking
@@ -169,7 +199,7 @@ func (s *Service) Turn(ctx context.Context, conversationID, message string, emit
 			if errors.Is(callErr, context.Canceled) {
 				outcome = "cancelled"
 			}
-			s.recordTurnSpend(conversationID, reportedModel, usage, modelCalls, started, emit)
+			s.recordTurnSpend(ctx, conversationID, reportedModel, usage, modelCalls, started, emit)
 			return callErr
 		}
 
@@ -188,7 +218,7 @@ func (s *Service) Turn(ctx context.Context, conversationID, message string, emit
 		})
 	}
 
-	s.recordTurnSpend(conversationID, reportedModel, usage, modelCalls, started, emit)
+	s.recordTurnSpend(ctx, conversationID, reportedModel, usage, modelCalls, started, emit)
 	return nil
 }
 
@@ -202,8 +232,8 @@ func (s *Service) recordCall(model string, usage llm.Usage, callErr error) {
 	s.metrics.RecordUsage(model, usage.InputTokens, usage.OutputTokens, usd, priced)
 }
 
-func (s *Service) recordTurnSpend(conversationID, model string, usage llm.Usage,
-	modelCalls int, started time.Time, emit func(Event)) {
+func (s *Service) recordTurnSpend(ctx context.Context, conversationID, model string,
+	usage llm.Usage, modelCalls int, started time.Time, emit func(Event)) {
 
 	s.budget.Record(conversationID, usage.Total())
 	usd, _ := cost.USD(model, usage.InputTokens, usage.OutputTokens)
@@ -214,7 +244,9 @@ func (s *Service) recordTurnSpend(conversationID, model string, usage llm.Usage,
 		OutputTokens: usage.OutputTokens,
 		CostUSD:      usd,
 		Millis:       time.Since(started).Milliseconds(),
-		TraceID:      traceIDFrom(started),
+		// So a turn in the UI can be opened in the tracing backend. Empty when
+		// nothing is being traced.
+		TraceID: obs.TraceID(ctx),
 	}})
 }
 
@@ -234,6 +266,12 @@ func (s *Service) runTools(ctx context.Context, conversationID string,
 		go func(i int, call llm.ToolCall) {
 			defer wg.Done()
 
+			toolCtx, toolSpan := obs.Tracer().Start(ctx, "tool "+call.Name)
+			defer toolSpan.End()
+			// The tool's arguments are not on the span either: they are written by the
+			// model from what the customer said.
+			toolSpan.SetAttributes(attribute.String("tool.name", call.Name))
+
 			tool, ok := s.tools[call.Name]
 			if !ok {
 				// The model invented a tool. Say so plainly; it can recover.
@@ -243,10 +281,11 @@ func (s *Service) runTools(ctx context.Context, conversationID string,
 				emit(Event{Type: EventTool, Tool: &ToolEvent{Name: call.Name, Outcome: "unknown_tool"}})
 				mu.Unlock()
 				s.metrics.ToolCalls.WithLabelValues(call.Name, "unknown_tool").Inc()
+				toolSpan.SetAttributes(attribute.String("tool.outcome", "unknown_tool"))
 				return
 			}
 
-			result, err := tool.Invoke(ctx, conversationID, call.Arguments)
+			result, err := tool.Invoke(toolCtx, conversationID, call.Arguments)
 			if err != nil {
 				// Tools return failures as values; anything that still errors is
 				// unexpected, and the model is told only that the tool failed.
@@ -260,6 +299,7 @@ func (s *Service) runTools(ctx context.Context, conversationID string,
 			emit(Event{Type: EventTool, Tool: &ToolEvent{Name: call.Name, Outcome: result.Outcome}})
 			mu.Unlock()
 			s.metrics.ToolCalls.WithLabelValues(call.Name, result.Outcome).Inc()
+			toolSpan.SetAttributes(attribute.String("tool.outcome", result.Outcome))
 		}(i, call)
 	}
 	wg.Wait()
@@ -290,7 +330,3 @@ func withPassages(history []llm.Message, passages []rag.Passage) []llm.Message {
 	out[last].Text = block.String() + "\n---\n\nCustomer's question:\n" + history[last].Text
 	return out
 }
-
-// traceIDFrom is a placeholder until tracing is wired in; it keeps the field in the
-// event shape so a client does not have to change when it becomes real.
-func traceIDFrom(time.Time) string { return "" }

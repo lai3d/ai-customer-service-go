@@ -22,6 +22,7 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/store"
 	"github.com/lai3d/ai-customer-service-go/internal/tools"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 func main() {
@@ -52,6 +53,23 @@ func run() error {
 	}
 
 	metrics := obs.NewMetrics()
+
+	shutdownTracing, err := obs.StartTracing(ctx, obs.TracingOptions{
+		Enabled:     cfg.Obs.OTLPEnabled,
+		Endpoint:    cfg.Obs.OTLPEndpoint,
+		ServiceName: "ai-customer-service-go",
+		Sampling:    cfg.Obs.TraceSampling,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(shutdownCtx); err != nil {
+			slog.Warn("could not flush traces on shutdown", "error", err)
+		}
+	}()
 
 	startupCtx, cancelStartup := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancelStartup()
@@ -118,8 +136,13 @@ func run() error {
 	})
 
 	server := &http.Server{
-		Addr:    cfg.HTTPAddr,
-		Handler: mux,
+		Addr: cfg.HTTPAddr,
+		// otelhttp gives every request a server span, so a turn's spans hang off the
+		// HTTP request that caused them rather than floating on their own.
+		Handler: otelhttp.NewHandler(mux, "http",
+			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+				return r.Method + " " + r.URL.Path
+			})),
 		// No WriteTimeout: an SSE response is legitimately open for as long as the
 		// model keeps talking, and a write deadline would cut long answers off. The
 		// read timeouts still bound how long a client may take to send a request.

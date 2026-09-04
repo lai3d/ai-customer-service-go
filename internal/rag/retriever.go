@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+
+	"github.com/lai3d/ai-customer-service-go/internal/obs"
 )
 
 // Retriever is the whole retrieval path: embed the question, search, return passages.
@@ -34,11 +36,21 @@ func NewRetriever(embedder Embedder, store *Store, topK int, threshold float64) 
 // threshold separates them; judging relevance is the model's job, and the system prompt
 // tells it that some of what it is given will be unrelated. See docs/retrieval.md.
 func (r *Retriever) Retrieve(ctx context.Context, question string) ([]Passage, error) {
-	vector, err := r.embedder.EmbedQuery(ctx, question)
+	ctx, span := obs.Tracer().Start(ctx, "retrieve")
+	defer span.End()
+
+	embedCtx, embedSpan := obs.Tracer().Start(ctx, "embed query")
+	vector, err := r.embedder.EmbedQuery(embedCtx, question)
+	embedSpan.End()
 	if err != nil {
 		return nil, fmt.Errorf("embed question: %w", err)
 	}
+
+	_, searchSpan := obs.Tracer().Start(ctx, "pgvector similarity search")
 	passages, err := r.store.Search(ctx, vector, r.opts)
+	searchSpan.SetAttributes(obs.RetrievalAttributes(
+		r.opts.TopK, len(passages), r.opts.Threshold, r.embedder.Dimensions())...)
+	searchSpan.End()
 	if err != nil {
 		return nil, err
 	}
