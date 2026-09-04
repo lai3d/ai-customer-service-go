@@ -22,6 +22,10 @@ func New(cfg config.Chat) (Client, error) {
 	switch cfg.Provider {
 	case "anthropic":
 		return NewAnthropic(opts), nil
+	case "openai":
+		return NewOpenAI(opts), nil
+	case "xai":
+		return NewXAI(opts), nil
 	default:
 		return nil, fmt.Errorf("provider %q is configured but not implemented yet", cfg.Provider)
 	}

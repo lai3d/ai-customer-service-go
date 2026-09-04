@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -73,10 +74,20 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, onText func(string)
 
 	stream := a.client.Messages.NewStreaming(ctx, params)
 	message := anthropic.Message{}
+
+	// Counted so the wire's behaviour is a measurement rather than a belief: Anthropic
+	// reports usage across several frames per call (input at message_start, a growing
+	// output count on every message_delta), and the SDK's accumulator resolves them --
+	// cumulative totals overwrite rather than add. See docs/reliability.md.
+	usageFrames := 0
+
 	for stream.Next() {
 		event := stream.Current()
 		if err := message.Accumulate(event); err != nil {
 			return Result{}, fmt.Errorf("accumulate stream event: %w", err)
+		}
+		if event.Usage.OutputTokens > 0 || event.Message.Usage.InputTokens > 0 {
+			usageFrames++
 		}
 		// Only visible text is forwarded. Thinking blocks stream as their own delta
 		// type and are not the customer's business; with the default display they
@@ -92,6 +103,11 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, onText func(string)
 	if err := stream.Err(); err != nil {
 		return Result{}, classify(err)
 	}
+
+	slog.Debug("model call finished",
+		"provider", "anthropic", "usage_frames", usageFrames,
+		"input_tokens", message.Usage.InputTokens,
+		"output_tokens", message.Usage.OutputTokens)
 
 	result := Result{
 		StopReason: string(message.StopReason),

@@ -25,7 +25,11 @@ import (
 )
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	level := slog.LevelInfo
+	if err := level.UnmarshalText([]byte(os.Getenv("LOG_LEVEL"))); err != nil {
+		level = slog.LevelInfo
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 
 	if err := run(); err != nil {
 		slog.Error("startup failed", "error", err)

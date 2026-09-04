@@ -21,6 +21,7 @@ type Metrics struct {
 	Turns       *prometheus.CounterVec
 	TurnSeconds *prometheus.HistogramVec
 	ToolCalls   *prometheus.CounterVec
+	Unpriced    *prometheus.CounterVec
 	Retrieval   prometheus.Histogram
 	Embedding   prometheus.Histogram
 }
@@ -59,6 +60,15 @@ func NewMetrics() *Metrics {
 			Name: "chat_tool_invocations_total",
 			Help: "Tool invocations, by outcome.",
 		}, []string{"tool", "outcome"}),
+		// Without this, a model with no price entry is indistinguishable from a model
+		// that cost nothing: tokens keep counting and chat_cost_usd_total stays at
+		// zero. That is the failure mode of keying prices on the requested model id
+		// when the provider reports a dated one -- asking for gpt-5 yields
+		// gpt-5-2025-08-07 -- and it is silent unless something counts it.
+		Unpriced: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "chat_unpriced_model_calls_total",
+			Help: "Model calls whose tokens were counted but could not be costed, by model.",
+		}, []string{"model"}),
 		Retrieval: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "chat_retrieval_duration_seconds",
 			Help:    "Query embedding plus vector search.",
@@ -71,7 +81,7 @@ func NewMetrics() *Metrics {
 		}),
 	}
 	registry.MustRegister(m.Tokens, m.CostUSD, m.ModelCalls, m.Turns,
-		m.TurnSeconds, m.ToolCalls, m.Retrieval, m.Embedding)
+		m.TurnSeconds, m.ToolCalls, m.Unpriced, m.Retrieval, m.Embedding)
 	return m
 }
 
@@ -81,5 +91,7 @@ func (m *Metrics) RecordUsage(model string, inputTokens, outputTokens int64, usd
 	m.Tokens.WithLabelValues(model, "output").Add(float64(outputTokens))
 	if priced {
 		m.CostUSD.WithLabelValues(model).Add(usd)
+		return
 	}
+	m.Unpriced.WithLabelValues(model).Inc()
 }
