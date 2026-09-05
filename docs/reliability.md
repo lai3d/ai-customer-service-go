@@ -46,6 +46,21 @@ wrong was generalising it. This matters beyond bookkeeping, because the heuristi
 failure mode of its own: two calls whose prompts tokenise to exactly the same length merge
 into one group and are under-counted.
 
+**The same loss turned up a second time, in an unrelated place, and that is the real
+finding.** The Java implementation also runs the two calls' *text* together — `"I'll look
+that up for you.Your order ORD-10042 is in transit."` — and not only on screen: that
+string is what its database stores and re-sends as history on every later turn. Same
+cause. An abstraction that joins two model calls into one result keeps no seam, so both
+the usage frames and the message boundary are gone by the time anything downstream can
+see them, and both had to be reconstructed by guesswork or accepted as lost.
+
+Neither implementation would have found that alone. The first instance was measured here;
+the second was found on the Java side, in a screenshot it had been shipping for weeks,
+after this one hit the same bug — see [the demo UI](demo-ui.md#two-model-calls-are-two-messages).
+The generalisation is theirs. What it says is worth more than either bug: when an
+abstraction discards a boundary, it discards it for *everything* that crosses it, and the
+symptoms surface far apart and look unrelated.
+
 ### An abandoned stream has usually already been billed
 
 A cross-review from the Java implementation found this one, and it is the same bug that
