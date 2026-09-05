@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -448,4 +449,68 @@ func preflight(t *testing.T, server *httptest.Server, origin, method string) *ht
 	}
 	t.Cleanup(func() { resp.Body.Close() })
 	return resp
+}
+
+// A page of the audit trail must say how much trail there is, not how much of it it is
+// carrying. The admin UI states that number on screen, and a footer that counts the rows
+// it happens to hold tells a reader there is nothing more -- which was true of every list
+// in the UI until the page size mattered.
+func TestTheAuditTrailReportsItsTotalSeparatelyFromThePage(t *testing.T) {
+	server, _ := serve(t)
+	for i := 0; i < 7; i++ {
+		// Each read writes one row: reading is an action here.
+		resp := do(t, server, "GET", "/api/admin/v1/conversations/none-"+strconv.Itoa(i),
+			operatorToken, "")
+		resp.Body.Close()
+	}
+
+	var page struct {
+		Total   int `json:"total"`
+		Entries []struct {
+			Action string `json:"action"`
+		} `json:"entries"`
+	}
+	resp := do(t, server, "GET", "/api/admin/v1/audit?limit=3&offset=0", operatorToken, "")
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 3 {
+		t.Fatalf("asked for 3 entries and got %d", len(page.Entries))
+	}
+	if page.Total < 7 {
+		t.Errorf("the trail reports %d rows in total, but at least 7 were written; a "+
+			"reader is told the page size and concludes that is all there is", page.Total)
+	}
+
+	// And the second page must be different rows, not the same ones again.
+	var second struct {
+		Entries []struct {
+			At     string `json:"at"`
+			Object string `json:"object"`
+		} `json:"entries"`
+	}
+	resp2 := do(t, server, "GET", "/api/admin/v1/audit?limit=3&offset=3", operatorToken, "")
+	defer resp2.Body.Close()
+	if err := json.NewDecoder(resp2.Body).Decode(&second); err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Entries) == 0 {
+		t.Fatal("the second page is empty")
+	}
+	var first struct {
+		Entries []struct {
+			At     string `json:"at"`
+			Object string `json:"object"`
+		} `json:"entries"`
+	}
+	resp3 := do(t, server, "GET", "/api/admin/v1/audit?limit=3&offset=0", operatorToken, "")
+	defer resp3.Body.Close()
+	if err := json.NewDecoder(resp3.Body).Decode(&first); err != nil {
+		t.Fatal(err)
+	}
+	if first.Entries[0].Object == second.Entries[0].Object &&
+		first.Entries[0].At == second.Entries[0].At {
+		t.Error("offset changed nothing; the second page repeats the first")
+	}
 }

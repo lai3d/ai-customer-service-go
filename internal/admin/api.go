@@ -216,12 +216,13 @@ func (s *Server) ticketUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
-	entries, err := s.store.AuditTrail(r.Context(), atoi(r.URL.Query().Get("limit")))
+	q := r.URL.Query()
+	entries, total, err := s.store.AuditTrail(r.Context(), atoi(q.Get("limit")), atoi(q.Get("offset")))
 	if err != nil {
 		fail(w, r, "audit", err)
 		return
 	}
-	writeJSON(w, map[string]any{"entries": entries})
+	writeJSON(w, map[string]any{"total": total, "entries": entries})
 }
 
 // record writes the audit entry, detached from the request context so that a client

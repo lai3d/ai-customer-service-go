@@ -1,9 +1,19 @@
-import { Alert, Card, Col, Row, Statistic, Table, Typography } from 'antd'
+import { useState } from 'react'
+import { Alert, Card, Col, Row, Select, Space, Statistic, Table, Typography } from 'antd'
 import { api } from '../api/client'
 import { useLoad } from './hooks'
 
+// The server accepts anything from an hour to ninety days. The page offered one window.
+const WINDOWS = [
+  { value: 24, label: 'last 24 hours' },
+  { value: 168, label: 'last 7 days' },
+  { value: 720, label: 'last 30 days' },
+  { value: 2160, label: 'last 90 days' },
+]
+
 export function OverviewPage() {
-  const { data, error, loading } = useLoad(() => api.overview(168), [])
+  const [hours, setHours] = useState(168)
+  const { data, error, loading } = useLoad(() => api.overview(hours), [hours])
 
   if (error) return <Alert type="error" showIcon message={error} />
 
@@ -12,7 +22,14 @@ export function OverviewPage() {
 
   return (
     <>
-      <Typography.Paragraph type="secondary">Last 7 days.</Typography.Paragraph>
+      <Space style={{ marginBottom: 12 }}>
+        <Select style={{ width: 180 }} value={hours} onChange={setHours} options={WINDOWS} />
+        {data && (
+          <Typography.Text type="secondary">
+            since {new Date(data.since).toLocaleString()}
+          </Typography.Text>
+        )}
+      </Space>
       <Row gutter={[12, 12]}>
         {[
           { title: 'turns', value: turns },

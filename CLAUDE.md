@@ -180,6 +180,12 @@ that show why it is not needed here.
   code is non-zero — which is exactly what a successful "this must fail" assertion
   produces. `verify.sh` has `exec_in_pod` for this; it cost a red assertion against a pod
   that was demonstrably correct.
+- **Check that a port is yours before trusting what answers on it.** Two implementations
+  of this system run on one machine and both put admin surfaces on nearby ports. A server
+  started on an occupied port exits, and a `curl /healthz` loop then passes against the
+  *other* session's service — which is how a readiness check came back 200 for a process
+  that was not running. `lsof -nP -iTCP:<port> -sTCP:LISTEN` first, and confirm the pid is
+  still alive rather than only that something answers.
 - **A check that cannot be seen to fail is a claim, not a check.** `k8s/README.md` keeps an
   inventory of which harness assertions have actually been observed red. Three separate
   detectors in this repository have been silently blind — a `CREATE EXTENSION` check whose

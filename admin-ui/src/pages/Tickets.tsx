@@ -6,25 +6,45 @@ import { api, ApiError } from '../api/client'
 import type { Ticket, TicketEvent, TicketState } from '../api/types'
 import { NEXT_STATES } from '../api/types'
 import { useLoad, when } from './hooks'
+import { usePaging } from './paging'
 import { tagColour } from './Conversations'
 
 const STATES: TicketState[] = ['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED']
 
 export function TicketsPage({ canWrite }: { canWrite: boolean }) {
   const [state, setState] = useState('')
+  const [assignee, setAssignee] = useState('')
+  const [applied, setApplied] = useState({ state: '', assignee: '' })
   const [open, setOpen] = useState<string | null>(null)
+  const paging = usePaging()
   const { data, error, loading, reload } = useLoad(
-    () => api.tickets({ state, limit: 200 }), [state])
+    () => api.tickets({ ...applied, ...paging.window }),
+    [applied, paging.page, paging.pageSize])
+
+  const apply = (next: { state: string; assignee: string }) => {
+    paging.reset()
+    setApplied(next)
+  }
 
   return (
     <>
       <Space style={{ marginBottom: 12 }} wrap>
         <Select
-          style={{ width: 200 }}
+          style={{ width: 180 }}
           value={state}
-          onChange={setState}
+          onChange={(v) => { setState(v); apply({ state: v, assignee }) }}
           options={[{ value: '', label: 'any state' }, ...STATES.map((s) => ({ value: s, label: s }))]}
         />
+        {/* The API has filtered by assignee since it was written; nothing offered it. */}
+        <Input
+          style={{ width: 220 }}
+          allowClear
+          placeholder="assignee"
+          value={assignee}
+          onChange={(e) => setAssignee(e.target.value)}
+          onPressEnter={() => apply({ state, assignee })}
+        />
+        <Button onClick={() => apply({ state, assignee })}>Filter</Button>
         {!canWrite && <Typography.Text type="secondary">You have read-only access.</Typography.Text>}
       </Space>
 
@@ -37,7 +57,7 @@ export function TicketsPage({ canWrite }: { canWrite: boolean }) {
         dataSource={data?.tickets ?? []}
         onRow={(row) => ({ onClick: () => setOpen(row.ticketNumber), style: { cursor: 'pointer' } })}
         scroll={{ x: 'max-content' }}
-        pagination={{ pageSize: 20, showTotal: (n) => `${n} ticket(s)` }}
+        pagination={paging.pagination(data?.total ?? 0, (n) => `${n} ticket(s)`)}
         columns={[
           { title: 'ticket', dataIndex: 'ticketNumber', className: 'mono' },
           {

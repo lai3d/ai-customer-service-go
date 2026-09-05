@@ -267,9 +267,14 @@ signing in with a `viewer` token produced a dialog with the history and no Save 
 No console error, no failed request — which is also how the CORS configuration was checked,
 because a browser is the only thing that enforces it.
 
-**Still not verified:** one browser, one operator at a time. Nothing has been driven at a
-width where a table needs to scroll, and no second operator has had the same ticket open in
-another window — the 409 path is covered by tests and by `curl`, not by two people.
+Driven again on the same day against 139 conversations, which is what found that the list
+pages were paginating in the browser over a capped fetch: the footer stated the size of the
+page and the rest of the data did not exist as far as anyone reading the screen was
+concerned. Paging is the server's now, and the footer is the server's `total`.
+
+**Still not verified:** one browser, one operator at a time. No second operator has had the
+same ticket open in another window — the 409 path is covered by tests and by `curl`, not by
+two people.
 
 ---
 

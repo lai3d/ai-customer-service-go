@@ -86,7 +86,10 @@ export const api = {
       '/conversations?' + new URLSearchParams(clean(params)).toString()),
   conversation: (id: string) =>
     request<{ conversationId: string; turns: Turn[] }>(`/conversations/${encodeURIComponent(id)}`),
-  tickets: (params: { state?: string; assignee?: string; limit?: number; offset?: number }) =>
+  tickets: (params: {
+    state?: string; assignee?: string; conversationId?: string
+    limit?: number; offset?: number
+  }) =>
     request<{ total: number; tickets: Ticket[] | null }>(
       '/tickets?' + new URLSearchParams(clean(params)).toString()),
   ticket: (number: string) =>
@@ -97,7 +100,9 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(patch),
     }),
-  audit: (limit: number) => request<{ entries: AuditEntry[] | null }>(`/audit?limit=${limit}`),
+  audit: (params: { limit: number; offset: number }) =>
+    request<{ total: number; entries: AuditEntry[] | null }>(
+      `/audit?limit=${params.limit}&offset=${params.offset}`),
 }
 
 function clean(params: Record<string, string | number | undefined>): Record<string, string> {

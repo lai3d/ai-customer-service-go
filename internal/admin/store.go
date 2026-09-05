@@ -262,24 +262,36 @@ func (s *Store) Audit(ctx context.Context, e AuditEntry) error {
 	return err
 }
 
-func (s *Store) AuditTrail(ctx context.Context, limit int) ([]AuditEntry, error) {
+// AuditTrail returns a page of the trail, newest first, and the total number of rows.
+//
+// The total is returned rather than left for the caller to infer from the page, because a
+// page that says how big it is and a table that says how much there is are different
+// numbers -- and a reader who cannot tell them apart concludes there is nothing more.
+func (s *Store) AuditTrail(ctx context.Context, limit, offset int) ([]AuditEntry, int, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	if offset < 0 {
+		offset = 0
+	}
+	var total int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM admin_audit`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT at, actor, action, object, outcome, coalesce(detail,'')
-		FROM admin_audit ORDER BY id DESC LIMIT $1`, limit)
+		FROM admin_audit ORDER BY id DESC LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	var out []AuditEntry
 	for rows.Next() {
 		var e AuditEntry
 		if err := rows.Scan(&e.At, &e.Actor, &e.Action, &e.Object, &e.Outcome, &e.Detail); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	return out, total, rows.Err()
 }

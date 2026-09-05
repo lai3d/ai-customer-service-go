@@ -164,7 +164,8 @@ func run() error {
 	if operators.Enabled() {
 		admin.NewServer(admin.NewStore(pool), tickets, operators,
 			admin.ParseCORS(cfg.Admin.CORSOrigins)).Routes(mux)
-		slog.Info("operations surface mounted at /admin", "operators", operators.Names())
+		slog.Info("operations API mounted at /api/admin/v1; the UI is admin-ui/, served separately",
+			"operators", operators.Names(), "cors_origins", cfg.Admin.CORSOrigins)
 	} else {
 		slog.Info("no operations surface: ADMIN_TOKENS is unset")
 	}

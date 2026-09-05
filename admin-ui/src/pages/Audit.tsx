@@ -2,9 +2,12 @@ import { Alert, Table, Tag, Typography } from 'antd'
 import { api } from '../api/client'
 import type { AuditEntry } from '../api/types'
 import { useLoad, when } from './hooks'
+import { usePaging } from './paging'
 
 export function AuditPage() {
-  const { data, error, loading } = useLoad(() => api.audit(200), [])
+  const paging = usePaging(25)
+  const { data, error, loading } = useLoad(
+    () => api.audit(paging.window), [paging.page, paging.pageSize])
 
   return (
     <>
@@ -19,7 +22,7 @@ export function AuditPage() {
         rowKey={(r) => r.at + r.actor + r.object + r.action}
         dataSource={data?.entries ?? []}
         scroll={{ x: 'max-content' }}
-        pagination={{ pageSize: 25 }}
+        pagination={paging.pagination(data?.total ?? 0, (n) => `${n} entr${n === 1 ? 'y' : 'ies'}`)}
         columns={[
           { title: 'when', dataIndex: 'at', render: when },
           { title: 'actor', dataIndex: 'actor' },

@@ -40,7 +40,7 @@ What is missing is almost entirely product, not scaffolding.
 | 7 | [Feedback from customers and operators](#7-nothing-comes-back) | week 2 | both | not started | 2–3 h |
 | 8 | [Alerting and an SLO](#8-there-are-metrics-and-nothing-watches-them) | week 2 | Go | not started | 2 h |
 | 9 | [A schema migration path](#9-the-first-change-to-a-live-schema-is-manual) | week 2 | Go | not started | 1–2 h |
-| 10 | [The admin list pages lie past one page](#10-the-admin-lists-lie-past-the-first-page) | week 2 | Go | not started | 0.5 h |
+| 10 | [The admin list pages lie past one page](#10-the-admin-lists-lie-past-the-first-page) | week 2 | Go | **done** 2026-09-06 | 0.5 h |
 | 11 | [Provider failover](#11-three-providers-are-supported-and-one-runs) | scale | both | not started | 1–2 h |
 | 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | not started | 4–6 h |
 | 13 | [The deployment is a demo deployment](#13-the-manifests-stop-where-a-real-cluster-starts) | scale | Go | not started | 2–3 h |
@@ -209,16 +209,35 @@ still pass.
 
 ### 10. The admin lists lie past the first page
 
-`admin-ui` fetches 100 conversations (200 tickets) and paginates them in the browser. The
-API returns `total`, and the UI never passes it to the table, so Ant Design derives the
-total from the rows it has. Past one page, the footer states a number that is wrong and
-the remaining rows are gone with no indication.
+**Done, 2026-09-06.**
 
-**Done looks like:** page and page size drive `limit`/`offset`, the response's `total`
-drives the footer, and a test with more rows than one page asserts the displayed total
-equals the API's rather than the page length. The ticket filters the API already supports
-(assignee, conversation) and the overview window (the API takes 1 hour to 90 days; the UI
-hard-codes 168) come along with it.
+`admin-ui` fetched 100 conversations (200 tickets) and paginated them in the browser. The
+API returned `total`, the UI never passed it to the table, and Ant Design fell back to
+counting the rows it had. Past one page the footer stated a number that was wrong and the
+rest of the data was gone with no indication that anything was missing.
+
+Page and page size now drive `limit`/`offset`, and the response's `total` drives the
+footer. `usePaging` holds it in one place because the mistake is per-table and there are
+three of them; it also caps the page size at the server's own limit of 200, since both
+stores silently substitute 50 for anything outside their range — a page size the server
+will not honour is a table that disagrees with its own footer.
+
+The audit endpoint had no paging at all: `AuditTrail` took a limit and returned rows. It
+takes an offset and returns a total now, which is the same fix one layer down.
+
+Three things came with it, all of them capability the API already had and nothing offered:
+the ticket list filters by assignee, and the overview window is selectable (the server
+accepts an hour to ninety days; the page hard-coded 168).
+
+**How it was checked.** Two of the three React tests failed on the old code before the fix
+— the footer assertion could not find "250 conversation(s)", and the page-2 assertion
+found `limit: 100` where it wanted an offset. The Go test for the audit total was forced
+red twice: once with the total computed as `least(count(*), limit)`, which is exactly the
+lie being fixed, and once with the offset multiplied by zero, which produced "offset
+changed nothing; the second page repeats the first". Then 137 synthetic conversations in a
+real database, driven in Chrome: the footer said 139, page 7 requested `offset=120` and
+showed different rows, and changing the page size re-requested from the server rather than
+re-slicing what was on screen.
 
 ---
 

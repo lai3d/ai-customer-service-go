@@ -4,6 +4,7 @@ import { api } from '../api/client'
 import type { ConversationSummary, Turn } from '../api/types'
 import { Markdown } from '../components/Markdown'
 import { useLoad, when } from './hooks'
+import { usePaging } from './paging'
 
 const OUTCOMES = ['completed', 'cancelled', 'failed', 'tool_limit', 'budget_exceeded',
   'retrieval_failed', 'memory_failed', 'in_flight']
@@ -18,8 +19,18 @@ export function ConversationsPage() {
 function List({ onOpen }: { onOpen: (id: string) => void }) {
   const [filter, setFilter] = useState<{ outcome?: string; q?: string }>({})
   const [applied, setApplied] = useState<{ outcome?: string; q?: string }>({})
+  const paging = usePaging()
   const { data, error, loading } = useLoad(
-    () => api.conversations({ ...applied, limit: 100 }), [applied])
+    () => api.conversations({ ...applied, ...paging.window }),
+    [applied, paging.page, paging.pageSize])
+
+  // A filter changes what is being counted, so page 7 of the old result is not page 7 of
+  // the new one -- and asking the server for that offset returns an empty table that
+  // looks like "no matches".
+  const apply = (next: { outcome?: string; q?: string }) => {
+    paging.reset()
+    setApplied(next)
+  }
 
   return (
     <>
@@ -37,9 +48,9 @@ function List({ onOpen }: { onOpen: (id: string) => void }) {
           placeholder="search the conversation id"
           value={filter.q ?? ''}
           onChange={(e) => setFilter({ ...filter, q: e.target.value || undefined })}
-          onPressEnter={() => setApplied(filter)}
+          onPressEnter={() => apply(filter)}
         />
-        <Button onClick={() => setApplied(filter)}>Filter</Button>
+        <Button onClick={() => apply(filter)}>Filter</Button>
       </Space>
 
       {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 12 }} />}
@@ -51,7 +62,7 @@ function List({ onOpen }: { onOpen: (id: string) => void }) {
         dataSource={data?.conversations ?? []}
         onRow={(row) => ({ onClick: () => onOpen(row.conversationId), style: { cursor: 'pointer' } })}
         scroll={{ x: 'max-content' }}
-        pagination={{ pageSize: 20, showTotal: (n) => `${n} conversation(s)` }}
+        pagination={paging.pagination(data?.total ?? 0, (n) => `${n} conversation(s)`)}
         columns={[
           { title: 'conversation', dataIndex: 'conversationId', className: 'mono' },
           { title: 'turns', dataIndex: 'turns', align: 'right' },
