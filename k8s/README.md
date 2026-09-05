@@ -74,7 +74,7 @@ passed for two days without its condition ever arising. So this is the honest in
 | no writable volume is needed at all | no |
 | health, readiness, metrics, the demo page | no |
 | a bad key surfaces as 502 | the branch has been exercised (run without `ANTHROPIC_API_KEY`) and passed; it has never failed |
-| the node can hold the replicas | **yes** — forced with `requests: 6Gi` against a 7.9 GiB node |
+| the node has room for the replicas | **yes** — forced with `requests: 4Gi`, which fits the node's 7931 MiB and not the 7641 MiB actually free |
 
 The bottom half are unproven detectors. They are worth keeping — a check that has never
 fired is not the same as a check that cannot — but they should not be read as evidence
@@ -90,7 +90,7 @@ until something has made each of them red.
 | A cold-database reset that invented a bug | `DROP EXTENSION vector CASCADE` takes the `embedding` column with it and leaves the table, so `CREATE TABLE IF NOT EXISTS` does nothing and the app serves 500s from a table with no vector column. No deployment reaches that state on its own. The reset drops and recreates the schema instead. |
 | The `CREATE EXTENSION` check had been passing without ever running | It only fires on a *cold* database, and no run had ever had two replicas start against one — the first run had a replica stuck `Pending`, and every later run reused an extension that already existed. Forced cold, it fails: `duplicate key value violates unique constraint "pg_extension_name_index"`, both replicas restarting. Fixed with a Postgres advisory lock around the DDL; `verify.sh` now drops the extension before each deploy so the check is exercised every run. |
 | Per-replica memory looked unequal and was not | 1394 MiB against 1655 MiB — page cache for the 470 MB model file, charged to whichever cgroup faulted it in first and varying from 18 to 379 MiB over a pod's life. `anon` is 951 MiB in both, every time. |
-| A capacity check that passed while measuring nothing | Written to catch the Pending-replica failure above, it grepped `requests:` with three lines of context — and a comment block sits between the key and the value. It printed "2 replicas x  = 0 MiB" and reported PASS. It now reads the rendered spec through `kubectl --dry-run`, and fails loudly if it cannot parse. Written into the harness whose entire purpose is to catch that. |
+| A capacity check that was wrong twice, in two different ways | **First**, it grepped `requests:` with three lines of context and a comment block sits between the key and the value — so it printed "2 replicas x  = 0 MiB" and reported PASS. A check measuring nothing, written into the harness whose purpose is catching exactly that. It reads the rendered spec through `kubectl --dry-run` now and fails loudly when it cannot parse. **Second**, once it parsed correctly it compared against the node's *allocatable* memory rather than what was *free*, and passed on a node already at 81% of its memory requests. It now subtracts what other namespaces have reserved. Two forced-red runs, one per version. |
 
 ## Sizing, measured
 

@@ -95,13 +95,30 @@ if [ -z "$req_mi" ] || [ -z "$reps" ]; then
   bad "could not read the memory request or replica count from deployment.yaml (got req='$req' replicas='$reps')"
 else
   want_mi=$(( req_mi * reps ))
-  have_mi=$(( node_mem_ki / 1024 ))
-  printf '  node allocatable %d MiB; %s replicas x %s = %d MiB requested\n' \
-    "$have_mi" "$reps" "$req" "$want_mi"
-  if [ "$want_mi" -gt "$have_mi" ]; then
-    bad "the node cannot hold $reps replicas at $req -- a replica sits Pending and the rollout just times out"
+  total_mi=$(( node_mem_ki / 1024 ))
+
+  # Against what is *available*, not what the node has.
+  #
+  # Comparing to allocatable was the second version of this check and it was still blind:
+  # it passed on a node already at 81% of its memory requests, because nothing subtracted
+  # what everything else had reserved. A capacity check that ignores the other tenants
+  # answers a question nobody asked.
+  #
+  # Our own namespace is excluded: those pods are about to be replaced by this deploy.
+  used_mi=$(kubectl get pods --all-namespaces \
+    -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{range .spec.containers[*]}{.resources.requests.memory}{" "}{end}{"\n"}{end}' 2>/dev/null \
+    | awk -v skip="$NS" '$1!=skip{for(i=2;i<=NF;i++){v=$i;
+        if (v ~ /Gi$/) {sub(/Gi$/,"",v); m+=v*1024}
+        else if (v ~ /Mi$/) {sub(/Mi$/,"",v); m+=v}
+        else if (v ~ /Ki$/) {sub(/Ki$/,"",v); m+=v/1024}}} END{printf "%d", m}')
+  free_mi=$(( total_mi - used_mi ))
+
+  printf '  node %d MiB allocatable, %d MiB reserved by other namespaces, %d MiB free; this deploy wants %s x %s = %d MiB\n' \
+    "$total_mi" "$used_mi" "$free_mi" "$reps" "$req" "$want_mi"
+  if [ "$want_mi" -gt "$free_mi" ]; then
+    bad "only $free_mi MiB is free -- a replica will sit Pending and the rollout will just time out"
   else
-    ok "the node holds $reps replicas at $req ($want_mi of $have_mi MiB)"
+    ok "the node has room for $reps replicas at $req ($want_mi of $free_mi MiB free)"
   fi
 fi
 
