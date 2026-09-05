@@ -126,6 +126,31 @@ in-flight requests. That is its own piece of work with its own way of going wron
 half of it would be worse than none: a Publish button wired to the startup importer is
 exactly the shape that looks finished and is not.
 
+## Where the two implementations diverge, and where one of them is better
+
+The Java implementation built its operations surface at the same time, and the two are not
+the same design. Some of that is taste. One of it is not.
+
+| | Go | Java |
+| --- | --- | --- |
+| States | `OPEN → IN_PROGRESS → RESOLVED → CLOSED`, reopen from either terminal state | `open → claimed → resolved → closed`, plus release back to `open`; reopen clears the owner |
+| Concurrency | version on every mutation, `409` on stale, `SELECT ... FOR UPDATE` inside the transaction | the same, with claim made atomic across replicas by row lock |
+| Where the conclusion lives | a `resolution` column on `support_ticket` | on the resolving `ticket_event`, never on the row |
+| Opening a conversation | writes an audit row | not audited today |
+| A refused action | writes an audit row | writes nothing today |
+
+The third row is the one worth reading twice. Storing the conclusion on the event rather
+than on the ticket means **a reopen has nothing to carry forward** — the defect this page's
+browser run found is not a bug you can fix there, it is a state you cannot construct. It
+also keeps every conclusion a ticket ever had, in order, instead of the most recent one.
+
+Here the column survives because the ticket dialog fills its resolution box from it, and
+that is the whole of what reads it: the list does not show it, and nothing else in the
+service touches it. So this side has a denormalised copy of one event's text, kept correct
+by a test that was written after the copy went wrong once. That is a weaker guarantee than
+not having the copy, and it is recorded here rather than quietly evened out, because a pair
+of implementations that converge on every decision stops being able to show anything.
+
 ## Two defects that only a browser could find
 
 The page was driven in a real Chrome on 2026-09-05, signed in as an operator, through
