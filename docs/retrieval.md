@@ -178,6 +178,17 @@ ingest once per package, so the second reload never happened. `TestRetrievalSurv
 does sixty, and sixty is measured rather than chosen — at thirty the test passed with
 `DELETE`, which would have made it a test that could not tell the fix from the defect.
 
+Thirty is enough on the .NET side, and the difference is the write, not the database: that
+implementation reloads with one `INSERT` per row inside one transaction, where this one
+uses a single `CopyFrom`. Thirty-six statements churn the index more per cycle than one
+copy does, so the same defect needs about twice the cycles to show here. A cycle count
+copied between implementations would have been the wrong number in one of them.
+
+One trap in measuring it, which cost a wrong first answer here: `enable_seqscan = off` and
+`enable_indexscan = off` are cost penalties, not prohibitions. With both off the planner
+still chooses the HNSW index, so a row labelled "sequential scan" is the index scan again
+and the comparison says nothing. Leave `enable_seqscan` on.
+
 ---
 
 [← Back to the README](../README.md)
