@@ -179,7 +179,16 @@ func (s *Store) Update(ctx context.Context, number string, u Update) (Ticket, er
 			return Ticket{}, errors.New("resolving a ticket needs a conclusion")
 		}
 		next.State = u.State
-		if u.Resolution != "" {
+		switch {
+		case reopening:
+			// A reopen disputes the conclusion, so the row must stop asserting one.
+			// Carrying it forward leaves a ticket that is IN_PROGRESS and also claims
+			// to have been concluded -- and the page pre-fills the resolution box from
+			// the row, so an operator reopening a ticket resubmits the old conclusion
+			// without touching it. Nothing is lost: the state change that resolved it
+			// carries the text in the history.
+			next.Resolution = ""
+		case u.Resolution != "":
 			next.Resolution = u.Resolution
 		}
 		detail := u.Reason

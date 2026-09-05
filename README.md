@@ -286,9 +286,11 @@ model throughout.
   are built; editing and publishing the FAQ is not, because it changes the corpus — the
   one fixture that makes every retrieval number in this pair comparable. Doing it properly
   needs a versioned index and an atomic switch, and half of it would be worse than none.
-- **The admin page has never been driven in a browser.** It serves, its API is tested
-  including the permission and conflict paths, and the workflow was walked end to end with
-  `curl` against a live model. Nothing has confirmed that it renders.
+- **The admin page was driven in a real browser, and it found two defects.** It showed
+  the customer's ticket number to the operator as literal `**TKT-4700**`, and reopening a
+  ticket left the old conclusion on the row, so a ticket could be `IN_PROGRESS` and still
+  claim to be concluded. Both are fixed. What is still unverified is width: one operator,
+  one conversation, one browser, nothing wide enough to make a table scroll.
 
 Deliberately out of scope: multi-tenancy and MCP. Authentication now exists, but only for
 `/admin` — the chat endpoints are still unauthenticated, and shipping an operator login

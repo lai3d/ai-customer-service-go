@@ -251,7 +251,7 @@ That run found the page was showing the model's markdown to the customer as lite
 asterisks and hyphens, which is fixed. **Still not covered:** the run was headless with a
 throwaway profile, so font fallback and anything gated on a real display are unverified.
 
-## Driving the demo page in a browser
+## Driving a page in a browser
 
 Neither the claude-in-chrome extension nor the MCP Playwright server attaches in this
 workspace. The way through, from the Java implementation's session: a plain Node script
@@ -260,14 +260,24 @@ launching with `executablePath` pointed at the installed Chrome. The cached
 `ms-playwright` Chromium builds are the wrong build numbers for that package, which is
 what the confusing "Executable doesn't exist" error actually means.
 
-Worth the trouble: driving the page found two defects nothing else could. The model emits
-markdown and the page was showing the asterisks; and the text of two model calls was run
-together, which only appears when the model narrates before asking for a tool.
+Worth the trouble every time it has been done. On the demo page it found two defects
+nothing else could: the model emits markdown and the page was showing the asterisks, and
+the text of two model calls was run together. On the admin page it found the same markdown
+defect again — this time showing an operator a ticket number the customer had seen in
+bold — and one that was visible only with the dialog open: the resolution box is filled
+from the row, so a reopen resubmits the old conclusion, and the store was keeping it, which
+left a ticket `IN_PROGRESS` and still claiming to be concluded.
+
+**Do this for any page after changing it.** Four of the defects in this repository lived
+where a person looks and nowhere a test can reach; the data was correct at every seam. The
+script that does it is a few lines — sign in, click each tab, read `#main`'s text, take a
+screenshot, and fail on any console error, page error or failed request.
 
 ## Scope
 
-No authentication, no multi-tenancy, no MCP. No Gemini — three providers, and
-`CHAT_PROVIDER=gemini` fails at startup by name.
+No multi-tenancy, no MCP. No Gemini — three providers, and `CHAT_PROVIDER=gemini` fails at
+startup by name. Authentication exists only for `/admin`: the chat endpoints are open, and
+an operator login is not customer identity.
 
 **The operations surface exists (`internal/admin`) and is opt-in.** With `ADMIN_TOKENS`
 unset its routes are never registered — `/admin` is a 404, not a guarded 401. Never change

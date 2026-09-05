@@ -332,3 +332,57 @@ func TestARefusedActionIsAudited(t *testing.T) {
 		t.Errorf("audit entry is %s/%s/%s, want dana being refused a PATCH", actor, action, outcome)
 	}
 }
+
+// The markdown renderer exists twice, once per embedded page, because the two pages
+// belong to different packages and a third package holding thirty lines of JavaScript
+// would be a worse trade than the copy. The copy's failure mode is that only one of them
+// ever gets fixed -- so compare them, rather than trusting that a future session will
+// remember there are two.
+//
+// Driving the admin page in a real browser is what put a renderer here at all: the reply
+// showed a customer-facing ticket number as literal **TKT-4700**, which is the same
+// defect the demo page had, found the same way, and invisible to every other test because
+// the text was arriving correctly and only the drawing was wrong.
+func TestBothPagesRenderMarkdownIdentically(t *testing.T) {
+	adminPage, err := os.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	demoPage, err := os.ReadFile("../httpapi/web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"renderMarkdown", "appendInline"} {
+		a := jsFunction(t, string(adminPage), name)
+		d := jsFunction(t, string(demoPage), name)
+		if a != d {
+			t.Errorf("%s has drifted between the two pages\n--- admin ---\n%s\n--- demo ---\n%s",
+				name, a, d)
+		}
+	}
+}
+
+// jsFunction returns the source of a top-level `function name(...) {...}` by matching
+// braces. Deliberately crude: it would be wrong for a function containing a brace inside
+// a string or a regex literal, and it is checked against the two it is used on.
+func jsFunction(t *testing.T, page, name string) string {
+	t.Helper()
+	start := strings.Index(page, "function "+name+"(")
+	if start < 0 {
+		t.Fatalf("no function %s in the page", name)
+	}
+	depth := 0
+	for i := start; i < len(page); i++ {
+		switch page[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return page[start : i+1]
+			}
+		}
+	}
+	t.Fatalf("function %s is unterminated", name)
+	return ""
+}

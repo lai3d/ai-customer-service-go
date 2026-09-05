@@ -59,6 +59,11 @@
   .q, .a { white-space:pre-wrap; overflow-wrap:anywhere; margin:0 0 8px }
   .q { font-weight:560 }
   .a { color:var(--ink) }
+  .a.md { white-space:normal }
+  .a.md p, .a.md ul { margin:0 0 8px }
+  .a.md ul { padding-left:20px }
+  .a.md > :last-child { margin-bottom:0 }
+  .a.md code { font-family:var(--mono); font-size:12px; background:var(--soft); padding:1px 4px; border-radius:3px }
   .evidence { display:flex; gap:18px; flex-wrap:wrap; font-size:12.5px;
               color:var(--muted); border-top:1px dashed var(--line); padding-top:8px }
   .muted { color:var(--muted) }
@@ -111,6 +116,57 @@ const el = (tag, cls, text) => {
 const $ = id => document.getElementById(id);
 const main = $('main');
 let me = null;
+
+// The same deliberately small markdown subset the demo page renders, and for the same
+// reason: the model writes **bold** and hyphen lists in almost every reply, and showing
+// an operator the asterisks shows them something the customer never saw. This page's
+// whole job is to be a faithful record of the turn, so the fidelity matters more here
+// than on the demo page, not less.
+//
+// It is duplicated rather than shared. Both pages are embedded assets of different
+// packages, and a third package existing only to hold thirty lines of JavaScript would
+// be the worse trade. TestBothPagesRenderMarkdownIdentically compares the two sources,
+// because the failure mode of a copy is that only one copy gets fixed.
+//
+// No innerHTML, and no links: `[text](javascript:...)` is the one markdown construct that
+// does something rather than looks like something, and the text being rendered here was
+// written by a model whose own input included retrieved passages.
+function renderMarkdown(container, text) {
+  container.replaceChildren();
+  const lines = text.split('\n');
+  let list = null;
+
+  const flushList = () => { list = null; };
+
+  for (const line of lines) {
+    const item = /^\s*[-*]\s+(.*)$/.exec(line);
+    if (item) {
+      if (!list) { list = el('ul'); container.append(list); }
+      const li = el('li');
+      appendInline(li, item[1]);
+      list.append(li);
+      continue;
+    }
+    flushList();
+    if (line.trim() === '') continue;
+    const p = el('p');
+    appendInline(p, line);
+    container.append(p);
+  }
+}
+
+// appendInline handles **bold** and `code`, and appends everything else as text nodes.
+function appendInline(parent, text) {
+  const pattern = /\*\*([^*]+)\*\*|`([^`]+)`/g;
+  let last = 0, match;
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > last) parent.append(text.slice(last, match.index));
+    if (match[1] !== undefined) parent.append(el('strong', null, match[1]));
+    else parent.append(el('code', null, match[2]));
+    last = pattern.lastIndex;
+  }
+  if (last < text.length) parent.append(text.slice(last));
+}
 
 function token() { try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } }
 function setToken(v) { try { v ? sessionStorage.setItem(TOKEN_KEY, v) : sessionStorage.removeItem(TOKEN_KEY); } catch {} }
@@ -294,7 +350,11 @@ async function showConversation(id) {
 
     const body = el('div', 'body');
     body.append(el('p', 'q', t.question));
-    if (t.reply) body.append(el('p', 'a', t.reply));
+    if (t.reply) {
+      const answer = el('div', 'a md');
+      renderMarkdown(answer, t.reply);
+      body.append(answer);
+    }
     else body.append(el('p', 'muted', 'No reply was recorded for this turn.'));
     if (t.detail) body.append(el('p', 'warn', t.detail));
 

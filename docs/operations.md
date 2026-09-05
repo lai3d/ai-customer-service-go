@@ -126,14 +126,40 @@ in-flight requests. That is its own piece of work with its own way of going wron
 half of it would be worse than none: a Publish button wired to the startup importer is
 exactly the shape that looks finished and is not.
 
-## What is not verified
+## Two defects that only a browser could find
 
-The page has never been driven in a browser. It serves, its JavaScript parses, its API is
-covered by tests including the permission and conflict paths, and the workflow was walked
-end to end with `curl` against a live model — but nothing has confirmed that it renders.
-The same limitation as the demo page, and for the same reason: browser automation does not
-attach in this workspace without
-[a specific workaround](../CLAUDE.md#driving-the-demo-page-in-a-browser).
+The page was driven in a real Chrome on 2026-09-05, signed in as an operator, through
+overview, conversations, a conversation, tickets, a ticket dialog and the audit tab. No
+console error, no failed request, and the run recorded its own `read conversation` row —
+which the audit tab then displayed, three rows above the refusal from the `curl` walk.
+
+It found two things that no test here could have.
+
+The first is the demo page's defect, in a place where it matters more. The reply showed the
+customer a ticket number as `**TKT-4700**` — literal asterisks, because the operations page
+was appending the model's text as a plain string. An operator reading a complaint is reading
+it to see what the customer saw, and the customer saw bold. So this page renders the same
+deliberately small markdown subset the demo page does, by the same means: DOM nodes only, no
+`innerHTML`, and no links, because `[text](javascript:...)` is the one markdown construct
+that does something rather than looks like something. The renderer is duplicated rather than
+shared — the two pages are embedded assets of different packages — and
+`TestBothPagesRenderMarkdownIdentically` compares the two sources, because the failure mode
+of a copy is that only one copy ever gets fixed.
+
+The second was visible only because the dialog was open on screen. The resolution box is
+filled from the row, so a `RESOLVED` ticket shows its conclusion — and an operator reopening
+that ticket resubmits that text without touching it. The store then kept the conclusion
+across the reopen, leaving a ticket that was `IN_PROGRESS` and also claimed to have been
+concluded. A reopen disputes the conclusion; the row now stops asserting one, and nothing is
+lost, because the state change that resolved it carries the text in the history.
+
+Both are the same shape as the finding this repository has now recorded five times: the data
+was correct at every seam a test can reach, and the defect lived in what a person would see.
+
+**Still not verified:** one operator, one conversation, one ticket, one browser. Nothing has
+been driven at a width where a table needs to scroll, and no second operator has had the same
+ticket open in another window — the conflict path is covered by tests and by `curl`, not by
+two people.
 
 ---
 

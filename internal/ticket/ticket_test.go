@@ -171,11 +171,17 @@ func TestResolvingNeedsAConclusionAndReopeningNeedsAReason(t *testing.T) {
 		t.Error("a resolved ticket was reopened with no reason")
 	}
 
+	// The page fills the resolution box from the row, so a reopen resubmits the old
+	// conclusion untouched. Whether it is sent or not, a reopened ticket must not go on
+	// claiming to be concluded.
 	tk, err = store.Update(ctx, tk.Number, ticket.Update{
-		Actor: "sam", ExpectedVersion: tk.Version,
-		State: ticket.StateInProgress, Reason: "customer says it never arrived"})
+		Actor: "sam", ExpectedVersion: tk.Version, State: ticket.StateInProgress,
+		Reason: "customer says it never arrived", Resolution: "refund issued"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if tk.Resolution != "" {
+		t.Errorf("a reopened ticket still carries its conclusion: %q", tk.Resolution)
 	}
 
 	_, events, err := store.Get(ctx, tk.Number)
