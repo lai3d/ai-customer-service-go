@@ -4,6 +4,8 @@
 [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
+[中文](README.zh.md) · **English**
+
 An AI customer service backend in Go: retrieval-augmented answers over a bilingual FAQ
 corpus, tool calling for real business actions, SSE streaming, a per-conversation token
 budget, Prometheus metrics and OpenTelemetry traces. The embedding model runs in this
