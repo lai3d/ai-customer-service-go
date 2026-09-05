@@ -34,6 +34,8 @@ SSE 流式输出、按会话计的 token 预算、Prometheus 指标和 OpenTelem
 | 每家 provider 的当前模型都拒绝 `temperature`；OpenAI 协议不主动要就不给用量 | [对话 provider](docs/providers.md#what-only-a-live-call-found) |
 | 一个静默读零的成本指标比没有指标更糟，所以"漏掉的"要被计数 | [成本与失败](docs/reliability.md#the-model-in-the-metrics-is-not-the-model-you-asked-for) |
 | 被放弃的流其实早已计费；而本该抓到它的测试之所以能通过，是因为它测的是 stub | [成本与失败](docs/reliability.md#an-abandoned-stream-has-usually-already-been-billed) |
+| 一个被拒绝的操作没有留下任何痕迹——审计记下了所有成功的动作，没记下任何被拒的 | [运营后台](docs/operations.md#reading-is-an-action) |
+| 关掉标签页的客户被记成了数据库故障，而那份记录的全部职责就是区分这两件事 | [运营后台](docs/operations.md#the-turn-record-is-not-the-chat-memory) |
 | 客户原话没进 span，但模型编造的工具名进了 —— span 名同样是聚合维度 | [可观测性](docs/observability.md#attributes-are-not-the-only-way-into-a-backend) |
 | 页面把模型的 markdown 当字面星号显示，只有真实浏览器发现了 | [演示界面](docs/demo-ui.md#it-renders-the-models-markdown-in-a-deliberately-small-subset) |
 | 同一会话开两个标签页会交错，第二个请求的检索段落被静默丢弃 | [成本与失败](docs/reliability.md#one-turn-at-a-time-per-conversation) |
@@ -239,6 +241,7 @@ reply      关于你的两个问题：
 | [对话 provider](docs/providers.md) | Anthropic、OpenAI 和 xAI —— 以及为什么 xAI 是一个 provider 而不是改个 base URL 的把戏 |
 | [可观测性](docs/observability.md) | OTLP 上的 GenAI span，以及靠 grep 后端来证明客户原话不在里面 |
 | [演示界面](docs/demo-ui.md) | 一个玻璃盒子而不是聊天挂件，以及为什么分数条要做归一化 |
+| [运营后台](docs/operations.md) | 为什么不配置就没有 `/admin`，以及为什么"读一个会话"本身是一个要被审计的动作 |
 
 ---
 
@@ -264,13 +267,14 @@ reply      关于你的两个问题：
 - **演示页面是无头验证的**，用的是临时 profile。字体回退以及任何依赖真实显示的东西都不在
   覆盖范围内。
 
-- **没有管理后台，而这一条是"分歧"而不是"缺口"。** Java 实现正在做一个，这边刻意不做。
-  两者其实是同一个决定的两面：工单和会话的管理视图，就是一个展示系统里最敏感文本的页面，
-  而两个实现都花了不少力气把这些文本挡在 trace 和日志之外。不做认证就把这件事抵消掉了；
-  做认证就跨出了两份 README 共同声明的范围。哪一边都不算错——但这对仓库从这里开始不再
-  对称，所以写下来，而不是留给读者自己发现。
+- **运营后台没有知识编辑。** 会话、工单、审计都做了；编辑和发布 FAQ 没做，因为那会改动
+  语料——而语料是让这对仓库所有检索数字可比的唯一基准。要做对需要版本化索引和原子切换，
+  做一半比不做更糟。
+- **后台页面从未在真实浏览器里跑过。** 它能提供服务，API 有测试（含权限和冲突路径），
+  整个工作流用 `curl` 对着真实模型走通过。但没有任何东西确认过它的渲染。
 
-刻意不做：认证、多租户、MCP。
+刻意不做：多租户、MCP。认证现在存在，但**只针对 `/admin`**——聊天端点仍然没有认证，
+上线一个操作员登录并不等于这个服务有了客户身份体系。
 
 ---
 

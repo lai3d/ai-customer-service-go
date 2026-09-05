@@ -147,6 +147,15 @@ that show why it is not needed here.
   detectors in this repository have been silently blind — a `CREATE EXTENSION` check whose
   condition never arose, a capacity check that parsed nothing and passed, and a regex that
   measured the language rather than the bug. Before trusting a green check, make it red.
+- **Ticket dedupe and the per-conversation cap are database guarantees, not process
+  state.** A transaction with an advisory lock plus a unique index on
+  `(conversation_id, dedupe_key)`. Do not reintroduce an in-memory fast path: the cap was
+  `replicas x 3` for as long as it lived in a map, and the test that proves it now gets
+  seventeen tickets instead of three when the lock is removed.
+- **`turn` is the operational record and `chat_memory` is the model's context.** They are
+  not interchangeable: the second is windowed. Write the turn record at the service
+  boundary, never from the event stream — that stream feeds a page which may already be
+  gone. A failure to open the record fails the turn; a failure to close it is logged.
 - **Schema creation takes a Postgres advisory lock.** `CREATE EXTENSION IF NOT EXISTS` is
   not concurrency-safe — it checks the catalogue and then inserts, with nothing holding the
   gap — so two replicas starting against a cold database crash one of them with
@@ -260,13 +269,16 @@ together, which only appears when the model narrates before asking for a tool.
 No authentication, no multi-tenancy, no MCP. No Gemini — three providers, and
 `CHAT_PROVIDER=gemini` fails at startup by name.
 
-**No admin surface.** The Java implementation is building one; this is a deliberate
-divergence, not a backlog item, and adding one here would be a scope change rather than a
-feature. The reason is that it is the same decision as the authentication one: a view of
-tickets and conversations is a page showing the most sensitive text in the system, and
-this repository takes trouble to keep that text out of spans and logs
-(`RetrievalAttributes`, the tool-name validation, `TRACE_INCLUDE_QUERY_CONTENT`). Without
-auth the page undoes that work; with auth it leaves the declared scope.
+**The operations surface exists (`internal/admin`) and is opt-in.** With `ADMIN_TOKENS`
+unset its routes are never registered — `/admin` is a 404, not a guarded 401. Never change
+that to "register the routes and reject at the guard": a guard can be misconfigured and an
+absent route cannot. It is the one surface that displays customer text on purpose, which
+is why reading a conversation writes an audit row and why refused actions do too.
+
+**Knowledge editing and publication are deliberately not built.** They change the corpus,
+which is the fixture that makes every retrieval number in this pair comparable. Do not
+wire a Publish button to the startup importer — that is the shape that looks finished and
+is not. It needs a versioned index and an atomic switch that live retrieval filters on.
 
 `k8s/` exists and every number in it was measured on kind by `k8s/kind/verify.sh` before
 being committed — the Java repository's manifests were committed unapplied and two were

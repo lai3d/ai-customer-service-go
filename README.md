@@ -37,6 +37,8 @@ recorded too.
 | Every provider's current model rejects `temperature`, and the OpenAI protocol hides usage unless asked | [Chat providers](docs/providers.md#what-only-a-live-call-found) |
 | A cost meter that silently reads zero is worse than none, so the misses are counted | [Cost and failure](docs/reliability.md#the-model-in-the-metrics-is-not-the-model-you-asked-for) |
 | An abandoned stream had already been billed, and the test that would have caught it could only pass because it tested the stub | [Cost and failure](docs/reliability.md#an-abandoned-stream-has-usually-already-been-billed) |
+| A refused action left no trace at all — the audit trail recorded everything that succeeded and nothing that was denied | [Operations](docs/operations.md#reading-is-an-action) |
+| A customer who closed the tab was recorded as a database failure, in the record whose whole job is telling those apart | [Operations](docs/operations.md#the-turn-record-is-not-the-chat-memory) |
 | The customer's words were not in the spans, but a model-invented tool name was — a span name is an aggregated dimension too | [Observability](docs/observability.md#attributes-are-not-the-only-way-into-a-backend) |
 | The page showed the model's markdown as literal asterisks, and only a real browser noticed | [The demo UI](docs/demo-ui.md#it-renders-the-models-markdown-in-a-deliberately-small-subset) |
 | Two browser tabs on one conversation interleaved, and the second request lost its retrieved passages silently | [Cost and failure](docs/reliability.md#one-turn-at-a-time-per-conversation) |
@@ -248,6 +250,7 @@ out. See [Retrieval](docs/retrieval.md#retrieval-quality).
 | [Chat providers](docs/providers.md) | Anthropic, OpenAI and xAI — and why xAI is a provider rather than a base-URL trick |
 | [Observability](docs/observability.md) | GenAI spans over OTLP, and grepping the backend to prove the customer's words are not in it |
 | [The demo UI](docs/demo-ui.md) | A glass box rather than a chat widget, and why the score bars are normalised |
+| [The operations surface](docs/operations.md) | Why `/admin` does not exist unless you configure it, and why reading a conversation is an audited action |
 
 ---
 
@@ -279,16 +282,17 @@ model throughout.
 - **The demo page was verified headless**, with a throwaway profile. Font fallback and
   anything gated on a real display are not covered.
 
-- **No admin surface, and this one is a divergence rather than a gap.** The Java
-  implementation is building one. This repository is not, because the two are the same
-  decision seen from different sides: an admin view of tickets and conversations is a page
-  showing the most sensitive text in the system, and both implementations have gone to
-  some trouble to keep that text out of traces and logs. Adding the page without
-  authentication undoes that; adding authentication leaves the shared scope both READMEs
-  declare. Neither is wrong — but the pair stops being symmetric here, and it is recorded
-  rather than left for a reader to notice.
+- **The operations surface has no knowledge editing.** Conversations, tickets and audit
+  are built; editing and publishing the FAQ is not, because it changes the corpus — the
+  one fixture that makes every retrieval number in this pair comparable. Doing it properly
+  needs a versioned index and an atomic switch, and half of it would be worse than none.
+- **The admin page has never been driven in a browser.** It serves, its API is tested
+  including the permission and conflict paths, and the workflow was walked end to end with
+  `curl` against a live model. Nothing has confirmed that it renders.
 
-Deliberately out of scope: authentication, multi-tenancy, MCP.
+Deliberately out of scope: multi-tenancy and MCP. Authentication now exists, but only for
+`/admin` — the chat endpoints are still unauthenticated, and shipping an operator login
+does not make this a service with customer identity.
 
 ---
 
