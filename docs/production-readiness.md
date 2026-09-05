@@ -45,6 +45,7 @@ What is missing is almost entirely product, not scaffolding.
 | 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | not started | 4–6 h |
 | 13 | [The deployment is a demo deployment](#13-the-manifests-stop-where-a-real-cluster-starts) | scale | Go | not started | 2–3 h |
 | 14 | [Abuse and content safety](#14-the-system-prompt-is-the-whole-of-the-safety-story) | scale | both | not started | 2–3 h |
+| 15 | [A turn a dead process left behind stays in_flight for ever](#15-a-turn-a-dead-process-left-behind-stays-in-flight-for-ever) | week 2 | Go | not started | 1 h |
 
 Estimates are Claude session hours: the work, not the calendar. Things only you can do —
 registering with providers, deciding a retention period with whoever owns that decision,
@@ -118,11 +119,21 @@ under review. As soon as knowledge is editable by many people — or, worse, imp
 tickets or a wiki — retrieved text is attacker-influenced input to the model, and
 `create_support_ticket` and `lookup_order_status` are the blast radius.
 
-**Done looks like:** knowledge entries in Postgres with versions; an editor in the
-operations UI; a publication step that embeds a new index and switches atomically, with
-in-flight requests finishing against the old one; a rollback; and retrieval filtering on
-the published version. Plus: tool calls that a retrieved passage can influence are
-constrained by the caller's identity rather than by the model's judgement.
+**Done looks like** — and this is the Java implementation's shape, adopted here rather than
+re-invented, because it answers the objection above rather than accepting it: knowledge
+entries and revisions in Postgres; an editor in the operations UI; a publication that
+snapshots the drafts, embeds them under a new corpus version, and only then switches a
+single active-version row under a lock with an expected-version check; retrieval confined
+to the active version; rollback by re-activating a retained version; retention keeping the
+newest few.
+
+The part that matters for this pair: **the bundled corpus is adopted as the first version
+without re-embedding**, so `faq.json` stays byte-identical and every retrieval number stays
+comparable while the product gets editable knowledge. The caveat above is answered, not
+traded away.
+
+Plus, and separately: tool calls that a retrieved passage can influence must be constrained
+by the caller's identity rather than by the model's judgement.
 
 **Do not** wire a Publish button to the start-up importer. It is the shape that looks
 finished and is not.
@@ -305,6 +316,23 @@ prompt is careful, and neither of those is a control.
 
 **Done looks like:** a moderation pass on input and output, refusals recorded so their rate
 is visible, and an abuse signal per identity — which is only possible after item 1.
+
+### 15. A turn a dead process left behind stays in_flight for ever
+
+`Recorder.Begin` writes the turn as `in_flight` before the model call and `Finish` closes
+it afterwards. A process that dies in between leaves the row `in_flight` permanently:
+nothing sweeps it, and the operations overview counts it under "not completed" as though
+the customer had abandoned the conversation. A crash and a closed tab are exactly the two
+things that record is supposed to tell apart.
+
+**Done looks like:** a lease, and a sweeper that marks a row still running past it —
+`unknown`, never `completed`, because what happened to it is not known. The Java
+implementation has this (`TurnRecordSweeper`) and this repository does not; the shape is
+worth copying rather than redesigning.
+
+**Watch for:** the sweep and a slow `Finish` racing each other. `Finish` runs on a detached
+context after the response, so the lease has to be comfortably longer than the longest
+finish, or a live turn gets marked `unknown`.
 
 ---
 
