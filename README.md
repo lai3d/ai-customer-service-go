@@ -252,8 +252,8 @@ out. See [Retrieval](docs/retrieval.md#retrieval-quality).
 Verified live against `claude-opus-5`, `gpt-5` and `grok-4.6`: each answers a question
 from the corpus, calls a tool and uses its result, and reports usage that reaches the
 budget, the meters and the spans. A Chinese question retrieves Chinese passages and is
-answered in Chinese. 81 tests, no API key, real pgvector and the real embedding model
-throughout.
+answered in Chinese. Over eighty tests, no API key, real pgvector and the real embedding
+model throughout.
 
 **What is not done, stated rather than implied:**
 
