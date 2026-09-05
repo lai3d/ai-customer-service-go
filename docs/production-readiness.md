@@ -138,22 +138,39 @@ and a top-8 that still returned eight live rows for four questions in both langu
 is stronger evidence than anything argued, and it says the design survives what `DELETE`
 did not.
 
-What it does not settle is whether that holds as retention grows, because versioning
-replaces one problem with a related one: the search is filtered to the active version, so
-candidates spent on *retired but live* rows are lost the same way candidates spent on dead
-ones are. A synthetic probe here — three live versions of 36 rows, ~600 deleted — returned
-8 of 8 unfiltered and **4 of 8 with a version filter**, but its vectors are duplicated
-across versions, which is the pathological case for exactly that measurement, so it settles
-nothing. When this is built, measure the filtered path against the real corpus at the
-retention count that will actually be configured, and treat `hnsw.ef_search` as a parameter
-of the design rather than a default. Note that `hnsw.iterative_scan` does not exist in the
-`pgvector/pgvector:pg17` image both repositories use, so it is not available as a mitigation.
+What it does not settle is whether that holds as retention grows — and the Java side then
+measured that too, which is worth reading before this design is copied.
 
-Plus, and separately: tool calls that a retrieved passage can influence must be constrained
-by the caller's identity rather than by the model's judgement.
+**It is bounded by workload, not structurally immune.** Raising retention from 3 to 10 to
+30 changed nothing (8 of 8 each time, at 4% active rows), because pgvector's HNSW stores
+**one graph element per distinct vector** with a list of heap tids: a publication that
+re-embeds unchanged entries to bit-identical vectors costs one candidate for all of its
+copies, not one per copy. With *random* vectors — entries that actually changed — the same
+shape gives 1 of 8 at 5% selectivity and 0 of 8 at scale. So the two conditions are that
+re-embedding is deterministic (true for an in-process ONNX model, not guaranteed for an API
+embedder returning slightly different floats) and that few entries change between retained
+versions. A knowledge base where most entries change every publication gets the bad number.
 
-**Do not** wire a Publish button to the start-up importer. It is the shape that looks
-finished and is not.
+That also explains why the synthetic probe here was uninformative: its 36 orthogonal
+vectors were duplicated across versions, so the whole index was two distinct elements.
+
+**Correction to something this document said.** It stated that `hnsw.iterative_scan` does
+not exist in the `pgvector/pgvector:pg17` image. It does — 0.8.6 ships it, defaulting to
+`off`. The check that produced the wrong answer ran `SHOW hnsw.iterative_scan` in a fresh
+session; the extension's GUCs register when its library is loaded, so the parameter is
+genuinely unrecognised until any vector operation or `LOAD 'vector'` happens in that
+session. `strict_order` and `relaxed_order` both exist and the Java side measured
+`relaxed_order` turning 0 of 8 into 8 of 8 on a 40,000-row table.
+
+**It is not being set here, and the reason is a measurement rather than an oversight.**
+`Store.Search` post-filters by language, which is the same mechanism, so this repository has
+the shape. At the size the corpus actually is it cannot bite: 4,000 rows with 5% matching,
+`EXPLAIN` confirming an HNSW index scan with `Filter: language = 'zh'`, returned 8 of 8 with
+`iterative_scan` off. A setting with no case that needs it is the kind of configuration this
+repository does not add. **It becomes required with this item**, because versioning is
+another post-filter over a much larger table, and it should be set on every pooled connection
+at the same time as the versioning lands — not before, and not without a test that goes red
+without it.
 
 ### 3. A ticket is a row, and nothing else happens
 

@@ -186,6 +186,11 @@ that show why it is not needed here.
   *other* session's service — which is how a readiness check came back 200 for a process
   that was not running. `lsof -nP -iTCP:<port> -sTCP:LISTEN` first, and confirm the pid is
   still alive rather than only that something answers.
+- **A pgvector GUC does not exist until the extension's library is loaded in that session.**
+  `SHOW hnsw.iterative_scan` in a fresh psql session fails with *unrecognized configuration
+  parameter*, which reads exactly like "this version does not have it" -- and that wrong
+  conclusion was published here before a peer corrected it. Run any vector operation, or
+  `LOAD 'vector'`, before asking.
 - **Clear `faq_document` with `TRUNCATE`, never `DELETE`.** An HNSW scan collects its
   candidates from the graph and only then drops the dead ones, so rows deleted by previous
   ingestions crowd out the live ones and a `LIMIT 8` search quietly returns fewer than
