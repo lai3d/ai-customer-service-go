@@ -1,6 +1,7 @@
 # CLAUDE.md
 
-Guidance for Claude Code working in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this
+repository.
 
 ## What this repository is
 
@@ -39,8 +40,12 @@ Docker must be running: every integration test starts a real `pgvector/pgvector:
 ```bash
 make test                              # full suite, no API key needed
 make test-race
+make lint                              # go vet + gofmt; CI runs this and fails on it
 go test ./internal/rag/ -run TestNoSimilarityThresholdIsUseful -v
+go test ./internal/chat/ -run 'TestRetrievedPassagesNeverEnterMemory' -v
 make bench                             # opt-in; four runs in four processes
+make build                             # bin/server
+make fmt
 
 docker compose up -d postgres jaeger   # dependencies only
 make run                               # the app from source, on :8081
@@ -68,6 +73,29 @@ implementation retrieval rewrote the user message and memory stored whatever it 
 handed, so the wrong composition wrote every passage into the customer's history and
 re-sent it forever — silently. `TestRetrievedPassagesNeverEnterMemory` and
 `TestASecondTurnDoesNotResendTheFirstTurnsPassages` hold the line.
+
+### A turn's events reach the client through three files
+
+`chat.Service.Turn` takes an `emit func(Event)` and pushes typed events -- `retrieval`,
+`tool`, `message`, `usage`, `error` -- rather than returning a string. Adding or changing
+one means touching all three of:
+
+```
+internal/chat/events.go        the Event type and what each carries
+internal/httpapi/sse.go        the turn runs in a goroutine, events arrive on a channel,
+                               and the heartbeat interleaves with them
+internal/httpapi/web/index.html  the only consumer that exercises the whole contract
+```
+
+The channel is not incidental. It is what makes the turn consumed exactly once while a
+heartbeat interleaves; merging a heartbeat into a reactive stream can subscribe twice and
+run the whole turn twice -- two model calls, two bills -- while the response still looks
+correct.
+
+`httpapi.NewServer` takes a `Turner` interface rather than `*chat.Service`, so the edge --
+validation, status codes, SSE framing -- is tested with no database, no model and no
+embedding model. `internal/chat` is where the turn itself is tested, against a real
+Postgres.
 
 **`llm.Client.Stream` makes exactly one model call and returns exactly one call's usage.**
 The caller sums. Do not add a heuristic that reconstructs call boundaries from usage
@@ -109,6 +137,10 @@ that show why it is not needed here.
   stub — a stub can satisfy any contract, which is how this shipped in the first place.
 - **The ticket table and the budget table are both bounded LRUs.** A map keyed by
   conversation id that nothing removes from is a memory leak with a long fuse.
+- **`README.md` and `README.zh.md` are a pair.** Adding, removing or moving a section in
+  one without the other fails `TestBothReadmesHaveTheSameSectionStructure`. Nothing
+  re-derives a translation, so the test compares heading-level sequences -- the drift that
+  actually happens.
 
 ## Two rules that came out of being wrong
 
