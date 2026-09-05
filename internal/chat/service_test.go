@@ -165,7 +165,7 @@ func newFixtureWithClient(t *testing.T, client llm.Client, budgetLimit int64) *f
 	f.service = chat.NewService(
 		memory,
 		rag.NewRetriever(stubEmbedder{}, vectors, 8, 0),
-		client, budget, metrics, 1024,
+		client, budget, metrics, chat.NewRecorder(pool), 1024,
 		tools.NewOrderLookup(), tickets,
 	)
 	return f
@@ -772,4 +772,130 @@ func TestAWaitingTurnGivesUpWhenItsRequestIsCancelled(t *testing.T) {
 
 	close(released)
 	wg.Wait()
+}
+
+func turnRow(t *testing.T, id string) (outcome, reply, model string, calls int, in, out int64) {
+	t.Helper()
+	err := pool.QueryRow(context.Background(), `
+		SELECT outcome, coalesce(reply,''), coalesce(model,''), model_calls,
+		       input_tokens, output_tokens
+		FROM turn WHERE id = $1`, id).Scan(&outcome, &reply, &model, &calls, &in, &out)
+	if err != nil {
+		t.Fatalf("reading turn %s: %v", id, err)
+	}
+	return
+}
+
+func lastTurnID(t *testing.T, conversationID string) string {
+	t.Helper()
+	var id string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT id FROM turn WHERE conversation_id = $1 ORDER BY started_at DESC LIMIT 1`,
+		conversationID).Scan(&id); err != nil {
+		t.Fatalf("no turn recorded for %s: %v", conversationID, err)
+	}
+	return id
+}
+
+// The operational record is what an operator is asked about afterwards, so the evidence
+// has to be in it: what retrieval returned, which tools ran, what it cost. None of that
+// is recoverable from chat_memory, which holds the customer's words and the reply and
+// is windowed besides.
+func TestATurnLeavesAnOperationalRecordWithItsEvidence(t *testing.T) {
+	client := &stubClient{script: []llm.Result{
+		{
+			ToolCalls: []llm.ToolCall{{ID: "t1", Name: "lookup_order_status",
+				Arguments: json.RawMessage(`{"orderNumber":"ORD-10042"}`)}},
+			StopReason: "tool_use",
+			Usage:      llm.Usage{InputTokens: 1800, OutputTokens: 18},
+		},
+		{Text: "It is in transit.", StopReason: "end_turn",
+			Usage: llm.Usage{InputTokens: 3696, OutputTokens: 108}},
+	}}
+	f := newFixture(t, client, 0)
+	ctx := context.Background()
+
+	if err := f.turn(ctx, "record-evidence", "where is my order?"); err != nil {
+		t.Fatal(err)
+	}
+	id := lastTurnID(t, "record-evidence")
+
+	outcome, reply, model, calls, in, out := turnRow(t, id)
+	if outcome != "completed" {
+		t.Errorf("outcome is %q, want completed", outcome)
+	}
+	if reply != "It is in transit." {
+		t.Errorf("reply is %q", reply)
+	}
+	if model != "stub-model-2026-01-01" {
+		t.Errorf("model is %q; the record must carry what the provider reported", model)
+	}
+	// The same accounting the usage event reports: a turn is not a model call.
+	if calls != 2 || in != 5496 || out != 126 {
+		t.Errorf("recorded calls=%d in=%d out=%d, want 2/5496/126", calls, in, out)
+	}
+
+	var passages, toolCalls int
+	if err := pool.QueryRow(ctx,
+		`SELECT (SELECT count(*) FROM turn_passage WHERE turn_id=$1),
+		        (SELECT count(*) FROM turn_tool_call WHERE turn_id=$1)`, id).
+		Scan(&passages, &toolCalls); err != nil {
+		t.Fatal(err)
+	}
+	if passages == 0 {
+		t.Error("no retrieval evidence recorded; the corpus can change and this is the " +
+			"only account of what the model was actually given")
+	}
+	if toolCalls != 1 {
+		t.Errorf("recorded %d tool calls, want 1", toolCalls)
+	}
+}
+
+// The reason the record is written at the service boundary rather than from the event
+// stream: the stream feeds a page that may already be gone.
+func TestATurnWhoseClientDisconnectedStillGetsATerminalOutcome(t *testing.T) {
+	client := &stubClient{script: []llm.Result{reply("partial")}, err: context.Canceled}
+	f := newFixture(t, client, 0)
+
+	// Cancelled *during* the turn, not before it. A request cancelled before anything
+	// happened correctly leaves no record -- no model call, no spend, nothing to answer
+	// for. The case this exists for is the customer who closes the tab while the model
+	// is talking, which is the most common mid-stream failure in production.
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = f.service.Turn(ctx, "record-cancelled", "a question nobody waited for",
+		func(e chat.Event) {
+			if e.Type == chat.EventRetrieval {
+				cancel()
+			}
+		})
+	defer cancel()
+
+	id := lastTurnID(t, "record-cancelled")
+	outcome, _, _, _, _, _ := turnRow(t, id)
+	if outcome == chat.OutcomeInFlight {
+		t.Error("the turn is still recorded as in flight; a row left in that state means " +
+			"the process died, and this one did not")
+	}
+	if outcome != "cancelled" {
+		t.Errorf("outcome is %q, want cancelled -- a customer who closed the tab and a "+
+			"provider that failed are different events", outcome)
+	}
+}
+
+// If the turn cannot be accounted for, it does not happen. The alternative is finding
+// the gap a month later, on a bill.
+func TestAModelCallIsNotMadeIfTheTurnCannotBeRecorded(t *testing.T) {
+	client := &stubClient{script: []llm.Result{reply("should never run")}}
+	f := newFixture(t, client, 0)
+
+	// A conversation id that cannot fit the column the record is keyed by.
+	tooLong := strings.Repeat("x", 100)
+	err := f.turn(context.Background(), tooLong, "hello")
+	if err == nil {
+		t.Fatal("the turn succeeded despite being unrecordable")
+	}
+	if client.calls != 0 {
+		t.Errorf("the model was called %d times for a turn that could not be recorded",
+			client.calls)
+	}
 }

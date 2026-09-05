@@ -217,6 +217,7 @@ func runWith(t *testing.T, name string, newEmbedder func() rag.Embedder, model l
 		model,
 		cost.NewBudget(0, 20_000),
 		obs.NewMetrics(),
+		chat.NewRecorder(pool),
 		1024,
 		tools.NewOrderLookup(), tools.NewSupportTickets(&testsupport.FakeTickets{}),
 	)

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lai3d/ai-customer-service-go/internal/cost"
 	"github.com/lai3d/ai-customer-service-go/internal/llm"
 	"github.com/lai3d/ai-customer-service-go/internal/obs"
@@ -56,12 +57,14 @@ type Service struct {
 	toolDefs  []llm.ToolDefinition
 	budget    *cost.Budget
 	metrics   *obs.Metrics
+	recorder  *Recorder
 	maxTokens int
 	locks     *conversationLocks
 }
 
 func NewService(memory *Memory, retriever *rag.Retriever, client llm.Client,
-	budget *cost.Budget, metrics *obs.Metrics, maxTokens int, toolset ...tools.Tool) *Service {
+	budget *cost.Budget, metrics *obs.Metrics, recorder *Recorder, maxTokens int,
+	toolset ...tools.Tool) *Service {
 
 	byName := make(map[string]tools.Tool, len(toolset))
 	defs := make([]llm.ToolDefinition, 0, len(toolset))
@@ -81,7 +84,7 @@ func NewService(memory *Memory, retriever *rag.Retriever, client llm.Client,
 	return &Service{
 		memory: memory, retriever: retriever, client: client,
 		tools: byName, toolDefs: defs,
-		budget: budget, metrics: metrics, maxTokens: maxTokens,
+		budget: budget, metrics: metrics, recorder: recorder, maxTokens: maxTokens,
 		locks: newConversationLocks(),
 	}
 }
@@ -123,6 +126,14 @@ func (s *Service) Turn(ctx context.Context, conversationID, message string, emit
 	reportedModel := s.client.Model()
 	outcome := "failed"
 
+	record := TurnRecord{
+		ID:             uuid.NewString(),
+		ConversationID: conversationID,
+		StartedAt:      started,
+		Question:       message,
+	}
+	span.SetAttributes(attribute.String("turn.id", record.ID))
+
 	// Installed before anything can fail, not after the model call is set up.
 	//
 	// It was the other way round first, and the four returns below it -- a budget
@@ -149,7 +160,48 @@ func (s *Service) Turn(ctx context.Context, conversationID, message string, emit
 		}
 		s.metrics.Turns.WithLabelValues(outcome).Inc()
 		s.metrics.TurnSeconds.WithLabelValues(reportedModel).Observe(time.Since(started).Seconds())
+
+		// The operational record is finished on the same detached context and for the
+		// same reason: a turn whose client disconnected still has a terminal outcome,
+		// and that outcome is the thing an operator will be asked about.
+		//
+		// Unlike Begin, a failure here is not fatal. By now the money is spent and the
+		// customer has their answer; failing would turn a bookkeeping problem into a
+		// customer-visible one. It is logged loudly instead.
+		record.Outcome = outcome
+		record.Reply = reply.String()
+		record.Model = reportedModel
+		record.ModelCalls = modelCalls
+		record.InputTokens = usage.InputTokens
+		record.OutputTokens = usage.OutputTokens
+		record.CostUSD, record.Priced = cost.USD(reportedModel, usage.InputTokens, usage.OutputTokens)
+		record.TraceID = obs.TraceID(ctx)
+		if err := s.recorder.Finish(persistCtx, record); err != nil {
+			slog.Error("could not finish the operational record for a turn",
+				"turn_id", record.ID, "conversation_id", conversationID, "error", err)
+		}
 	}()
+
+	// A failure caused by the customer going away is not a failure of the thing it
+	// interrupted. Without this, a client that disconnects while the history read is in
+	// flight is recorded as `memory_failed` -- the operational record then says the
+	// database broke, which is the single question it exists to answer correctly. Found
+	// by TestATurnWhoseClientDisconnectedStillGetsATerminalOutcome, which had to cancel
+	// mid-turn rather than before it to see it.
+	classify := func(fallback string, err error) string {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "cancelled"
+		}
+		return fallback
+	}
+
+	// Before the model is called, deliberately. A model call this service cannot account
+	// for is worse than a turn that did not happen -- the alternative is discovering the
+	// gap in a month, from a bill.
+	if err := s.recorder.Begin(ctx, record); err != nil {
+		outcome = classify("recording_failed", err)
+		return err
+	}
 
 	if err := s.budget.Check(conversationID); err != nil {
 		outcome = "budget_exceeded"
@@ -157,7 +209,7 @@ func (s *Service) Turn(ctx context.Context, conversationID, message string, emit
 	}
 
 	if err := s.memory.Append(ctx, conversationID, llm.RoleUser, message); err != nil {
-		outcome = "memory_failed"
+		outcome = classify("memory_failed", err)
 		return err
 	}
 
@@ -165,15 +217,16 @@ func (s *Service) Turn(ctx context.Context, conversationID, message string, emit
 	passages, err := s.retriever.Retrieve(ctx, message)
 	if err != nil {
 		span.SetStatus(codes.Error, "retrieval failed")
-		outcome = "retrieval_failed"
+		outcome = classify("retrieval_failed", err)
 		return fmt.Errorf("retrieval: %w", err)
 	}
 	s.metrics.Retrieval.Observe(time.Since(retrievalStart).Seconds())
+	record.Passages = passages
 	emit(Event{Type: EventRetrieval, Passages: toPassageEvents(passages)})
 
 	history, err := s.memory.History(ctx, conversationID)
 	if err != nil {
-		outcome = "memory_failed"
+		outcome = classify("memory_failed", err)
 		return err
 	}
 
@@ -236,9 +289,7 @@ func (s *Service) Turn(ctx context.Context, conversationID, message string, emit
 		s.recordCall(reportedModel, result.Usage, callErr)
 
 		if callErr != nil {
-			if errors.Is(callErr, context.Canceled) {
-				outcome = "cancelled"
-			}
+			outcome = classify("failed", callErr)
 			s.recordTurnSpend(ctx, conversationID, reportedModel, usage, modelCalls, started, emit)
 			return callErr
 		}
@@ -262,9 +313,11 @@ func (s *Service) Turn(ctx context.Context, conversationID, message string, emit
 			Role: llm.RoleAssistant, Text: result.Text, ToolCalls: result.ToolCalls,
 			Native: result.Native,
 		})
+		toolResults, invoked := s.runTools(ctx, conversationID, result.ToolCalls, emit)
+		record.ToolCalls = append(record.ToolCalls, invoked...)
 		request.Messages = append(request.Messages, llm.Message{
 			Role:        llm.RoleUser,
-			ToolResults: s.runTools(ctx, conversationID, result.ToolCalls, emit),
+			ToolResults: toolResults,
 		})
 	}
 
@@ -305,9 +358,10 @@ func (s *Service) recordTurnSpend(ctx context.Context, conversationID, model str
 // They go back in one user message, always. Splitting them across messages is accepted
 // by the API and quietly teaches the model to stop asking for tools in parallel.
 func (s *Service) runTools(ctx context.Context, conversationID string,
-	calls []llm.ToolCall, emit func(Event)) []llm.ToolResult {
+	calls []llm.ToolCall, emit func(Event)) ([]llm.ToolResult, []ToolEvent) {
 
 	results := make([]llm.ToolResult, len(calls))
+	invoked := make([]ToolEvent, len(calls))
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
@@ -346,6 +400,7 @@ func (s *Service) runTools(ctx context.Context, conversationID string,
 				mu.Unlock()
 				s.metrics.ToolCalls.WithLabelValues(reportedName, "unknown_tool").Inc()
 				toolSpan.SetAttributes(attribute.String("tool.outcome", "unknown_tool"))
+				invoked[i] = ToolEvent{Name: reportedName, Outcome: "unknown_tool"}
 				return
 			}
 
@@ -364,10 +419,11 @@ func (s *Service) runTools(ctx context.Context, conversationID string,
 			mu.Unlock()
 			s.metrics.ToolCalls.WithLabelValues(reportedName, result.Outcome).Inc()
 			toolSpan.SetAttributes(attribute.String("tool.outcome", result.Outcome))
+			invoked[i] = ToolEvent{Name: reportedName, Outcome: result.Outcome}
 		}(i, call)
 	}
 	wg.Wait()
-	return results
+	return results, invoked
 }
 
 // withPassages attaches the retrieved passages to the outgoing request, and only to the

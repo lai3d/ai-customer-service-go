@@ -142,6 +142,7 @@ func run() error {
 		client,
 		cost.NewBudget(cfg.Cost.ConversationTokenBudget, cfg.Cost.TrackedConversations),
 		metrics,
+		chat.NewRecorder(pool),
 		cfg.Chat.MaxTokens,
 		tools.NewOrderLookup(),
 		tools.NewSupportTickets(tickets),
