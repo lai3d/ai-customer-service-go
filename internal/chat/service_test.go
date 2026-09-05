@@ -156,7 +156,7 @@ func newFixtureWithClient(t *testing.T, client llm.Client, budgetLimit int64) *f
 	}
 
 	memory := chat.NewMemory(pool, 40)
-	tickets := tools.NewSupportTickets(100)
+	tickets := tools.NewSupportTickets(&testsupport.FakeTickets{})
 	budget := cost.NewBudget(budgetLimit, 100)
 	metrics := obs.NewMetrics()
 	stub, _ := client.(*stubClient)

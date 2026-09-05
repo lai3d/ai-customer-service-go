@@ -49,6 +49,112 @@ CREATE TABLE IF NOT EXISTS faq_document (
 
 CREATE INDEX IF NOT EXISTS faq_document_embedding_idx
     ON faq_document USING hnsw (embedding vector_cosine_ops);
+
+-- ---------------------------------------------------------------------------------
+-- Operational records. Everything above serves a customer turn; everything below
+-- serves the people who have to answer for it afterwards.
+--
+-- chat_memory is deliberately not that record. It is the model's context: windowed,
+-- trimmed, and holding only what the model needs to see. An operational history that
+-- disappears when the window slides is not a history.
+-- ---------------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS support_ticket (
+    ticket_number   TEXT        NOT NULL PRIMARY KEY,
+    conversation_id VARCHAR(64) NOT NULL,
+    -- The normalised summary. A unique index on it is what makes deduplication a
+    -- guarantee rather than a per-replica convention: two replicas racing on the same
+    -- request now collide in the database instead of each creating a ticket.
+    dedupe_key      TEXT        NOT NULL,
+    category        TEXT        NOT NULL,
+    summary         TEXT        NOT NULL,
+    order_number    TEXT,
+    state           TEXT        NOT NULL DEFAULT 'OPEN'
+                    CHECK (state IN ('OPEN','IN_PROGRESS','RESOLVED','CLOSED')),
+    assignee        TEXT,
+    resolution      TEXT,
+    -- Optimistic concurrency for the admin surface: two operators editing one ticket
+    -- must not silently overwrite each other.
+    version         INT         NOT NULL DEFAULT 1,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS support_ticket_dedupe_idx
+    ON support_ticket (conversation_id, dedupe_key);
+CREATE INDEX IF NOT EXISTS support_ticket_state_idx
+    ON support_ticket (state, updated_at DESC);
+CREATE SEQUENCE IF NOT EXISTS support_ticket_number_seq START 4700;
+
+-- Every transition, attributed. A state machine with no history is a current value.
+CREATE TABLE IF NOT EXISTS ticket_event (
+    id            BIGSERIAL   PRIMARY KEY,
+    ticket_number TEXT        NOT NULL REFERENCES support_ticket (ticket_number) ON DELETE CASCADE,
+    at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    actor         TEXT        NOT NULL,
+    action        TEXT        NOT NULL,
+    detail        TEXT
+);
+CREATE INDEX IF NOT EXISTS ticket_event_ticket_idx ON ticket_event (ticket_number, id);
+
+-- One row per customer turn, written at the service boundary rather than from the
+-- event stream that feeds the browser -- so a turn whose client disconnected still has
+-- a terminal outcome recorded.
+CREATE TABLE IF NOT EXISTS turn (
+    id              TEXT        NOT NULL PRIMARY KEY,
+    conversation_id VARCHAR(64) NOT NULL,
+    started_at      TIMESTAMPTZ NOT NULL,
+    ended_at        TIMESTAMPTZ,
+    -- completed | cancelled | failed | tool_limit | budget_exceeded | retrieval_failed
+    -- | memory_failed | in_flight. Never a bare success/failure: a turn the customer
+    -- abandoned and a turn the provider rejected are different events.
+    outcome         TEXT        NOT NULL,
+    question        TEXT        NOT NULL,
+    reply           TEXT,
+    model           TEXT,
+    model_calls     INT         NOT NULL DEFAULT 0,
+    input_tokens    BIGINT      NOT NULL DEFAULT 0,
+    output_tokens   BIGINT      NOT NULL DEFAULT 0,
+    cost_usd        NUMERIC(14,8),
+    trace_id        TEXT,
+    detail          TEXT
+);
+CREATE INDEX IF NOT EXISTS turn_conversation_idx ON turn (conversation_id, started_at);
+CREATE INDEX IF NOT EXISTS turn_started_idx      ON turn (started_at DESC);
+CREATE INDEX IF NOT EXISTS turn_outcome_idx      ON turn (outcome, started_at DESC);
+
+-- What retrieval actually returned for that turn, kept because the corpus can change
+-- and "why did it answer that" is unanswerable from a corpus that has since moved.
+CREATE TABLE IF NOT EXISTS turn_passage (
+    turn_id  TEXT NOT NULL REFERENCES turn (id) ON DELETE CASCADE,
+    rank     INT  NOT NULL,
+    entry_id TEXT NOT NULL,
+    language TEXT NOT NULL,
+    score    DOUBLE PRECISION NOT NULL,
+    question TEXT NOT NULL,
+    PRIMARY KEY (turn_id, rank)
+);
+
+CREATE TABLE IF NOT EXISTS turn_tool_call (
+    turn_id TEXT NOT NULL REFERENCES turn (id) ON DELETE CASCADE,
+    seq     INT  NOT NULL,
+    name    TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    PRIMARY KEY (turn_id, seq)
+);
+
+-- Who did what through the admin surface. Operators cannot edit this table through
+-- any endpoint; there is deliberately no update or delete path to it.
+CREATE TABLE IF NOT EXISTS admin_audit (
+    id      BIGSERIAL   PRIMARY KEY,
+    at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    actor   TEXT        NOT NULL,
+    action  TEXT        NOT NULL,
+    object  TEXT        NOT NULL,
+    outcome TEXT        NOT NULL,
+    detail  TEXT
+);
+CREATE INDEX IF NOT EXISTS admin_audit_at_idx ON admin_audit (at DESC);
 `
 
 // Open applies the schema on a single connection, then opens a pool whose connections

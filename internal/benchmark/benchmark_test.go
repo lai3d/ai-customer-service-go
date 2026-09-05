@@ -218,7 +218,7 @@ func runWith(t *testing.T, name string, newEmbedder func() rag.Embedder, model l
 		cost.NewBudget(0, 20_000),
 		obs.NewMetrics(),
 		1024,
-		tools.NewOrderLookup(), tools.NewSupportTickets(20_000),
+		tools.NewOrderLookup(), tools.NewSupportTickets(&testsupport.FakeTickets{}),
 	)
 
 	mux := http.NewServeMux()

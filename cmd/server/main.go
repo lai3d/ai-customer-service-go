@@ -20,6 +20,7 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/obs"
 	"github.com/lai3d/ai-customer-service-go/internal/rag"
 	"github.com/lai3d/ai-customer-service-go/internal/store"
+	"github.com/lai3d/ai-customer-service-go/internal/ticket"
 	"github.com/lai3d/ai-customer-service-go/internal/tools"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -133,6 +134,8 @@ func run() error {
 		return err
 	}
 
+	tickets := ticket.NewStore(pool)
+
 	service := chat.NewService(
 		chat.NewMemory(pool, cfg.Chat.MaxHistoryMessages),
 		rag.NewRetriever(embedder, vectors, cfg.RAG.TopK, cfg.RAG.SimilarityThreshold),
@@ -141,7 +144,7 @@ func run() error {
 		metrics,
 		cfg.Chat.MaxTokens,
 		tools.NewOrderLookup(),
-		tools.NewSupportTickets(cfg.Cost.TrackedConversations),
+		tools.NewSupportTickets(tickets),
 	)
 
 	mux := http.NewServeMux()

@@ -275,7 +275,7 @@ model throughout.
   long questions still misses the passage that answers it — has not been re-measured here.
 - **No evaluation harness.** The retrieval measurements say which passage was found, not
   whether the answer built from it was good.
-- **The ticket cap is per replica**, not a distributed guarantee, and says so.
+- ~~The ticket cap is per replica~~ — **fixed.** Tickets are in Postgres now, with the cap and the deduplication enforced by a transaction and a unique index. `TestTheCapHoldsAcrossReplicas` runs twenty differently-worded requests across two pools: three tickets with the lock, seventeen without it.
 - **The demo page was verified headless**, with a throwaway profile. Font fallback and
   anything gated on a real display are not covered.
 
