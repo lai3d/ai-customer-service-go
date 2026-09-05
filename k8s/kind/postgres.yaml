@@ -1,0 +1,71 @@
+# A throwaway Postgres, for verifying the manifests on kind and for nothing else.
+#
+# It lives here rather than in k8s/ on purpose. This app keeps business data and the
+# pgvector embeddings in the same database, which makes it a system of record; k8s/README.md
+# explains why this repository ships no Postgres manifest for real clusters. An emptyDir and
+# a hardcoded password are fine for a cluster whose whole life is one `verify.sh` run and
+# are not fine for anything else.
+#
+# Being in a subdirectory also keeps it out of `kubectl apply -f k8s/`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: test-fixture
+spec:
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: test-fixture
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+    spec:
+      containers:
+        - name: postgres
+          # The same image the Testcontainers suite and docker-compose.yml use, so the
+          # `vector` extension is present without an init script.
+          image: pgvector/pgvector:pg17
+          env:
+            - name: POSTGRES_DB
+              value: csagent
+            - name: POSTGRES_USER
+              value: csagent
+            - name: POSTGRES_PASSWORD
+              value: csagent
+            # The default PGDATA is the mount point itself, which Postgres refuses to
+            # initialise when it is not empty. A subdirectory sidesteps that.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "csagent", "-d", "csagent"]
+            periodSeconds: 3
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          emptyDir: {}

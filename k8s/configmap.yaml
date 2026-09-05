@@ -1,0 +1,48 @@
+# Non-secret configuration. Every key is an environment variable the binary reads
+# directly -- see internal/config/config.go, where each default has its reasoning next
+# to it -- so changing one here does not require rebuilding the image.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-customer-service-go-config
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: ai-customer-service-go
+    app.kubernetes.io/component: app
+data:
+  # Where Postgres lives. These manifests deliberately do NOT ship a Postgres of their
+  # own: conversation memory and the pgvector embeddings share one database, so it wants
+  # a real managed instance (RDS / Cloud SQL / CNPG) with backups rather than a
+  # StatefulSet nobody owns. The database must have the `vector` extension available.
+  POSTGRES_HOST: "postgres.ai-customer-service-go.svc.cluster.local"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "csagent"
+
+  CHAT_PROVIDER: "anthropic"
+
+  # Must stay below terminationGracePeriodSeconds in the Deployment, or the kubelet
+  # SIGKILLs the container part-way through the drain it was promised. A streamed answer
+  # is in flight for as long as the model keeps talking.
+  SHUTDOWN_GRACE: "30s"
+
+  # How many goroutines may be inside the native embedding call at once.
+  #
+  # Set explicitly, and that is the Go-specific part of this file. The default is
+  # GOMAXPROCS, and Go 1.25+ derives GOMAXPROCS from the cgroup CPU limit -- which means
+  # leaving it at 0 makes the embedding concurrency depend on whether anyone set a CPU
+  # limit on this container. With a limit it is small and correct; without one it silently
+  # becomes the node's core count, and a goroutine inside a cgo call blocks an OS thread.
+  # Measured on the benchmark: unbounded reached 135-276 OS threads against 40 bounded.
+  # An explicit number does not move when someone edits `resources`.
+  EMBEDDING_MAX_CONCURRENCY: "4"
+
+  # A conversation is an open-ended bill unless capped. 0 disables the cap.
+  CONVERSATION_TOKEN_BUDGET: "200000"
+
+  # Off unless a collector is running. Point it at yours and set it to "true".
+  OTLP_TRACING_EXPORT_ENABLED: "false"
+  OTLP_TRACING_ENDPOINT: "http://opentelemetry-collector.observability.svc.cluster.local:4318"
+  TRACING_SAMPLE_RATE: "1.0"
+  # A support question is often the most sensitive thing in a request, and traces are
+  # retained and read widely. On only while debugging retrieval.
+  TRACE_INCLUDE_QUERY_CONTENT: "false"

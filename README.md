@@ -243,6 +243,7 @@ out. See [Retrieval](docs/retrieval.md#retrieval-quality).
 | [Retrieval](docs/retrieval.md) | In-process embedding in Go, what it costs, and why no similarity threshold is worth setting |
 | [Cost and failure](docs/reliability.md) | Token accounting, budgets, timeouts, bounded tool side effects, graceful shutdown |
 | [Benchmark](docs/benchmark.md) | Goroutines against Loom, and what a cgo call does to the OS thread count |
+| [Footprint](docs/footprint.md) | What a pod of each implementation costs to run, and why a memory number needs a stated moment |
 | [Tool calling](docs/tools.md) | Why a missing order is a value, and why conversation identity is a parameter |
 | [Chat providers](docs/providers.md) | Anthropic, OpenAI and xAI — and why xAI is a provider rather than a base-URL trick |
 | [Observability](docs/observability.md) | GenAI spans over OTLP, and grepping the backend to prove the customer's words are not in it |
@@ -263,10 +264,12 @@ model throughout.
 
 - **No Gemini.** Three providers, not four. The Java implementation's Gemini findings are
   linked and *not re-verified here*.
-- **No Kubernetes manifests.** The Java repository has them and they would be a
-  duplicate; this repository is the comparison, not a second product. There is a
-  Dockerfile and a Compose stack, because the container is where the cost of an
-  in-process model becomes visible: 1.1 GB, of which 470 MB is the model.
+- **The Kubernetes manifests are verified on kind, not on a real cluster.** Twelve
+  assertions run against a throwaway cluster (`k8s/kind/verify.sh`); no production
+  cluster has seen them. Ingress, HPA, PodDisruptionBudget and NetworkPolicy are
+  deliberately absent — see [k8s/README.md](k8s/README.md#deliberately-not-included).
+- **The per-conversation lock is per process.** Two replicas can still interleave one
+  conversation; the real fix is Postgres advisory locks.
 - **`top-k: 8` is inherited, not re-measured.** It comes from the Java implementation's
   recall-against-tokens table, and the multi-intent limit it documents — one of fourteen
   long questions still misses the passage that answers it — has not been re-measured here.
@@ -285,6 +288,7 @@ Deliberately out of scope: authentication, multi-tenancy, MCP.
 
 ```
 ├── Dockerfile            # 4 stages; the model baked in, no runtime downloads
+├── k8s/                  # manifests + a kind harness that verifies them
 ├── docker-compose.yml    # Postgres, Jaeger, the app -- ports avoid the Java stack's
 ├── cmd/server/           # wiring, health, graceful shutdown
 ├── corpus/faq.json       # byte-identical to the Java implementation's

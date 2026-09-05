@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-customer-service-go
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: ai-customer-service-go
+    app.kubernetes.io/component: app
+spec:
+  # ClusterIP: exposing this is an Ingress/Gateway decision, and the app has no
+  # authentication (deliberately), so do not reach for LoadBalancer without putting
+  # something in front of it.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ai-customer-service-go
+    app.kubernetes.io/component: app
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http
+      protocol: TCP
+  # Conversation memory is keyed by conversation id in Postgres, so any replica can serve
+  # any turn. But see the note on the per-conversation lock in the README: serialisation
+  # is per process, so two replicas can still interleave one conversation. Affinity would
+  # paper over that; fixing it properly means Postgres advisory locks.
+  sessionAffinity: None

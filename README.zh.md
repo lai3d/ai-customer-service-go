@@ -234,6 +234,7 @@ reply      关于你的两个问题：
 | [检索](docs/retrieval.md) | Go 里的进程内嵌入、它的代价，以及为什么没有任何相似度阈值值得设 |
 | [成本与失败](docs/reliability.md) | token 记账、预算、超时、有界的工具副作用、优雅关闭 |
 | [Benchmark](docs/benchmark.md) | goroutine 对阵 Loom，以及一次 cgo 调用对 OS 线程数做了什么 |
+| [资源占用](docs/footprint.md) | 两个实现各自跑起来占多少，以及为什么内存数字必须标注测量时刻 |
 | [工具调用](docs/tools.md) | 为什么"订单不存在"是一个值而不是错误，以及为什么会话身份是一个参数 |
 | [对话 provider](docs/providers.md) | Anthropic、OpenAI 和 xAI —— 以及为什么 xAI 是一个 provider 而不是改个 base URL 的把戏 |
 | [可观测性](docs/observability.md) | OTLP 上的 GenAI span，以及靠 grep 后端来证明客户原话不在里面 |
@@ -252,9 +253,10 @@ reply      关于你的两个问题：
 
 - **没有 Gemini。** 三家 provider，不是四家。Java 实现关于 Gemini 的发现只做了链接，
   **未在此处复验**。
-- **没有 Kubernetes 清单。** Java 仓库有，重复一份没有信号；这个仓库是那个对比，不是第二个
-  产品。但有 Dockerfile 和 Compose 栈，因为容器正是进程内模型的代价变得可见的地方：
-  1.1 GB，其中 470 MB 是模型。
+- **Kubernetes 清单只在 kind 上验证过**，没有真实集群跑过。`k8s/kind/verify.sh` 有 12 项
+  断言。Ingress、HPA、PodDisruptionBudget、NetworkPolicy 都是刻意不包含的 ——
+  见 [k8s/README.md](k8s/README.md#deliberately-not-included)。
+- **按会话的锁是单进程的。** 两个副本仍可能交错同一个会话；真正的修法是 Postgres 咨询锁。
 - **`top-k: 8` 是继承的，未重新测量。** 它来自 Java 实现的"召回率对 token"那张表，而那张表
   记录的多意图限制 —— 十四个长问题里仍有一个找不到能回答它的段落 —— 也未在此处复测。
 - **没有答案质量评估框架。** 检索的测量说的是找到了哪条段落，不是基于它生成的答案好不好。
@@ -271,6 +273,7 @@ reply      关于你的两个问题：
 
 ```
 ├── Dockerfile            # 4 个阶段；模型烤进镜像，运行时不下载任何东西
+├── k8s/                  # 清单 + 一个在 kind 上验证它们的脚本
 ├── docker-compose.yml    # Postgres、Jaeger、应用 —— 端口避开 Java 那套栈
 ├── cmd/server/           # 装配、健康检查、优雅关闭
 ├── corpus/faq.json       # 与 Java 实现的字节级一致

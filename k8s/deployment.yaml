@@ -1,0 +1,127 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-customer-service-go
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: ai-customer-service-go
+    app.kubernetes.io/component: app
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ai-customer-service-go
+      app.kubernetes.io/component: app
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ai-customer-service-go
+        app.kubernetes.io/component: app
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8081"
+    spec:
+      # Longer than SHUTDOWN_GRACE (30s) in the ConfigMap, so a draining pod finishes its
+      # in-flight streamed answers before SIGKILL.
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        # Matches the uid baked into the image. Asserting it here means the pod is
+        # rejected if someone rebuilds the image as root.
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          # Replace with your registry path and an immutable tag or digest. `:latest`
+          # plus imagePullPolicy: Always is how you end up unable to say what is running.
+          image: ghcr.io/lai3d/ai-customer-service-go:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8081
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: ai-customer-service-go-config
+            - secretRef:
+                name: ai-customer-service-go-secrets
+          resources:
+            # Measured on a kind cluster, not reasoned about:
+            #
+            #   limit     outcome      cgroup peak   process RSS   % of limit
+            #   1Gi       OOMKilled    --            --            --
+            #   1152Mi    OOMKilled    --            --            --
+            #   1280Mi    started      1272 MiB      1002 MiB      99%
+            #   1536Mi    started      1269 MiB       993 MiB      82%
+            #   2Gi       started      1269 MiB       994 MiB      61%
+            #   3Gi       started      1270 MiB      1004 MiB      41%
+            #
+            # The peak plateaus at ~1270 MiB from 1280Mi upwards, so that is the real
+            # requirement and everything above it is headroom. 1280Mi "works" at 99% of
+            # the limit, which is not a margin, it is a coincidence waiting to end.
+            #
+            # cgroup peak includes page cache -- most of it is the 470 MB model file
+            # being read -- which is why it sits ~270 MiB above the process RSS. The
+            # limit acts on the cgroup number, so that is the one to size against.
+            requests:
+              cpu: "500m"
+              # The request covers the *startup peak*, not the steady state, because the
+              # peak is during boot: a node packed to requests does not degrade this pod,
+              # it crash-loops it.
+              memory: "1536Mi"
+            limits:
+              # A CPU limit is set deliberately, and it is the one place where this
+              # differs from the Java implementation on purpose rather than by accident.
+              #
+              # Go 1.25+ derives GOMAXPROCS from the cgroup CPU limit. GOMAXPROCS is what
+              # the embedding concurrency bound defaults to, so on this runtime the CPU
+              # limit is not only a throttle -- it also decides how many goroutines may
+              # sit inside a cgo call blocking an OS thread. EMBEDDING_MAX_CONCURRENCY is
+              # set explicitly in the ConfigMap so that coupling cannot bite silently,
+              # but the limit is here so GOMAXPROCS is a number someone chose.
+              cpu: "2"
+              memory: "2Gi"
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # /readyz pings Postgres, so a pod that loses the database drops out of the
+          # Service instead of serving 500s.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # No volumes, and that is worth a sentence because the Java implementation of
+          # this system needs one. There, ONNX Runtime unpacks its native library out of
+          # a jar at runtime and System.load()s it, so the pod needs a writable,
+          # exec-capable /tmp. Here libonnxruntime.so is installed in the image and loaded
+          # by path, the tokenizer is statically linked, and the process writes nothing to
+          # disk -- so a read-only root filesystem needs no exception at all.

@@ -240,5 +240,10 @@ together, which only appears when the model narrates before asking for a tool.
 ## Scope
 
 No authentication, no multi-tenancy, no MCP. No Gemini — three providers, and
-`CHAT_PROVIDER=gemini` fails at startup by name. Do not add Kubernetes manifests; the
-Java repository has them and a duplicate carries no signal.
+`CHAT_PROVIDER=gemini` fails at startup by name.
+
+`k8s/` exists and every number in it was measured on kind by `k8s/kind/verify.sh` before
+being committed — the Java repository's manifests were committed unapplied and two were
+wrong, which is the reason the harness is there. If you change `resources`, re-run the
+sweep; and remember that on Go the CPU limit sets `GOMAXPROCS`, which sets the embedding
+concurrency bound.
