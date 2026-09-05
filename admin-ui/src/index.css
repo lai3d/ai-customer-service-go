@@ -1,0 +1,10 @@
+:root { color-scheme: light }
+body { margin: 0 }
+.turn-reply p { margin: 0 0 8px }
+.turn-reply ul { margin: 0 0 8px; padding-left: 20px }
+.turn-reply > :last-child { margin-bottom: 0 }
+.turn-reply code, .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.turn-question { font-weight: 560; margin: 0 0 8px; white-space: pre-wrap }

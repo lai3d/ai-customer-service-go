@@ -20,7 +20,14 @@ import (
 func TestEveryDocumentedVariableReachesTheContainer(t *testing.T) {
 	root := repoRoot(t)
 	documented := variablesIn(t, filepath.Join(root, ".env.example"))
-	declared := appServiceEnvironment(t, filepath.Join(root, "docker-compose.yml"))
+	compose := filepath.Join(root, "docker-compose.yml")
+	declared := appServiceEnvironment(t, compose)
+	// A second service now reads two of these (the operations UI), and one of them is a
+	// port mapping rather than an environment entry. So the app service's block is the
+	// rule and the rest of the file is the escape hatch -- still "documented implies
+	// wired", which is the guarantee that matters, rather than "documented implies in
+	// this one block".
+	used := interpolatedAnywhere(t, compose)
 
 	// Set by the deployment rather than passed through, and each for a reason:
 	//
@@ -39,9 +46,9 @@ func TestEveryDocumentedVariableReachesTheContainer(t *testing.T) {
 		if forwarded[name] {
 			continue
 		}
-		if !declared[name] {
-			t.Errorf(".env.example documents %s but the app service does not declare it; "+
-				"setting it would silently do nothing", name)
+		if !declared[name] && !used[name] {
+			t.Errorf(".env.example documents %s but nothing in docker-compose.yml reads "+
+				"it; setting it would silently do nothing", name)
 		}
 	}
 	if len(documented) == 0 {
@@ -127,4 +134,19 @@ func repoRoot(t *testing.T) string {
 	}
 	t.Fatal("could not find the repository root")
 	return ""
+}
+
+// interpolatedAnywhere finds every ${VAR} in the compose file, in any service and in any
+// position -- environment, ports, image, build args.
+func interpolatedAnywhere(t *testing.T, path string) map[string]bool {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]bool{}
+	for _, m := range regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*)`).FindAllStringSubmatch(string(raw), -1) {
+		out[m[1]] = true
+	}
+	return out
 }

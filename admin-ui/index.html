@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Operations</title>
+    <!-- Written by the container at start-up from ADMIN_API_BASE, so one built image can
+         be deployed against any environment. A build-time value would mean rebuilding the
+         image to point it somewhere else, which is how a "static" frontend acquires a
+         per-environment build. -->
+    <script src="/config.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,28 @@
+name: Admin UI
+
+on:
+  push:
+    branches: [main]
+    paths: ["admin-ui/**", ".github/workflows/admin-ui.yml"]
+  pull_request:
+    paths: ["admin-ui/**", ".github/workflows/admin-ui.yml"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: admin-ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: admin-ui/package-lock.json
+      - run: npm ci
+      # Typecheck before build: `vite build` transpiles without checking types, so a
+      # green build says nothing about whether the API types still match their uses.
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

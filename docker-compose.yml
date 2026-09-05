@@ -76,5 +76,24 @@ services:
     # killed part-way through the grace period it was given.
     stop_grace_period: 45s
 
+  # The operations UI, on its own origin. `docker compose --profile ops up -d` brings it
+  # up; it is a profile rather than a default service because the surface it talks to is
+  # itself opt-in, and a UI running against an API that has no operators configured is a
+  # sign-in box that can never succeed.
+  admin-ui:
+    profiles: ["ops"]
+    build:
+      context: ./admin-ui
+    image: ai-customer-service-go-admin-ui:local
+    ports:
+      - "${ADMIN_UI_PORT:-8090}:8080"
+    environment:
+      # The browser's view of the API, not the container network's: this value is used by
+      # a script running in someone's browser, so `http://app:8081` would be wrong even
+      # though it is what every other service here would use.
+      ADMIN_API_BASE: ${ADMIN_API_BASE:-http://localhost:8081}
+    depends_on:
+      - app
+
 volumes:
   pgdata:

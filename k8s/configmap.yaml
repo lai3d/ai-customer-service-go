@@ -46,3 +46,10 @@ data:
   # A support question is often the most sensitive thing in a request, and traces are
   # retained and read widely. On only while debugging retrieval.
   TRACE_INCLUDE_QUERY_CONTENT: "false"
+
+  # The origins the operations UI is served from, comma separated and matched whole.
+  # Empty means no CORS at all, which is right only if a reverse proxy puts the UI and
+  # the API on one origin. This must contain the exact value of ADMIN_API_BASE's origin
+  # in the admin-ui ConfigMap, or the browser discards every response and the page shows
+  # a network error with nothing in the server log.
+  ADMIN_CORS_ORIGINS: ""

@@ -1,0 +1,126 @@
+# The operations UI: a static bundle on nginx, its own Deployment and Service.
+#
+# Deliberately separate from the API. The two are different applications on different
+# origins, which is what makes ADMIN_CORS_ORIGINS in the ConfigMap a control rather than
+# a formality -- and it means the UI can be scaled, restarted and rolled back without
+# touching the thing holding the database connections.
+#
+# It carries no secret and reaches no database. Everything it shows arrives in the
+# operator's own browser, authenticated by the operator's own token; a compromised UI pod
+# has nothing to steal that the operator did not already have.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-customer-service-go-admin-ui
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: ai-customer-service-go
+    app.kubernetes.io/component: admin-ui
+data:
+  # The URL a *browser* will call, not a cluster-internal one: this value is read by a
+  # script running on someone's laptop, so a Service DNS name would resolve nowhere.
+  # It must appear verbatim in ADMIN_CORS_ORIGINS on the API side, or the browser refuses
+  # every response.
+  ADMIN_API_BASE: "http://localhost:8081"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-customer-service-go-admin-ui
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: ai-customer-service-go
+    app.kubernetes.io/component: admin-ui
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ai-customer-service-go
+      app.kubernetes.io/component: admin-ui
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ai-customer-service-go
+        app.kubernetes.io/component: admin-ui
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        # The uid in nginxinc/nginx-unprivileged. Asserted here so a rebuild as root is
+        # rejected by the cluster rather than discovered later.
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: admin-ui
+          image: ghcr.io/lai3d/ai-customer-service-go-admin-ui:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: ai-customer-service-go-admin-ui
+          resources:
+            # nginx serving a 1 MB bundle. These are small because the work is small --
+            # and unlike the API, nothing here loads a 470 MB model.
+            requests:
+              cpu: "10m"
+              memory: "24Mi"
+            limits:
+              cpu: "200m"
+              memory: "64Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # nginx writes its pid and temp files, and the start-up script writes
+            # config.js. With a read-only root filesystem each of those needs somewhere
+            # to go; an emptyDir rather than a real volume, because none of it survives
+            # the pod on purpose.
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /var/cache/nginx
+            - name: run
+              mountPath: /var/run
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-customer-service-go-admin-ui
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: ai-customer-service-go
+    app.kubernetes.io/component: admin-ui
+spec:
+  selector:
+    app.kubernetes.io/name: ai-customer-service-go
+    app.kubernetes.io/component: admin-ui
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
