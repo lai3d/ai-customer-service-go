@@ -134,6 +134,11 @@ type fixture struct {
 
 func newFixture(t *testing.T, client *stubClient, budgetLimit int64) *fixture {
 	t.Helper()
+	return newFixtureWithClient(t, client, budgetLimit)
+}
+
+func newFixtureWithClient(t *testing.T, client llm.Client, budgetLimit int64) *fixture {
+	t.Helper()
 	ctx := context.Background()
 
 	vectors := rag.NewStore(pool)
@@ -154,7 +159,8 @@ func newFixture(t *testing.T, client *stubClient, budgetLimit int64) *fixture {
 	tickets := tools.NewSupportTickets(100)
 	budget := cost.NewBudget(budgetLimit, 100)
 	metrics := obs.NewMetrics()
-	f := &fixture{memory: memory, client: client, tickets: tickets,
+	stub, _ := client.(*stubClient)
+	f := &fixture{memory: memory, client: stub, tickets: tickets,
 		budget: budget, metrics: metrics}
 	f.service = chat.NewService(
 		memory,
@@ -624,4 +630,146 @@ func TestASingleModelCallGainsNoParagraphBreak(t *testing.T) {
 	if got := streamed.String(); got != "It is in transit." {
 		t.Errorf("streamed %q, want no leading break when the first call said nothing", got)
 	}
+}
+
+// recordingClient captures what each model call was actually sent.
+type recordingClient struct {
+	mu   sync.Mutex
+	seen []llm.Request
+}
+
+func (c *recordingClient) Provider() string { return "stub" }
+func (c *recordingClient) Model() string    { return "stub-model" }
+func (c *recordingClient) Stream(_ context.Context, req llm.Request, onText func(string) error) (llm.Result, error) {
+	c.mu.Lock()
+	c.seen = append(c.seen, req)
+	n := len(c.seen)
+	c.mu.Unlock()
+	text := fmt.Sprintf("answer %d", n)
+	if err := onText(text); err != nil {
+		return llm.Result{}, err
+	}
+	return llm.Result{Text: text, StopReason: "end_turn",
+		Usage: llm.Usage{InputTokens: 10, OutputTokens: 5}}, nil
+}
+
+func (c *recordingClient) requests() []llm.Request {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]llm.Request(nil), c.seen...)
+}
+
+// Two overlapping requests on one conversation -- two browser tabs is enough -- used to
+// interleave, because a turn wrote the user message, retrieved, and only then read
+// history. The second request's user message and reply landed in that gap, so the first
+// sent the model a conversation ending in somebody else's answer; and since passages are
+// attached only to a trailing user message, its retrieved material was silently dropped
+// at the same time.
+//
+// Found by an external review, not by this suite. Before the fix the second model call
+// arrived with a trailing `role=assistant "answer 1"`.
+func TestOverlappingTurnsOnOneConversationDoNotInterleave(t *testing.T) {
+	client := &recordingClient{}
+	f := newFixtureWithClient(t, client, 0)
+	ctx := context.Background()
+
+	// A pauses at its retrieval event, which happens before it reads history.
+	aInside := make(chan struct{})
+	bMayFinish := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = f.service.Turn(ctx, "shared", "question A", func(e chat.Event) {
+			if e.Type == chat.EventRetrieval {
+				close(aInside)
+				<-bMayFinish
+			}
+		})
+	}()
+
+	// Only start B once A is demonstrably inside its turn, or B may simply win the
+	// race to the lock and the test proves nothing.
+	<-aInside
+
+	// B must now wait on the conversation lock instead of running through A's middle.
+	bFinished := make(chan struct{})
+	go func() {
+		defer close(bFinished)
+		_ = f.service.Turn(ctx, "shared", "question B", func(chat.Event) {})
+	}()
+
+	select {
+	case <-bFinished:
+		t.Fatal("B completed while A held the conversation; the turns interleaved")
+	case <-time.After(250 * time.Millisecond):
+	}
+	close(bMayFinish)
+	wg.Wait()
+	<-bFinished
+
+	for i, req := range client.requests() {
+		last := req.Messages[len(req.Messages)-1]
+		if last.Role != llm.RoleUser {
+			t.Errorf("model call %d ends with a %s message (%q); a turn must send the "+
+				"model its own question last", i+1, last.Role, last.Text)
+		}
+		if !strings.Contains(last.Text, "Reference material") {
+			t.Errorf("model call %d carries no retrieved passages: %q", i+1, last.Text)
+		}
+	}
+}
+
+// The lock table is keyed by conversation id, so it has to empty out. A map that only
+// grows is the memory leak this codebase avoids everywhere else.
+func TestTheConversationLockTableEmpties(t *testing.T) {
+	client := &recordingClient{}
+	f := newFixtureWithClient(t, client, 0)
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_ = f.service.Turn(ctx, fmt.Sprintf("conversation-%d", i), "hello", func(chat.Event) {})
+		}(i)
+	}
+	wg.Wait()
+
+	if n := chat.InFlightConversations(f.service); n != 0 {
+		t.Errorf("%d conversations still hold a lock after every turn finished", n)
+	}
+}
+
+// A caller whose client has already gone should not queue behind a turn it will never
+// see the result of.
+func TestAWaitingTurnGivesUpWhenItsRequestIsCancelled(t *testing.T) {
+	client := &recordingClient{}
+	f := newFixtureWithClient(t, client, 0)
+
+	holding := make(chan struct{})
+	released := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = f.service.Turn(context.Background(), "shared", "first", func(e chat.Event) {
+			if e.Type == chat.EventRetrieval {
+				close(holding)
+				<-released
+			}
+		})
+	}()
+	<-holding
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := f.service.Turn(ctx, "shared", "second", func(chat.Event) {})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("a cancelled request waiting for the lock returned %v, want context.Canceled", err)
+	}
+
+	close(released)
+	wg.Wait()
 }

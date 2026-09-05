@@ -257,21 +257,35 @@ form.addEventListener('submit', async (e) => {
       const frames = buffer.split('\n\n');
       buffer = frames.pop();
       for (const frame of frames) {
+        // Dispatch on the SSE `event:` field, not on a field of the payload.
+        //
+        // The payloads are different shapes: chat events carry a `type`, but a failure
+        // after the response was committed carries a problem+json object whose `type` is
+        // a URI (empty here) and never the string "error". Switching on the payload
+        // meant every post-commit failure -- budget exhausted, provider error, retrieval
+        // failure -- was silently dropped, and the customer saw a partial answer or a
+        // blank one with no indication anything had gone wrong. Found by an external
+        // review; the server had been emitting the frame correctly all along.
+        const lines = frame.split('\n');
+        const nameLine = lines.find(l => l.startsWith('event: '));
+        const dataLine = lines.find(l => l.startsWith('data: '));
         // Comment-only frames are the keep-alive: SSE connections are idle between the
         // request and the first token, and proxies close idle connections.
-        const dataLine = frame.split('\n').find(l => l.startsWith('data: '));
-        if (!dataLine) continue;
-        const event = JSON.parse(dataLine.slice(6));
-        if (event.type === 'message') {
-          answer += event.text;
+        if (!nameLine || !dataLine) continue;
+        const name = nameLine.slice(7).trim();
+        const payload = JSON.parse(dataLine.slice(6));
+
+        if (name === 'message') {
+          answer += payload.text;
           renderMarkdown(bubble, answer);
           log.scrollTop = log.scrollHeight;
         }
-        else if (event.type === 'retrieval') renderRetrieval(event.passages || []);
-        else if (event.type === 'tool') renderTool(event.tool);
-        else if (event.type === 'usage') renderUsage(event.usage);
-        else if (event.type === 'error') {
-          log.append(el('div', 'msg err', `${event.title || 'Error'}: ${event.detail || ''}`));
+        else if (name === 'retrieval') renderRetrieval(payload.passages || []);
+        else if (name === 'tool') renderTool(payload.tool);
+        else if (name === 'usage') renderUsage(payload.usage);
+        else if (name === 'error') {
+          const detail = payload.detail ? `：${payload.detail}` : '';
+          log.append(el('div', 'msg err', `${payload.title || 'Error'}${detail}`));
         }
       }
     }

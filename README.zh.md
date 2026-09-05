@@ -36,6 +36,8 @@ SSE 流式输出、按会话计的 token 预算、Prometheus 指标和 OpenTelem
 | 被放弃的流其实早已计费；而本该抓到它的测试之所以能通过，是因为它测的是 stub | [成本与失败](docs/reliability.md#an-abandoned-stream-has-usually-already-been-billed) |
 | 客户原话没进 span，但模型编造的工具名进了 —— span 名同样是聚合维度 | [可观测性](docs/observability.md#attributes-are-not-the-only-way-into-a-backend) |
 | 页面把模型的 markdown 当字面星号显示，只有真实浏览器发现了 | [演示界面](docs/demo-ui.md#it-renders-the-models-markdown-in-a-deliberately-small-subset) |
+| 同一会话开两个标签页会交错，第二个请求的检索段落被静默丢弃 | [成本与失败](docs/reliability.md#one-turn-at-a-time-per-conversation) |
+| 服务端每个失败都正确发出了，而我们自己发布的客户端全部丢弃 | [演示界面](docs/demo-ui.md#the-page-dispatches-on-the-event-name) |
 
 ---
 

@@ -79,6 +79,11 @@ func (c *openAIProtocol) Stream(ctx context.Context, req Request, onText func(st
 	}
 
 	stream := c.client.Chat.Completions.NewStreaming(ctx, params)
+	// Closed on every path, including the early returns below. The SDK does not close
+	// the response body when a stream ends in an error, so without this the upstream
+	// connection is held until the parent context is cancelled or the provider hangs up
+	// -- which usually happens, and is not the same as being released deterministically.
+	defer stream.Close()
 	accumulator := openai.ChatCompletionAccumulator{}
 
 	// Counted so the wire's behaviour is observable rather than assumed: on this

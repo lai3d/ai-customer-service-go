@@ -22,10 +22,18 @@ func TestEveryDocumentedVariableReachesTheContainer(t *testing.T) {
 	documented := variablesIn(t, filepath.Join(root, ".env.example"))
 	declared := appServiceEnvironment(t, filepath.Join(root, "docker-compose.yml"))
 
-	// Postgres connection details are set by the compose file itself to the service
-	// name rather than passed through, so a value meant for a host-side run does not
-	// point the container at itself.
-	forwarded := map[string]bool{"POSTGRES_HOST": true, "POSTGRES_PORT": true}
+	// Set by the deployment rather than passed through, and each for a reason:
+	//
+	//   POSTGRES_HOST/PORT  the compose file points the app at the service name, so a
+	//                       value meant for a host-side run does not send the container
+	//                       looking for a database on itself.
+	//   HTTP_ADDR           the image fixes it at :8081 and the compose file publishes
+	//                       8081:8081. Passing it through would let .env move the
+	//                       listener out from under the port mapping. It is documented
+	//                       because it matters for `make run` from source.
+	forwarded := map[string]bool{
+		"POSTGRES_HOST": true, "POSTGRES_PORT": true, "HTTP_ADDR": true,
+	}
 
 	for _, name := range documented {
 		if forwarded[name] {

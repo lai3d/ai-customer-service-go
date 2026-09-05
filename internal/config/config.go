@@ -7,6 +7,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -36,9 +38,22 @@ type Postgres struct {
 	MaxConns int32
 }
 
+// URL builds the DSN through net/url rather than by formatting a string.
+//
+// A password containing any of / ? # @ : -- all of which are legal in a Postgres
+// password and common in generated ones -- turns a formatted DSN into a different URL, or
+// into one that will not parse at all: `test/a#b%` fails with "invalid port after host"
+// before a connection is ever attempted. url.UserPassword escapes the userinfo, and the
+// database name goes in as a path segment rather than as text.
 func (p Postgres) URL() string {
-	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
-		p.User, p.Password, p.Host, p.Port, p.Database)
+	u := &url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(p.User, p.Password),
+		Host:     net.JoinHostPort(p.Host, strconv.Itoa(p.Port)),
+		Path:     "/" + p.Database,
+		RawQuery: url.Values{"sslmode": {"disable"}}.Encode(),
+	}
+	return u.String()
 }
 
 type Chat struct {
@@ -133,7 +148,11 @@ type Obs struct {
 
 func Load() (Config, error) {
 	c := Config{
-		HTTPAddr:        env("HTTP_ADDR", ":8080"),
+		// 8081, not 8080. The Java implementation of this system uses 8080, both stacks
+		// are expected to run on one machine, and every document here -- README, the
+		// container, the healthcheck -- says 8081. The source default said 8080 and
+		// only the Dockerfile's explicit override hid it.
+		HTTPAddr:        env("HTTP_ADDR", ":8081"),
 		ShutdownTimeout: envDuration("SHUTDOWN_GRACE", 30*time.Second),
 		Postgres: Postgres{
 			Host:     env("POSTGRES_HOST", "localhost"),

@@ -8,15 +8,18 @@ services:
     image: pgvector/pgvector:pg17
     container_name: csagent-go-postgres
     environment:
-      POSTGRES_DB: csagent
-      POSTGRES_USER: csagent
-      POSTGRES_PASSWORD: csagent
+      # The same variables the app service reads. Hardcoding them here while the app
+      # took overrides meant changing a documented value in .env initialised the
+      # database with one set of credentials and pointed the app at another.
+      POSTGRES_DB: ${POSTGRES_DB:-csagent}
+      POSTGRES_USER: ${POSTGRES_USER:-csagent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-csagent}
     ports:
       - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U csagent -d csagent"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-csagent} -d $${POSTGRES_DB:-csagent}"]
       interval: 5s
       timeout: 5s
       retries: 20

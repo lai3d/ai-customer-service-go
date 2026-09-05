@@ -181,3 +181,19 @@ func TestTheOpenAIProtocolHasNoUsageToKeepWhenAStreamIsAbandoned(t *testing.T) {
 			"on the first chunk and survives an abort", result.Model)
 	}
 }
+
+// There is deliberately no test for `defer stream.Close()`.
+//
+// The clients close the stream on every path, which is correct resource discipline: the
+// SDK does not close the response body when a stream ends in an error. But two attempts
+// at a test for it both passed against the *unfixed* code, because what released the
+// response was the request timeout, not the close -- the first version measured a 5s
+// timeout and the second a 60s one, and neither distinguished the fix from its absence.
+//
+// A test that passes either way is the exact failure this repository keeps finding, so it
+// was deleted rather than kept for the look of it. The close stays on the strength of the
+// argument; it is not evidence-backed, and saying so is better than a green assertion
+// that means nothing. Demonstrating it would need the connection pool constrained to one
+// connection and a second request proving the first was released, which needs an http
+// client injected through llm.Options -- worth doing if this ever matters more than it
+// does now.

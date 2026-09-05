@@ -47,6 +47,36 @@ differ from the Java one — and prompt parity is part of what makes the two com
 all. The gap was in a demo page, so the fix is in the demo page. (The Java implementation's
 page has the same gap: its `bubble()` assigns `textContent` too.)
 
+### The page dispatches on the event name
+
+An external review found that it did not, and the consequence was the worst kind: the
+server emitted every failure correctly, a test asserted that it did, and the page threw
+them all away.
+
+Chat events carry a `type` field. A failure after the response has been committed carries
+a problem+json object, whose `type` is a URI — empty here — and never the string
+`"error"`. The page switched on `event.type`, so `retrieval`, `tool`, `message` and
+`usage` worked and `error` never matched anything. A customer who exhausted the
+conversation budget, or whose provider failed mid-answer, saw a partial reply or a blank
+one with nothing to indicate that anything had gone wrong.
+
+```
+event: error
+data: {"type":"","title":"Conversation budget reached","status":429,"detail":"…"}
+                ↑ not "error"; the page was looking here
+```
+
+It dispatches on the `event:` field now, and the payload is parsed according to which
+event it is. Two tests: the page must read the event name and must not switch on a payload
+field, and the server's error frame must be named *and* must not carry a `type` that
+happens to say `"error"` — which would let the wrong implementation appear to work.
+
+**Why no test caught it.** `TestAFailureAfterTheFirstTokenArrivesAsAnErrorEvent` asserts
+that the server emits `event: error`. It passed, because it was true. The page was never
+in the loop, and the browser verification that found the markdown bug used a turn that
+succeeded. A test one layer above where the claim lives — the fourth instance of that
+shape in this repository, and the second found by someone else.
+
 ### Two model calls are two messages
 
 A tool-calling turn makes two model calls, and if the model says something before asking

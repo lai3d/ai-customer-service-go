@@ -173,6 +173,31 @@ A retrieval outage showed up as **silence** in `chat_turns_total` rather than as
 in failures — the wrong direction for the first metric anyone reaches for. It is now
 installed before anything can fail.
 
+### One turn at a time, per conversation
+
+A turn writes the customer's message, retrieves, reads history, calls the model and writes
+a reply. Those steps are only coherent together, and until an external review pointed it
+out nothing serialised them.
+
+Two overlapping requests on one conversation — two browser tabs is enough — interleaved:
+the second one's user message and assistant reply landed between the first one's write and
+its history read, so the first sent the model a conversation ending in *somebody else's
+answer*. And because passages are attached only to a trailing user message, the first
+request's retrieved material was dropped at the same moment. Reproduced with the model
+call held open: the second call arrived with a trailing `role=assistant "answer 1"` and no
+reference material at all.
+
+Turns are now serialised per conversation, which also makes the budget check atomic with
+the spend it authorises. Different conversations still run concurrently — the benchmark's
+thousand requests each use a fresh conversation and are unaffected. The lock is a channel
+rather than a mutex so a caller whose client has already gone stops waiting instead of
+holding a place in the queue, and the table is reference-counted so it is bounded by
+requests *in flight* rather than by conversations ever seen.
+
+**Single process only.** Two replicas mean two lock tables, and a conversation
+load-balanced across both can still interleave — the same honest limit as the ticket cap.
+Postgres advisory locks on the conversation id would be the real thing.
+
 ### Failures a client can act on
 
 | Failure | Response |
@@ -185,6 +210,12 @@ installed before anything can fail.
 
 The provider's own error text never reaches the client, and a test asserts it. Internal
 detail is logged; the response says what to do about it.
+
+Until an external review, the last row was true of the server and false of the only client
+this repository ships: the page switched on a field of the payload rather
+than on the SSE event name, so every post-commit failure was silently dropped. The server
+was emitting the frame correctly the whole time and a test asserted that it did. See
+[the demo UI](demo-ui.md#the-page-dispatches-on-the-event-name).
 
 ### Deploys do not cut answers in half
 

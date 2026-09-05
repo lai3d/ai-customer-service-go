@@ -57,6 +57,7 @@ type Service struct {
 	budget    *cost.Budget
 	metrics   *obs.Metrics
 	maxTokens int
+	locks     *conversationLocks
 }
 
 func NewService(memory *Memory, retriever *rag.Retriever, client llm.Client,
@@ -81,6 +82,7 @@ func NewService(memory *Memory, retriever *rag.Retriever, client llm.Client,
 		memory: memory, retriever: retriever, client: client,
 		tools: byName, toolDefs: defs,
 		budget: budget, metrics: metrics, maxTokens: maxTokens,
+		locks: newConversationLocks(),
 	}
 }
 
@@ -104,6 +106,16 @@ func (s *Service) Turn(ctx context.Context, conversationID, message string, emit
 	ctx, span := obs.Tracer().Start(ctx, "chat turn")
 	defer span.End()
 	span.SetAttributes(attribute.String("conversation.id", conversationID))
+
+	// One turn at a time per conversation. Everything below reads and writes the same
+	// history, and the budget check only means anything if it is atomic with the spend
+	// it authorises. Different conversations still run concurrently -- the benchmark's
+	// thousand requests use a fresh conversation each and are unaffected.
+	release, err := s.locks.acquire(ctx, conversationID)
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	var reply strings.Builder
 	var usage llm.Usage

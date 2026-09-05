@@ -135,6 +135,15 @@ that show why it is not needed here.
   result from whatever accumulated and return it alongside the error. The contract is
   asserted in `internal/llm/stream_test.go` against an `httptest` provider, not in a
   stub — a stub can satisfy any contract, which is how this shipped in the first place.
+- **A turn holds a per-conversation lock for its whole length** (`internal/chat/serialize.go`).
+  History read, model call, budget record and reply persistence are only coherent together;
+  without it two browser tabs on one conversation interleave and the second request loses
+  its retrieved passages silently. Do not move work outside the lock without checking what
+  it reads.
+- **The demo page dispatches on the SSE `event:` name, never on a payload field.** Chat
+  events carry a `type`; a post-commit failure carries problem+json whose `type` is a URI.
+  Switching on the payload silently drops every error, and the server-side test still
+  passes.
 - **The ticket table and the budget table are both bounded LRUs.** A map keyed by
   conversation id that nothing removes from is a memory leak with a long fuse.
 - **`README.md` and `README.zh.md` are a pair.** Adding, removing or moving a section in

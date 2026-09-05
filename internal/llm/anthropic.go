@@ -73,6 +73,11 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, onText func(string)
 	}
 
 	stream := a.client.Messages.NewStreaming(ctx, params)
+	// Closed on every path, including the early returns below. The SDK does not close
+	// the response body when a stream ends in an error, so without this the upstream
+	// connection is held until the parent context is cancelled or the provider hangs up
+	// -- which usually happens, and is not the same as being released deterministically.
+	defer stream.Close()
 	message := anthropic.Message{}
 
 	// Counted so the wire's behaviour is a measurement rather than a belief: Anthropic

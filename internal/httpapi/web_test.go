@@ -1,6 +1,8 @@
 package httpapi_test
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lai3d/ai-customer-service-go/internal/chat"
+	"github.com/lai3d/ai-customer-service-go/internal/cost"
 	"github.com/lai3d/ai-customer-service-go/internal/httpapi"
 )
 
@@ -92,5 +96,79 @@ func TestTheFaviconIsInlineSoTheBrowserAsksForNothing(t *testing.T) {
 	page := demoPage(t)
 	if !strings.Contains(page, `rel="icon" href="data:image/svg+xml`) {
 		t.Error("no inline favicon; the browser will request /favicon.ico and get a 404")
+	}
+}
+
+// The page must dispatch on the SSE `event:` field, not on a field of the payload.
+//
+// Chat events carry a `type`; a failure after the response was committed carries a
+// problem+json object whose `type` is a URI and never the string "error". Switching on
+// the payload meant every post-commit failure -- budget exhausted, provider error,
+// retrieval failure -- was silently dropped and the customer saw a partial answer or a
+// blank one. The server had been emitting the frame correctly the whole time, and
+// TestAFailureAfterTheFirstTokenArrivesAsAnErrorEvent passed, because it asserted on the
+// server and the page was never in the loop.
+func TestTheDemoPageDispatchesOnTheEventName(t *testing.T) {
+	page := demoPage(t)
+
+	if !strings.Contains(page, "startsWith('event: ')") {
+		t.Error("the page does not read the SSE event name")
+	}
+	if regexp.MustCompile(`\bevent\.type\s*===`).MatchString(page) {
+		t.Error("the page still switches on a field of the payload; a problem+json " +
+			"error object has no chat event type in it")
+	}
+	for _, name := range []string{"'message'", "'retrieval'", "'tool'", "'usage'", "'error'"} {
+		if !strings.Contains(page, "name === "+name) {
+			t.Errorf("the page has no branch for the %s event", name)
+		}
+	}
+}
+
+// The server contract the page now relies on: an error frame is named, and its payload is
+// a problem object rather than something carrying a chat event type.
+func TestTheErrorFrameIsNamedAndCarriesAProblem(t *testing.T) {
+	server := serve(t, &fakeTurner{
+		events: []chat.Event{{Type: chat.EventMessage, Text: "Thirty "}},
+		err:    &cost.ErrExceeded{Spent: 10, Limit: 5},
+	})
+	resp, err := http.Post(server.URL+"/api/v1/chat/stream", "application/json",
+		strings.NewReader(`{"message":"hello"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	frames := strings.Split(string(body), "\n\n")
+	var errorFrame string
+	for _, f := range frames {
+		if strings.HasPrefix(f, "event: error") {
+			errorFrame = f
+		}
+	}
+	if errorFrame == "" {
+		t.Fatalf("no named error frame in:\n%s", body)
+	}
+
+	_, data, _ := strings.Cut(errorFrame, "data: ")
+	var payload struct {
+		Type   string `json:"type"`
+		Title  string `json:"title"`
+		Status int    `json:"status"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal([]byte(data), &payload); err != nil {
+		t.Fatalf("the error payload is not JSON: %v", err)
+	}
+	if payload.Title == "" || payload.Status == 0 {
+		t.Errorf("the error payload has nothing to show a customer: %+v", payload)
+	}
+	if payload.Type == "error" {
+		t.Error("the payload's type happens to say \"error\", which would let a page " +
+			"switch on the wrong field and appear to work")
 	}
 }
