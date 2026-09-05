@@ -54,15 +54,20 @@ type Turner interface {
 type Server struct {
 	chat Turner
 	cfg  config.Chat
+	// identity is nil when AUTH_MODE=off. See internal/httpapi/identity.go.
+	identity *Identity
 }
 
-func NewServer(service Turner, cfg config.Chat) *Server {
-	return &Server{chat: service, cfg: cfg}
+func NewServer(service Turner, cfg config.Chat, ident *Identity) *Server {
+	return &Server{chat: service, cfg: cfg, identity: ident}
 }
 
 func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/chat", s.handleChat)
 	mux.HandleFunc("POST /api/v1/chat/stream", s.handleStream)
+	// Registered in both modes so that a client running against AUTH_MODE=off gets a
+	// problem document saying sessions are disabled, rather than a 404 it has to guess at.
+	mux.HandleFunc("POST /api/v1/session", s.handleSession)
 }
 
 // validate rejects what should never reach a model call. Both limits cost nothing to
@@ -114,7 +119,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, p)
 		return
 	}
-	id := conversationID(req.ConversationID)
+	subject, p := s.resolve(r)
+	if p != nil {
+		writeProblem(w, p)
+		return
+	}
+	id, p := s.conversationFor(r.Context(), req.ConversationID, subject)
+	if p != nil {
+		writeProblem(w, p)
+		return
+	}
 	w.Header().Set(ConversationIDHeader, id)
 
 	reply := Reply{ConversationID: id}

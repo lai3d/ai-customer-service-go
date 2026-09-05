@@ -63,6 +63,8 @@ services:
       CONVERSATION_TOKEN_BUDGET: ${CONVERSATION_TOKEN_BUDGET:-200000}
       # Unset by default, which means the operations surface is not mounted. See
       # .env.example for why it is opt-in rather than opt-out.
+      AUTH_MODE: ${AUTH_MODE:-off}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-24}
       ADMIN_TOKENS: ${ADMIN_TOKENS:-}
       ADMIN_CORS_ORIGINS: ${ADMIN_CORS_ORIGINS:-}
       EMBEDDING_MAX_CONCURRENCY: ${EMBEDDING_MAX_CONCURRENCY:-0}

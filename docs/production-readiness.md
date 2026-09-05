@@ -31,7 +31,7 @@ What is missing is almost entirely product, not scaffolding.
 
 | # | Item | Blocks | Scope | Status | Estimate |
 | --- | --- | --- | --- | --- | --- |
-| 1 | [Identity, session ownership, rate limiting, global budget](#1-anyone-can-read-anyone-elses-conversation) | launch | both | not started | 3–4 h |
+| 1 | [Identity, session ownership, rate limiting, global budget](#1-anyone-can-read-anyone-elses-conversation) | launch | both | **ownership done**, limits next | 3–4 h |
 | 2 | [Knowledge as a knowledge base, not a fixture](#2-the-corpus-is-a-test-fixture) | launch | both | not started | 4–6 h |
 | 3 | [The loop back to a human](#3-a-ticket-is-a-row-and-nothing-else-happens) | launch | both | not started | 3–5 h |
 | 4 | [Real tools instead of the mock](#4-the-tools-are-fiction) | week 1 | both | not started | 2–3 h |

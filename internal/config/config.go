@@ -25,6 +25,7 @@ type Config struct {
 	Cost     Cost
 	Obs      Obs
 	Admin    Admin
+	Auth     Auth
 }
 
 type Postgres struct {
@@ -149,6 +150,16 @@ type Admin struct {
 	CORSOrigins string
 }
 
+// Auth configures who may talk to the chat endpoints. See internal/identity.
+type Auth struct {
+	// Mode is "off" or "session". Off keeps the pre-identity behaviour -- client-supplied
+	// conversation ids and no ownership -- which the benchmark and the cross-repository
+	// comparison depend on, and which is not a production configuration.
+	Mode string
+	// SessionTTL is how long an issued session stays valid.
+	SessionTTL time.Duration
+}
+
 type Obs struct {
 	OTLPEndpoint  string
 	OTLPEnabled   bool
@@ -215,6 +226,13 @@ func Load() (Config, error) {
 			// and localhost is not assumed.
 			CORSOrigins: os.Getenv("ADMIN_CORS_ORIGINS"),
 		},
+		Auth: Auth{
+			// Deliberately off by default: turning identity on changes what the
+			// benchmark measures, and a default that silently changes a measurement is
+			// worse than one that has to be chosen.
+			Mode:       env("AUTH_MODE", "off"),
+			SessionTTL: time.Duration(envInt("SESSION_TTL_HOURS", 24)) * time.Hour,
+		},
 		Obs: Obs{
 			OTLPEndpoint:        env("OTLP_TRACING_ENDPOINT", "http://localhost:4318"),
 			OTLPEnabled:         envBool("OTLP_TRACING_EXPORT_ENABLED", false),
@@ -238,7 +256,31 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("chat provider %q selected but %s is not set",
 			c.Chat.Provider, provider.keyVar)
 	}
+
+	// A non-positive heartbeat panics time.NewTicker inside the SSE handler, so it takes
+	// down a connection mid-response for every streamed turn rather than failing here
+	// once with the name of the variable that is wrong.
+	if c.Chat.KeepAliveInterval <= 0 {
+		return Config{}, fmt.Errorf("SSE_KEEPALIVE must be positive, got %s",
+			c.Chat.KeepAliveInterval)
+	}
+	if _, err := identityMode(c.Auth.Mode); err != nil {
+		return Config{}, err
+	}
 	return c, nil
+}
+
+// identityMode duplicates the parse in internal/identity so that a misspelt AUTH_MODE
+// fails at start-up with the rest of the configuration rather than several lines later.
+func identityMode(mode string) (string, error) {
+	switch strings.TrimSpace(mode) {
+	case "", "off":
+		return "off", nil
+	case "session":
+		return "session", nil
+	default:
+		return "", fmt.Errorf("AUTH_MODE %q is not off or session", mode)
+	}
 }
 
 type providerDefaults struct {

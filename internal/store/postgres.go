@@ -100,6 +100,33 @@ CREATE INDEX IF NOT EXISTS ticket_event_ticket_idx ON ticket_event (ticket_numbe
 -- One row per customer turn, written at the service boundary rather than from the
 -- event stream that feeds the browser -- so a turn whose client disconnected still has
 -- a terminal outcome recorded.
+-- A session is anonymous: it says two customers are different people, not who they are.
+-- The token is stored as a hash, so a database dump does not hand its reader a working
+-- session for every customer in it.
+CREATE TABLE IF NOT EXISTS chat_session (
+    token_hash   BYTEA       NOT NULL PRIMARY KEY,
+    subject      TEXT        NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL,
+    last_seen_at TIMESTAMPTZ NOT NULL,
+    expires_at   TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS chat_session_expiry_idx ON chat_session (expires_at);
+
+-- Which subject a conversation belongs to. Without this the conversation id was the whole
+-- of the authorisation: anyone who knew one could append to that history and have the
+-- model answer with its context.
+--
+-- The row outlives the session deliberately. A customer coming back tomorrow is a new
+-- session and cannot resume the conversation, which is the correct trade for a service
+-- that has no idea who they are -- but the operations surface must still be able to read
+-- what was said, and a dangling owner row is how it stays attributable.
+CREATE TABLE IF NOT EXISTS conversation_owner (
+    conversation_id VARCHAR(64) NOT NULL PRIMARY KEY,
+    subject         TEXT        NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS conversation_owner_subject_idx ON conversation_owner (subject);
+
 CREATE TABLE IF NOT EXISTS turn (
     id              TEXT        NOT NULL PRIMARY KEY,
     conversation_id VARCHAR(64) NOT NULL,

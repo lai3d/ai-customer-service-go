@@ -98,6 +98,25 @@ const input = document.getElementById('input');
 const send = document.getElementById('send');
 let conversationId = null;
 
+// The session, when the service is running with AUTH_MODE=session.
+//
+// Kept in memory rather than in sessionStorage: this page is a demonstration, a reload is
+// supposed to start a fresh conversation, and a credential that outlives the page is a
+// thing to explain rather than a convenience. In a real product the host page holds it.
+//
+// With AUTH_MODE=off the endpoint answers 404 and everything below carries on unchanged,
+// which is what keeps the benchmark and the cross-repository comparison driving the same
+// requests they always did.
+let sessionToken = null;
+
+async function ensureSession() {
+  if (sessionToken) return;
+  const res = await fetch('/api/v1/session', {method: 'POST'});
+  if (res.status === 404) return;           // sessions are not enabled
+  if (!res.ok) throw new Error('could not start a session: HTTP ' + res.status);
+  sessionToken = (await res.json()).token;
+}
+
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -233,9 +252,13 @@ form.addEventListener('submit', async (e) => {
   let answer = '';
 
   try {
+    await ensureSession();
     const res = await fetch('/api/v1/chat/stream', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {
+        'Content-Type': 'application/json',
+        ...(sessionToken ? {'Authorization': 'Bearer ' + sessionToken} : {}),
+      },
       body: JSON.stringify({conversationId, message}),
     });
     conversationId = res.headers.get('X-Conversation-Id') || conversationId;

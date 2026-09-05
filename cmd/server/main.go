@@ -17,6 +17,7 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/config"
 	"github.com/lai3d/ai-customer-service-go/internal/cost"
 	"github.com/lai3d/ai-customer-service-go/internal/httpapi"
+	"github.com/lai3d/ai-customer-service-go/internal/identity"
 	"github.com/lai3d/ai-customer-service-go/internal/llm"
 	"github.com/lai3d/ai-customer-service-go/internal/obs"
 	"github.com/lai3d/ai-customer-service-go/internal/rag"
@@ -149,8 +150,31 @@ func run() error {
 		tools.NewSupportTickets(tickets),
 	)
 
+	// Who may talk to the chat endpoints, and whose conversation is whose.
+	//
+	// AUTH_MODE=off is the pre-identity behaviour: client-supplied conversation ids, no
+	// ownership, anyone who knows an id can append to that history. It is what the
+	// benchmark and the cross-repository comparison drive, and it is not a production
+	// configuration -- so it says so at every start-up rather than in a document.
+	mode, err := identity.ParseMode(cfg.Auth.Mode)
+	if err != nil {
+		return err
+	}
+	var ident *httpapi.Identity
+	if mode == identity.ModeSession {
+		ident = &httpapi.Identity{
+			Sessions:      identity.NewSessions(pool, cfg.Auth.SessionTTL),
+			Conversations: identity.NewConversations(pool),
+		}
+		slog.Info("chat sessions are required", "session_ttl", cfg.Auth.SessionTTL)
+	} else {
+		slog.Warn("AUTH_MODE=off: the chat endpoints are unauthenticated and a conversation " +
+			"id is the whole of the authorisation. Anyone who knows one can append to that " +
+			"history. Use AUTH_MODE=session outside a benchmark or a demo.")
+	}
+
 	mux := http.NewServeMux()
-	httpapi.NewServer(service, cfg.Chat).Routes(mux)
+	httpapi.NewServer(service, cfg.Chat, ident).Routes(mux)
 
 	// The operations surface, or nothing at all.
 	//

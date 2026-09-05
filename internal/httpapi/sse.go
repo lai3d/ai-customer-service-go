@@ -29,7 +29,20 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, p)
 		return
 	}
-	id := conversationID(req.ConversationID)
+	// Both of these must happen before a single byte of the stream is written. Once the
+	// 200 and the event-stream headers are out, an authorisation failure can only be
+	// reported as an error *event*, which a client is far more likely to render as a
+	// chat message than as a refusal.
+	subject, p := s.resolve(r)
+	if p != nil {
+		writeProblem(w, p)
+		return
+	}
+	id, p := s.conversationFor(r.Context(), req.ConversationID, subject)
+	if p != nil {
+		writeProblem(w, p)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -63,7 +76,16 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	// SSE connections are legitimately idle between the request and the first token --
 	// retrieval plus a slow model is several seconds -- and proxies close idle
 	// connections. A comment-only frame is invisible to any correct client.
-	heartbeat := time.NewTicker(s.cfg.KeepAliveInterval)
+	// Clamped rather than trusted. time.NewTicker panics on a non-positive interval, and
+	// a panic in a handler takes the connection down mid-response and logs a stack trace
+	// where a wrong heartbeat would have logged nothing -- a much worse failure than the
+	// misconfiguration it reports. Config.Load refuses the value too, so this is the
+	// second line of defence for a Server built by something other than main.
+	interval := s.cfg.KeepAliveInterval
+	if interval <= 0 {
+		interval = defaultKeepAlive
+	}
+	heartbeat := time.NewTicker(interval)
 	defer heartbeat.Stop()
 
 	for {
@@ -89,6 +111,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
+const defaultKeepAlive = 15 * time.Second
 
 type sseEvent struct {
 	name    string
