@@ -186,6 +186,11 @@ that show why it is not needed here.
   *other* session's service — which is how a readiness check came back 200 for a process
   that was not running. `lsof -nP -iTCP:<port> -sTCP:LISTEN` first, and confirm the pid is
   still alive rather than only that something answers.
+- **Measure a filtered vector search with `EXPLAIN (ANALYZE)` and read `Rows Removed by
+  Filter`, not the row count.** An HNSW scan spends candidates on rows the filter rejects;
+  eight results say nothing about how close the scan came to running out, and the number of
+  rejected rows is the margin. Two separate sessions reached wrong conclusions here by
+  reading the result count — one because the planner had quietly chosen a sequential scan.
 - **A pgvector GUC does not exist until the extension's library is loaded in that session.**
   `SHOW hnsw.iterative_scan` in a fresh psql session fails with *unrecognized configuration
   parameter*, which reads exactly like "this version does not have it" -- and that wrong

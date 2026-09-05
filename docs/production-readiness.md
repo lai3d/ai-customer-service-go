@@ -164,13 +164,29 @@ session. `strict_order` and `relaxed_order` both exist and the Java side measure
 
 **It is not being set here, and the reason is a measurement rather than an oversight.**
 `Store.Search` post-filters by language, which is the same mechanism, so this repository has
-the shape. At the size the corpus actually is it cannot bite: 4,000 rows with 5% matching,
-`EXPLAIN` confirming an HNSW index scan with `Filter: language = 'zh'`, returned 8 of 8 with
-`iterative_scan` off. A setting with no case that needs it is the kind of configuration this
-repository does not add. **It becomes required with this item**, because versioning is
-another post-filter over a much larger table, and it should be set on every pooled connection
-at the same time as the versioning lands — not before, and not without a test that goes red
-without it.
+the shape. At 4,000 rows with 5% matching, `EXPLAIN (ANALYZE)` confirming
+`Index Scan using ..._embedding_idx` with `Filter: (language = 'zh')`:
+
+```
+Limit (actual rows=8)
+  ->  Index Scan using lang_probe_embedding_idx (actual rows=8)
+        Filter: (language = 'zh'::text)
+        Rows Removed by Filter: 173
+```
+
+**`Rows Removed by Filter` is the number that matters, not the eight.** It says the scan
+walked 181 candidates to find its eight, so the filter is costing candidates exactly as the
+mechanism predicts — it simply had enough of them. Eight rows returned tells you nothing
+about how close that was; this tells you the margin, and it is why the Java side's earlier
+"immune" measurements were misleading (their planner had been choosing a sequential scan,
+so no candidates were being spent at all).
+
+A setting with no case that needs it is the kind of configuration this repository does not
+add. **It becomes required with this item**, because versioning is another post-filter over
+a much larger table, and it should be set on every pooled connection when the versioning
+lands — not before, and not without a test that is red without it. The Java side has the
+case today: with every entry's text changed each publication and the index forced, twenty
+publications gave 26 dead of 40 candidates and a top-8 of 1.
 
 ### 3. A ticket is a row, and nothing else happens
 
