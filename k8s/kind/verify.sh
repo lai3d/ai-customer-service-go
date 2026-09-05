@@ -58,7 +58,20 @@ done
 
 say "cluster"
 kind get clusters 2>/dev/null | grep -qx "$CLUSTER" || kind create cluster --name "$CLUSTER" --wait 120s
-kubectl config use-context "kind-$CLUSTER" >/dev/null
+
+# Never `kubectl config use-context`. It is global state in the caller's kubeconfig, and
+# this machine runs two of these harnesses -- the sibling Java implementation's session had
+# its context switched out from under it by a run of this script, and found its namespace
+# apparently empty.
+#
+# The obvious fix is to save the context and restore it in a trap. That fix is worse than
+# it looks: `trap ... EXIT` *replaces* the previous handler rather than adding to it, so a
+# second trap further down silently disables the restore and nothing errors. That happened
+# to the Java harness, to a restore that had just been added, tested, and announced.
+#
+# Passing --context on every call needs no restore, so there is nothing for a trap to
+# disable.
+KUBECTL=(kubectl --context "kind-$CLUSTER")
 
 say "image  $IMAGE"
 if [[ ${1:-} == --keep ]] && docker image inspect "$IMAGE" >/dev/null 2>&1; then
@@ -78,14 +91,14 @@ say "capacity"
 # confusing first run here, and the Java implementation's session hit the same thing from
 # the other side -- fixing a crash removed an accidental stagger between two replicas and
 # they then collided on a node at 108% of its memory.
-node_mem_ki=$(kubectl get nodes -o jsonpath='{.items[0].status.allocatable.memory}' | tr -d 'Ki')
+node_mem_ki=$("${KUBECTL[@]}" get nodes -o jsonpath='{.items[0].status.allocatable.memory}' | tr -d 'Ki')
 # Read the rendered spec, not the file. The first version grepped `requests:` with three
 # lines of context and found nothing, because a comment block sits between the key and the
 # value -- and then reported "2 replicas x  = 0 MiB" and PASSED. A check that measures
 # nothing and passes is the failure this harness exists to avoid, written into the harness.
-req=$(kubectl apply --dry-run=client -o jsonpath='{.spec.template.spec.containers[0].resources.requests.memory}' \
+req=$("${KUBECTL[@]}" apply --dry-run=client -o jsonpath='{.spec.template.spec.containers[0].resources.requests.memory}' \
         -f "$ROOT/k8s/deployment.yaml" 2>/dev/null)
-reps=$(kubectl apply --dry-run=client -o jsonpath='{.spec.replicas}' -f "$ROOT/k8s/deployment.yaml" 2>/dev/null)
+reps=$("${KUBECTL[@]}" apply --dry-run=client -o jsonpath='{.spec.replicas}' -f "$ROOT/k8s/deployment.yaml" 2>/dev/null)
 case "$req" in
   (*Gi) req_mi=$(( ${req%Gi} * 1024 ));;
   (*Mi) req_mi=${req%Mi};;
@@ -105,7 +118,7 @@ else
   # answers a question nobody asked.
   #
   # Our own namespace is excluded: those pods are about to be replaced by this deploy.
-  used_mi=$(kubectl get pods --all-namespaces \
+  used_mi=$("${KUBECTL[@]}" get pods --all-namespaces \
     -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{range .spec.containers[*]}{.resources.requests.memory}{" "}{end}{"\n"}{end}' 2>/dev/null \
     | awk -v skip="$NS" '$1!=skip{for(i=2;i<=NF;i++){v=$i;
         if (v ~ /Gi$/) {sub(/Gi$/,"",v); m+=v*1024}
@@ -123,15 +136,15 @@ else
 fi
 
 say "deploy"
-kubectl apply -f "$ROOT/k8s/namespace.yaml"
-kubectl apply -f "$ROOT/k8s/kind/postgres.yaml"
-kubectl -n "$NS" rollout status deploy/postgres --timeout=180s
+"${KUBECTL[@]}" apply -f "$ROOT/k8s/namespace.yaml"
+"${KUBECTL[@]}" apply -f "$ROOT/k8s/kind/postgres.yaml"
+"${KUBECTL[@]}" -n "$NS" rollout status deploy/postgres --timeout=180s
 
-kubectl -n "$NS" create secret generic ai-customer-service-go-secrets \
+"${KUBECTL[@]}" -n "$NS" create secret generic ai-customer-service-go-secrets \
   --from-literal=ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-placeholder-no-model-call-is-made-during-startup}" \
   --from-literal=POSTGRES_USER=csagent \
   --from-literal=POSTGRES_PASSWORD=csagent \
-  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  --dry-run=client -o yaml | "${KUBECTL[@]}" apply -f - >/dev/null
 
 # Make the cold-database path real on every run, not just the first.
 #
@@ -144,17 +157,17 @@ kubectl -n "$NS" create secret generic ai-customer-service-go-secrets \
 # `embedding` column with it and leaves the table behind, so `CREATE TABLE IF NOT EXISTS`
 # then does nothing and the app comes up serving 500s from a table with no vector column.
 # That is a state no deployment reaches on its own -- it was the harness inventing a bug.
-kubectl -n "$NS" exec deploy/postgres -- psql -U csagent -d csagent \
+"${KUBECTL[@]}" -n "$NS" exec deploy/postgres -- psql -U csagent -d csagent \
   -c 'DROP SCHEMA public CASCADE' -c 'CREATE SCHEMA public' >/dev/null 2>&1 || true
 
 # The directory form on purpose: it has to be safe, which is why the Secret template
 # lives in k8s/examples/.
-kubectl apply -f "$ROOT/k8s/"
+"${KUBECTL[@]}" apply -f "$ROOT/k8s/"
 # Force both replicas to start together against that cold database.
-kubectl -n "$NS" rollout restart deploy/ai-customer-service-go >/dev/null 2>&1 || true
+"${KUBECTL[@]}" -n "$NS" rollout restart deploy/ai-customer-service-go >/dev/null 2>&1 || true
 # Not fatal. A failed rollout is a result: the assertions below say *why*, and
 # "OOMKilled -- the memory limit is too low" is a better last line than a rollout timeout.
-kubectl -n "$NS" rollout status deploy/ai-customer-service-go --timeout=300s || true
+"${KUBECTL[@]}" -n "$NS" rollout status deploy/ai-customer-service-go --timeout=300s || true
 
 say "assertions"
 # Resolving a pod is not a one-shot operation while a rollout is settling.
@@ -169,7 +182,7 @@ say "assertions"
 # trusting a name to stay valid. Two wrong fixes preceded this one, and both looked
 # right because the next run happened to pass.
 ready_pod() {
-  kubectl -n "$NS" get pods -l app.kubernetes.io/component=app \
+  "${KUBECTL[@]}" -n "$NS" get pods -l app.kubernetes.io/component=app \
     -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{" "}{.metadata.deletionTimestamp}{"\n"}{end}' \
     | awk '$2=="True" && $3==""{print $1; exit}'
 }
@@ -181,7 +194,7 @@ exec_in_pod() {
   for _ in $(seq 1 10); do
     pod=$(ready_pod)
     if [ -n "$pod" ]; then
-      out=$(kubectl -n "$NS" exec "$pod" -- "$@" 2>&1) || true
+      out=$("${KUBECTL[@]}" -n "$NS" exec "$pod" -- "$@" 2>&1) || true
       case "$out" in
         (*"completed pod"*|*"not found"*|*"is terminating"*) ;;   # stale name, re-resolve
         (*) case "$out" in
@@ -197,16 +210,16 @@ exec_in_pod() {
 
 POD=$(ready_pod)
 
-replicas=$(kubectl -n "$NS" get deploy ai-customer-service-go -o jsonpath='{.status.readyReplicas}')
+replicas=$("${KUBECTL[@]}" -n "$NS" get deploy ai-customer-service-go -o jsonpath='{.status.readyReplicas}')
 [[ ${replicas:-0} == 2 ]] && ok "both replicas ready" || bad "readyReplicas=${replicas:-0}, want 2"
 
-if kubectl -n "$NS" get pods -l app.kubernetes.io/component=app -o json | grep -q OOMKilled; then
+if "${KUBECTL[@]}" -n "$NS" get pods -l app.kubernetes.io/component=app -o json | grep -q OOMKilled; then
   bad "a container was OOMKilled -- the memory limit is too low"
 else
   ok "no container was OOMKilled"
 fi
 
-if kubectl -n "$NS" get secret ai-customer-service-go-secrets \
+if "${KUBECTL[@]}" -n "$NS" get secret ai-customer-service-go-secrets \
      -o jsonpath='{.data.ANTHROPIC_API_KEY}' | base64 -d | grep -q REPLACE_ME; then
   bad "the directory apply overwrote the Secret with placeholders"
 else
@@ -221,8 +234,8 @@ fi
 # fails *because it matched* -- grep exits at the first hit, kubectl takes SIGPIPE, and
 # pipefail reports the pipeline as failed. A detector that breaks exactly when it fires.
 raced=0
-for p in $(kubectl -n "$NS" get pods -l app.kubernetes.io/component=app -o name); do
-  hits=$(kubectl -n "$NS" logs "$p" --previous 2>/dev/null | grep -c pg_extension_name_index || true)
+for p in $("${KUBECTL[@]}" -n "$NS" get pods -l app.kubernetes.io/component=app -o name); do
+  hits=$("${KUBECTL[@]}" -n "$NS" logs "$p" --previous 2>/dev/null | grep -c pg_extension_name_index || true)
   [[ ${hits:-0} -gt 0 ]] && raced=$((raced + 1))
 done
 if [[ $raced -gt 0 ]]; then
@@ -236,14 +249,14 @@ exec_in_pod "root filesystem is read-only" "Read-only" sh -c 'touch /nope'
 # The Java implementation needs a writable /tmp because ONNX Runtime unpacks its native
 # library there. This one does not, and that claim is worth checking rather than asserting
 # in a comment: the pod has no volumes at all and the process is serving.
-if kubectl -n "$NS" get pod "$POD" -o jsonpath='{.spec.volumes[*].name}' |
+if "${KUBECTL[@]}" -n "$NS" get pod "$POD" -o jsonpath='{.spec.volumes[*].name}' |
      tr ' ' '\n' | grep -qv '^kube-api-access'; then
   note "the pod mounts a volume other than the service-account token"
 else
   ok "no writable volume is needed at all"
 fi
 
-kubectl -n "$NS" port-forward svc/ai-customer-service-go 18081:8081 >/dev/null 2>&1 &
+"${KUBECTL[@]}" -n "$NS" port-forward svc/ai-customer-service-go 18081:8081 >/dev/null 2>&1 &
 PF=$!; trap 'kill $PF 2>/dev/null || true' EXIT
 sleep 4
 
@@ -255,7 +268,7 @@ contains "the demo page is served" "AI Customer Service" curl -sf localhost:1808
 # GOMAXPROCS comes from the cgroup CPU limit on Go 1.25+, and it is what the embedding
 # concurrency bound defaults to. Reported, because the number is the point.
 gomax=$(curl -s localhost:18081/metrics | awk '/^go_sched_gomaxprocs_threads/{print $2}')
-node_cpus=$(kubectl get nodes -o jsonpath='{.items[0].status.capacity.cpu}')
+node_cpus=$("${KUBECTL[@]}" get nodes -o jsonpath='{.items[0].status.capacity.cpu}')
 note "GOMAXPROCS=${gomax:-?} inside the pod; the node has ${node_cpus} CPUs"
 
 # Retrieval runs before the model call, so this exercises the embedding path and then
@@ -271,7 +284,7 @@ else
 fi
 
 say "footprint"
-kubectl top pods -n "$NS" -l app.kubernetes.io/component=app --no-headers 2>/dev/null \
+"${KUBECTL[@]}" top pods -n "$NS" -l app.kubernetes.io/component=app --no-headers 2>/dev/null \
   | sed 's/^/  /' || echo "  (metrics-server not installed; see k8s/README.md for the measured numbers)"
 
 say "result"

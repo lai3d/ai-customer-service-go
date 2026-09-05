@@ -135,6 +135,11 @@ that show why it is not needed here.
   result from whatever accumulated and return it alongside the error. The contract is
   asserted in `internal/llm/stream_test.go` against an `httptest` provider, not in a
   stub — a stub can satisfy any contract, which is how this shipped in the first place.
+- **Never `kubectl config use-context` in a script.** It is global state in the caller's
+  kubeconfig, which on this machine holds production-shaped contexts, and a save/restore
+  `trap` is not a fix: `trap ... EXIT` replaces the previous handler rather than adding to
+  it, so a second trap silently disables the first. `k8s/kind/verify.sh` pins `--context`
+  per call, so there is nothing to restore.
 - **A check that cannot be seen to fail is a claim, not a check.** `k8s/README.md` keeps an
   inventory of which harness assertions have actually been observed red. Three separate
   detectors in this repository have been silently blind — a `CREATE EXTENSION` check whose

@@ -43,6 +43,15 @@ kubectl -n ai-customer-service-go rollout status deploy/ai-customer-service-go
 2. `configmap.yaml` → `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_DB`. The database
    needs the `vector` extension available.
 
+**Known limitation:** telling you to hand-edit two tracked files is a drift generator —
+your edits collide with every `git pull`, and nothing records what you changed. A Kustomize
+base plus an overlay is the fix, and the Java implementation of this system has one
+(`base/` + `overlays/example/`). This directory is deliberately flat and has not been
+restructured; the harness's guarantee that it applies `k8s/` *unmodified* is what makes
+these manifests the ones that were actually verified, and an overlay would need the same
+guarantee — an assertion that it reproduces every base document verbatim — before it was
+an improvement rather than a second thing to trust.
+
 ## Verify on kind, before a real cluster
 
 ```sh
@@ -58,6 +67,24 @@ untouched by the directory apply, no replica losing the `CREATE EXTENSION` race,
 through the Service, Go metrics, the demo page, and a bad key surfacing as `502` rather
 than as a healthy pod returning errors. No API key needed; export `ANTHROPIC_API_KEY` to
 check the model call too.
+
+## The harness never touches your kubeconfig
+
+`verify.sh` passes `--context` on every call and never runs `kubectl config use-context`.
+That is a safety property, not a courtesy: this kubeconfig has production-shaped contexts
+in it, and a script that switches the current context and does not switch it back decides
+where somebody's next `kubectl delete` lands.
+
+The obvious alternative — save the context, restore it in a `trap` — is worse than it
+looks. `trap ... EXIT` **replaces** the previous handler rather than adding to it, so a
+second `trap` anywhere below silently disables the restore and nothing errors. The Java
+implementation's harness lost a restore that way, one that had just been added, tested,
+and announced. Pinning the context per call leaves nothing for a trap to disable.
+
+Verified by switching the caller to an unrelated context and confirming a full run leaves
+it there. The first version of that check was worthless: it tried to switch to a context
+that no longer existed, the switch failed silently, and the "before" value was already the
+one the script would have set — a negative test that could not fail.
 
 ## Which assertions have been seen to fail
 
