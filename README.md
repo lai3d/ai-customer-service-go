@@ -279,6 +279,15 @@ model throughout.
 - **The demo page was verified headless**, with a throwaway profile. Font fallback and
   anything gated on a real display are not covered.
 
+- **No admin surface, and this one is a divergence rather than a gap.** The Java
+  implementation is building one. This repository is not, because the two are the same
+  decision seen from different sides: an admin view of tickets and conversations is a page
+  showing the most sensitive text in the system, and both implementations have gone to
+  some trouble to keep that text out of traces and logs. Adding the page without
+  authentication undoes that; adding authentication leaves the shared scope both READMEs
+  declare. Neither is wrong — but the pair stops being symmetric here, and it is recorded
+  rather than left for a reader to notice.
+
 Deliberately out of scope: authentication, multi-tenancy, MCP.
 
 ---
