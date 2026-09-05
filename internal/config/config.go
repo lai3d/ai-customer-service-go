@@ -143,6 +143,10 @@ type Admin struct {
 	// here, because the parse is the security check and belongs with the thing it
 	// guards.
 	Tokens string
+	// CORSOrigins is the comma-separated list of origins the operations UI is served
+	// from. Empty disables CORS, which is right when a reverse proxy puts the UI and
+	// this API on one origin, and wrong the moment they are two containers.
+	CORSOrigins string
 }
 
 type Obs struct {
@@ -207,6 +211,9 @@ func Load() (Config, error) {
 			// keep out of logs, spans and metric labels; it should exist only where
 			// somebody decided it should.
 			Tokens: os.Getenv("ADMIN_TOKENS"),
+			// Also deliberately no default: "*" is not reachable from configuration,
+			// and localhost is not assumed.
+			CORSOrigins: os.Getenv("ADMIN_CORS_ORIGINS"),
 		},
 		Obs: Obs{
 			OTLPEndpoint:        env("OTLP_TRACING_ENDPOINT", "http://localhost:4318"),

@@ -162,7 +162,8 @@ func run() error {
 		return fmt.Errorf("ADMIN_TOKENS: %w", err)
 	}
 	if operators.Enabled() {
-		admin.NewServer(admin.NewStore(pool), tickets, operators).Routes(mux)
+		admin.NewServer(admin.NewStore(pool), tickets, operators,
+			admin.ParseCORS(cfg.Admin.CORSOrigins)).Routes(mux)
 		slog.Info("operations surface mounted at /admin", "operators", operators.Names())
 	} else {
 		slog.Info("no operations surface: ADMIN_TOKENS is unset")

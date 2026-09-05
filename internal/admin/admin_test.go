@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -47,7 +46,7 @@ func serve(t *testing.T) (*httptest.Server, *ticket.Store) {
 	}
 	tickets := ticket.NewStore(pool)
 	mux := http.NewServeMux()
-	admin.NewServer(admin.NewStore(pool), tickets, ops).Routes(mux)
+	admin.NewServer(admin.NewStore(pool), tickets, ops, corsFor(t)).Routes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server, tickets
@@ -92,7 +91,7 @@ func TestWithNoOperatorsConfiguredThereIsNoAdminSurface(t *testing.T) {
 	mux := http.NewServeMux()
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	for _, path := range []string{"/admin/", "/api/admin/v1/overview", "/api/admin/v1/tickets"} {
+	for _, path := range []string{"/api/admin/v1/overview", "/api/admin/v1/tickets"} {
 		resp := do(t, server, "GET", path, operatorToken, "")
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("%s returned %d with no operators configured, want 404", path, resp.StatusCode)
@@ -270,41 +269,6 @@ func TestWhoamiTellsThePageWhatItMayDo(t *testing.T) {
 
 // The same rule as the demo page, and it matters more here: this page renders what
 // customers wrote, so it is the one place where model- and customer-authored text is
-// displayed by design.
-func TestTheAdminPageNeverTurnsAStringIntoMarkup(t *testing.T) {
-	raw, err := os.ReadFile("web/index.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	page := string(raw)
-	sinks := map[string]*regexp.Regexp{
-		"innerHTML assignment": regexp.MustCompile(`\.innerHTML\s*[+]?=`),
-		"outerHTML assignment": regexp.MustCompile(`\.outerHTML\s*[+]?=`),
-		"insertAdjacentHTML":   regexp.MustCompile(`insertAdjacentHTML\s*\(`),
-		"document.write":       regexp.MustCompile(`document\.write\s*\(`),
-		"eval":                 regexp.MustCompile(`[^.\w]eval\s*\(`),
-		"Function constructor": regexp.MustCompile(`new\s+Function\s*\(`),
-	}
-	for name, pattern := range sinks {
-		if loc := pattern.FindStringIndex(page); loc != nil {
-			t.Errorf("the admin page uses %s at line %d",
-				name, 1+strings.Count(page[:loc[0]], "\n"))
-		}
-	}
-	// The token is a credential for every conversation in the database. localStorage
-	// outlives the tab; sessionStorage does not.
-	//
-	// Matched as a *use*, not as a mention: the page's own comment explains why it uses
-	// sessionStorage instead, and a substring check flagged that comment. Same shape as
-	// the innerHTML check on the demo page, which had to learn the same lesson.
-	if regexp.MustCompile(`\blocalStorage\s*\.`).MatchString(page) {
-		t.Error("the operator token must not go in localStorage: it outlives the tab")
-	}
-	if !regexp.MustCompile(`\bsessionStorage\s*\.`).MatchString(page) {
-		t.Error("the page does not use sessionStorage; where is the token kept?")
-	}
-}
-
 // A refused attempt is exactly what an audit trail is for. This was missing until a live
 // walk through the operator workflow showed a 403 leaving no trace at all -- the deny
 // path returned before anything recorded it.
@@ -333,56 +297,155 @@ func TestARefusedActionIsAudited(t *testing.T) {
 	}
 }
 
-// The markdown renderer exists twice, once per embedded page, because the two pages
-// belong to different packages and a third package holding thirty lines of JavaScript
-// would be a worse trade than the copy. The copy's failure mode is that only one of them
-// ever gets fixed -- so compare them, rather than trusting that a future session will
-// remember there are two.
-//
-// Driving the admin page in a real browser is what put a renderer here at all: the reply
-// showed a customer-facing ticket number as literal **TKT-4700**, which is the same
-// defect the demo page had, found the same way, and invisible to every other test because
-// the text was arriving correctly and only the drawing was wrong.
-func TestBothPagesRenderMarkdownIdentically(t *testing.T) {
-	adminPage, err := os.ReadFile("web/index.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	demoPage, err := os.ReadFile("../httpapi/web/index.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"renderMarkdown", "appendInline"} {
-		a := jsFunction(t, string(adminPage), name)
-		d := jsFunction(t, string(demoPage), name)
-		if a != d {
-			t.Errorf("%s has drifted between the two pages\n--- admin ---\n%s\n--- demo ---\n%s",
-				name, a, d)
+const uiOrigin = "https://ops.example.com"
+
+func corsFor(t *testing.T) admin.CORS {
+	t.Helper()
+	return admin.ParseCORS(uiOrigin + ", https://ops2.example.com")
+}
+
+// The UI is a separate application on a separate origin, so every one of its requests is
+// cross-origin and the browser decides whether the response may be read. These assertions
+// are that decision.
+func TestTheBrowserIsToldWhichOriginMayReadTheseResponses(t *testing.T) {
+	server, _ := serve(t)
+
+	t.Run("a preflight from the UI is answered without a token", func(t *testing.T) {
+		// A browser sends no Authorization header on a preflight. If this needed one,
+		// every cross-origin request would fail with an opaque network error.
+		resp := preflight(t, server, uiOrigin, "PATCH")
+		if resp.StatusCode != http.StatusNoContent {
+			t.Errorf("preflight returned %d, want 204", resp.StatusCode)
 		}
+		if got := resp.Header.Get("Access-Control-Allow-Origin"); got != uiOrigin {
+			t.Errorf("Allow-Origin is %q, want the UI's origin echoed back", got)
+		}
+		if got := resp.Header.Get("Access-Control-Allow-Headers"); !strings.Contains(got, "Authorization") {
+			t.Errorf("Allow-Headers is %q; the UI cannot send its token", got)
+		}
+		if got := resp.Header.Get("Access-Control-Allow-Methods"); !strings.Contains(got, "PATCH") {
+			t.Errorf("Allow-Methods is %q; the UI cannot update a ticket", got)
+		}
+	})
+
+	t.Run("another origin is not allowed to read anything", func(t *testing.T) {
+		resp := do(t, server, "GET", "/api/admin/v1/whoami", operatorToken, "")
+		_ = resp
+		req, _ := http.NewRequest("GET", server.URL+"/api/admin/v1/whoami", nil)
+		req.Header.Set("Authorization", "Bearer "+operatorToken)
+		req.Header.Set("Origin", "https://evil.test")
+		got, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer got.Body.Close()
+		// The request still succeeds -- CORS is enforced in the browser, not here -- but
+		// without this header the browser will not hand the body to the page.
+		if h := got.Header.Get("Access-Control-Allow-Origin"); h != "" {
+			t.Errorf("an unknown origin was told it may read responses: %q", h)
+		}
+		if !strings.Contains(got.Header.Get("Vary"), "Origin") {
+			t.Error("no Vary: Origin, so a shared cache can serve one origin's response to another")
+		}
+	})
+
+	t.Run("a preflight from another origin is refused", func(t *testing.T) {
+		resp := preflight(t, server, "https://evil.test", "PATCH")
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("preflight from an unknown origin returned %d, want 403", resp.StatusCode)
+		}
+		if h := resp.Header.Get("Access-Control-Allow-Origin"); h != "" {
+			t.Errorf("refused preflight still carried Allow-Origin: %q", h)
+		}
+	})
+
+	// A wildcard is the value that makes CORS errors disappear in development and turns
+	// the support inbox into something any page can read. There must be no configuration
+	// that produces one.
+	t.Run("no configuration produces a wildcard", func(t *testing.T) {
+		for _, spec := range []string{"*", "https://a.test,*", " * "} {
+			c := admin.ParseCORS(spec)
+			mux := http.NewServeMux()
+			admin.NewServer(admin.NewStore(pool), ticket.NewStore(pool), mustOps(t), c).Routes(mux)
+			s := httptest.NewServer(mux)
+			req, _ := http.NewRequest("GET", s.URL+"/api/admin/v1/whoami", nil)
+			req.Header.Set("Authorization", "Bearer "+operatorToken)
+			req.Header.Set("Origin", "https://anywhere.test")
+			resp, err := s.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			s.Close()
+			if h := resp.Header.Get("Access-Control-Allow-Origin"); h != "" {
+				t.Errorf("ADMIN_CORS_ORIGINS=%q let an arbitrary origin read responses (%q)",
+					spec, h)
+			}
+		}
+	})
+
+	// A prefix match on https://ops.example.com also accepts
+	// https://ops.example.com.evil.test, which is a domain an attacker can register.
+	t.Run("a lookalike origin is not a match", func(t *testing.T) {
+		for _, origin := range []string{
+			uiOrigin + ".evil.test", "https://evil.test?" + uiOrigin, "http://ops.example.com",
+		} {
+			resp := preflight(t, server, origin, "GET")
+			if h := resp.Header.Get("Access-Control-Allow-Origin"); h != "" {
+				t.Errorf("origin %q was allowed", origin)
+			}
+		}
+	})
+}
+
+// With no origins configured there is no CORS at all: correct for a reverse proxy that
+// serves the UI and the API from one origin, and the reason the empty value is not a
+// permissive default.
+func TestWithNoOriginsConfiguredThereIsNoCORS(t *testing.T) {
+	mux := http.NewServeMux()
+	admin.NewServer(admin.NewStore(pool), ticket.NewStore(pool), mustOps(t),
+		admin.ParseCORS("")).Routes(mux)
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	req, _ := http.NewRequest("GET", server.URL+"/api/admin/v1/whoami", nil)
+	req.Header.Set("Authorization", "Bearer "+operatorToken)
+	req.Header.Set("Origin", uiOrigin)
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if h := resp.Header.Get("Access-Control-Allow-Origin"); h != "" {
+		t.Errorf("CORS is off but the response carried Allow-Origin: %q", h)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("same-origin use broke when CORS was disabled: %d", resp.StatusCode)
 	}
 }
 
-// jsFunction returns the source of a top-level `function name(...) {...}` by matching
-// braces. Deliberately crude: it would be wrong for a function containing a brace inside
-// a string or a regex literal, and it is checked against the two it is used on.
-func jsFunction(t *testing.T, page, name string) string {
+func mustOps(t *testing.T) admin.Operators {
 	t.Helper()
-	start := strings.Index(page, "function "+name+"(")
-	if start < 0 {
-		t.Fatalf("no function %s in the page", name)
+	ops, err := admin.ParseOperators("alex:" + operatorToken + ":operator")
+	if err != nil {
+		t.Fatal(err)
 	}
-	depth := 0
-	for i := start; i < len(page); i++ {
-		switch page[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return page[start : i+1]
-			}
-		}
+	return ops
+}
+
+func preflight(t *testing.T, server *httptest.Server, origin, method string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest("OPTIONS", server.URL+"/api/admin/v1/tickets/TKT-1", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Fatalf("function %s is unterminated", name)
-	return ""
+	req.Header.Set("Origin", origin)
+	req.Header.Set("Access-Control-Request-Method", method)
+	req.Header.Set("Access-Control-Request-Headers", "authorization,content-type")
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
 }

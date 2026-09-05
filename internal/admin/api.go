@@ -1,10 +1,8 @@
 package admin
 
 import (
-	"embed"
 	"encoding/json"
 	"errors"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -13,17 +11,15 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/ticket"
 )
 
-//go:embed web
-var webFS embed.FS
-
 type Server struct {
 	store     *Store
 	tickets   *ticket.Store
 	operators Operators
+	cors      CORS
 }
 
-func NewServer(store *Store, tickets *ticket.Store, operators Operators) *Server {
-	return &Server{store: store, tickets: tickets, operators: operators}
+func NewServer(store *Store, tickets *ticket.Store, operators Operators, cors CORS) *Server {
+	return &Server{store: store, tickets: tickets, operators: operators, cors: cors}
 }
 
 // Routes mounts the operations surface.
@@ -33,11 +29,14 @@ func NewServer(store *Store, tickets *ticket.Store, operators Operators) *Server
 // surface that is guarded and a surface that is absent, and only one of them survives a
 // mistake in the guard.
 func (s *Server) Routes(mux *http.ServeMux) {
+	// CORS wraps the outside, authentication the inside. The order is not cosmetic: a
+	// preflight carries no Authorization header, so authenticating first rejects every
+	// cross-origin request before the browser has even sent the real one.
 	read := func(h http.HandlerFunc) http.Handler {
-		return s.operators.Authenticate(h)
+		return s.cors.Wrap(s.operators.Authenticate(h))
 	}
 	write := func(h http.HandlerFunc) http.Handler {
-		return s.operators.Authenticate(RequireWrite(s.refused, h))
+		return s.cors.Wrap(s.operators.Authenticate(RequireWrite(s.refused, h)))
 	}
 
 	mux.Handle("GET /api/admin/v1/overview", read(s.overview))
@@ -49,16 +48,20 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/admin/v1/audit", read(s.audit))
 	mux.Handle("GET /api/admin/v1/whoami", read(s.whoami))
 
-	// The page itself is not behind the token: it is a static file that contains no
-	// customer data and cannot fetch any without one. Putting it behind the same header
-	// would mean a browser could never load it, since a browser cannot send an
-	// Authorization header for a navigation.
-	sub, err := fs.Sub(webFS, "web")
-	if err != nil {
-		panic(err) // the embed directive guarantees this directory
+	// A preflight arrives as OPTIONS on the same path, and Go's mux matches on method,
+	// so every route above needs its OPTIONS twin or the browser gets a 405 and reports
+	// it as a CORS failure -- the least informative error in the browser.
+	for _, p := range []string{
+		"/api/admin/v1/overview", "/api/admin/v1/conversations",
+		"/api/admin/v1/conversations/{id}", "/api/admin/v1/tickets",
+		"/api/admin/v1/tickets/{number}", "/api/admin/v1/audit",
+		"/api/admin/v1/whoami",
+	} {
+		mux.Handle("OPTIONS "+p, s.cors.Wrap(http.NotFoundHandler()))
 	}
-	mux.Handle("GET /admin", http.RedirectHandler("/admin/", http.StatusMovedPermanently))
-	mux.Handle("GET /admin/", http.StripPrefix("/admin/", http.FileServer(http.FS(sub))))
+
+	// No page is served from here any more. The operations UI is its own application on
+	// its own origin (admin-ui/), which is why CORS exists above at all.
 }
 
 // refused records an authenticated operator being turned away.
