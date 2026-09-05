@@ -252,6 +252,7 @@ out. See [Retrieval](docs/retrieval.md#retrieval-quality).
 | [Observability](docs/observability.md) | GenAI spans over OTLP, and grepping the backend to prove the customer's words are not in it |
 | [The demo UI](docs/demo-ui.md) | A glass box rather than a chat widget, and why the score bars are normalised |
 | [The operations surface](docs/operations.md) | Two applications across an origin: why the API does not exist unless you configure it, what the CORS allowlist actually permits, and why reading a conversation is an audited action |
+| [What is missing before this runs a real product](docs/production-readiness.md) | The distance between a working system and a product, itemised: identity, knowledge that people can edit, the loop back to a human, and eleven more |
 
 ---
 
