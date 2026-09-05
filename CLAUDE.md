@@ -135,6 +135,11 @@ that show why it is not needed here.
   result from whatever accumulated and return it alongside the error. The contract is
   asserted in `internal/llm/stream_test.go` against an `httptest` provider, not in a
   stub — a stub can satisfy any contract, which is how this shipped in the first place.
+- **A check that cannot be seen to fail is a claim, not a check.** `k8s/README.md` keeps an
+  inventory of which harness assertions have actually been observed red. Three separate
+  detectors in this repository have been silently blind — a `CREATE EXTENSION` check whose
+  condition never arose, a capacity check that parsed nothing and passed, and a regex that
+  measured the language rather than the bug. Before trusting a green check, make it red.
 - **Schema creation takes a Postgres advisory lock.** `CREATE EXTENSION IF NOT EXISTS` is
   not concurrency-safe — it checks the catalogue and then inserts, with nothing holding the
   gap — so two replicas starting against a cold database crash one of them with

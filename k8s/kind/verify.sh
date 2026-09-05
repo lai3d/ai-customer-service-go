@@ -70,6 +70,41 @@ fi
 # cost of baking the model in rather than downloading it at startup.
 kind load docker-image "$IMAGE" --name "$CLUSTER"
 
+say "capacity"
+# Check the node can hold what the manifests ask for, before deploying rather than after.
+#
+# A too-large request does not fail: the pod sits Pending and the rollout times out, which
+# reads as the manifests being broken when it is the laptop being small. This cost a
+# confusing first run here, and the Java implementation's session hit the same thing from
+# the other side -- fixing a crash removed an accidental stagger between two replicas and
+# they then collided on a node at 108% of its memory.
+node_mem_ki=$(kubectl get nodes -o jsonpath='{.items[0].status.allocatable.memory}' | tr -d 'Ki')
+# Read the rendered spec, not the file. The first version grepped `requests:` with three
+# lines of context and found nothing, because a comment block sits between the key and the
+# value -- and then reported "2 replicas x  = 0 MiB" and PASSED. A check that measures
+# nothing and passes is the failure this harness exists to avoid, written into the harness.
+req=$(kubectl apply --dry-run=client -o jsonpath='{.spec.template.spec.containers[0].resources.requests.memory}' \
+        -f "$ROOT/k8s/deployment.yaml" 2>/dev/null)
+reps=$(kubectl apply --dry-run=client -o jsonpath='{.spec.replicas}' -f "$ROOT/k8s/deployment.yaml" 2>/dev/null)
+case "$req" in
+  (*Gi) req_mi=$(( ${req%Gi} * 1024 ));;
+  (*Mi) req_mi=${req%Mi};;
+  (*)   req_mi="";;
+esac
+if [ -z "$req_mi" ] || [ -z "$reps" ]; then
+  bad "could not read the memory request or replica count from deployment.yaml (got req='$req' replicas='$reps')"
+else
+  want_mi=$(( req_mi * reps ))
+  have_mi=$(( node_mem_ki / 1024 ))
+  printf '  node allocatable %d MiB; %s replicas x %s = %d MiB requested\n' \
+    "$have_mi" "$reps" "$req" "$want_mi"
+  if [ "$want_mi" -gt "$have_mi" ]; then
+    bad "the node cannot hold $reps replicas at $req -- a replica sits Pending and the rollout just times out"
+  else
+    ok "the node holds $reps replicas at $req ($want_mi of $have_mi MiB)"
+  fi
+fi
+
 say "deploy"
 kubectl apply -f "$ROOT/k8s/namespace.yaml"
 kubectl apply -f "$ROOT/k8s/kind/postgres.yaml"
