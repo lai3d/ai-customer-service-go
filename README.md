@@ -173,7 +173,7 @@ assigned id comes back in the `X-Conversation-Id` header.
 ```bash
 curl -sS localhost:8081/api/v1/chat \
   -H 'Content-Type: application/json' \
-  -d '{"message": "我的订单 ORD-10042 什么时候到？退货有时间限制吗"}' | jq
+  -d '{"message": "Where is my order ORD-10042?"}' | jq
 
 curl -N localhost:8081/api/v1/chat/stream \
   -H 'Content-Type: application/json' \
@@ -193,7 +193,7 @@ event: tool
 data: {"type":"tool","tool":{"name":"lookup_order_status","outcome":"found"}}
 
 event: message
-data: {"type":"message","text":"订单满 50 美元享标准配送免运费"}
+data: {"type":"message","text":"Standard delivery is free over $50"}
 
 event: usage
 data: {"type":"usage","usage":{"model":"claude-opus-5","modelCalls":2,"inputTokens":3874,…}}
@@ -202,6 +202,32 @@ data: {"type":"usage","usage":{"model":"claude-opus-5","modelCalls":2,"inputToke
 `retrieval` arrives **before** the model is called, so a client can show it while the
 model is still thinking — and so it survives a model call that fails, which is exactly
 when someone debugging a bad answer needs it.
+
+### The same request, asked in Chinese
+
+Nothing is configured differently. The corpus is indexed in both languages, so a Chinese
+question matches Chinese passages and the answer comes back in Chinese, with the same
+tool call and the same accounting behind it.
+
+```bash
+curl -sS localhost:8081/api/v1/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message": "我的订单 ORD-10042 什么时候到？退货有时间限制吗"}' | jq
+```
+
+```
+passages   returns-window (zh) · account-order-history (zh) · returns-how (zh)
+tools      lookup_order_status → found
+usage      2 model calls
+reply      关于你的两个问题：
+           **订单 ORD-10042** — 状态：运输中 · 预计送达：2026-09-03 · 承运商：SingPost …
+```
+
+Two model calls, because the model asked for the tool and then answered with its result.
+Cross-lingual retrieval is measured separately, and it has to be: same-language matches
+score high enough that every Chinese passage outranks every English one, so a Chinese
+question finding the right *English* passage is only visible with the other half filtered
+out. See [Retrieval](docs/retrieval.md#retrieval-quality).
 
 ---
 

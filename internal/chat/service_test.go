@@ -548,3 +548,80 @@ func TestAFailureBeforeTheModelIsStillCountedAsATurn(t *testing.T) {
 		t.Errorf("turn outcomes are %v, want the first turn counted as completed", outcomes)
 	}
 }
+
+// A tool-calling turn is two model calls, and the second one's text is a new message
+// rather than a continuation. Run together they read as a typo in the answer:
+// "...and any tracking details.Here's what I found for order ORD-10042".
+//
+// It only happens when the model says something before asking for the tool, which is why
+// the question everyone tests with -- one that goes straight to the tool -- never shows
+// it. Found on a live turn after the Java implementation's session hit it in a
+// screenshot it had been shipping in its README.
+func TestTextFromTwoModelCallsIsNotRunTogether(t *testing.T) {
+	client := &stubClient{script: []llm.Result{
+		{
+			Text: "I'll look that up for you.",
+			ToolCalls: []llm.ToolCall{{ID: "t1", Name: "lookup_order_status",
+				Arguments: json.RawMessage(`{"orderNumber":"ORD-10042"}`)}},
+			StopReason: "tool_use",
+			Usage:      llm.Usage{InputTokens: 100, OutputTokens: 10},
+		},
+		reply("Here's what I found: it is in transit."),
+	}}
+	f := newFixture(t, client, 0)
+
+	if err := f.turn(context.Background(), "c1", "where is my order?"); err != nil {
+		t.Fatal(err)
+	}
+
+	var streamed strings.Builder
+	for _, e := range f.eventsOfType(chat.EventMessage) {
+		streamed.WriteString(e.Text)
+	}
+	got := streamed.String()
+
+	if strings.Contains(got, "you.Here's") {
+		t.Errorf("the two model calls were run together: %q", got)
+	}
+	if !strings.Contains(got, "you.\n\nHere's") {
+		t.Errorf("streamed text is %q, want a paragraph break at the seam", got)
+	}
+
+	// The break has to be in what is persisted too, or the next turn re-sends a
+	// run-together message as history.
+	history, err := f.memory.History(context.Background(), "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := history[len(history)-1].Text
+	if !strings.Contains(stored, "you.\n\nHere's") {
+		t.Errorf("stored reply is %q, want the seam preserved", stored)
+	}
+}
+
+// One model call must not gain a leading break, and a call that produces no text before
+// asking for a tool must not leave a dangling one.
+func TestASingleModelCallGainsNoParagraphBreak(t *testing.T) {
+	client := &stubClient{script: []llm.Result{
+		{
+			ToolCalls: []llm.ToolCall{{ID: "t1", Name: "lookup_order_status",
+				Arguments: json.RawMessage(`{"orderNumber":"ORD-10042"}`)}},
+			StopReason: "tool_use",
+			Usage:      llm.Usage{InputTokens: 100},
+		},
+		reply("It is in transit."),
+	}}
+	f := newFixture(t, client, 0)
+
+	if err := f.turn(context.Background(), "c1", "where is my order?"); err != nil {
+		t.Fatal(err)
+	}
+
+	var streamed strings.Builder
+	for _, e := range f.eventsOfType(chat.EventMessage) {
+		streamed.WriteString(e.Text)
+	}
+	if got := streamed.String(); got != "It is in transit." {
+		t.Errorf("streamed %q, want no leading break when the first call said nothing", got)
+	}
+}

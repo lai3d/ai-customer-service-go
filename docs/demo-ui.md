@@ -47,6 +47,25 @@ differ from the Java one — and prompt parity is part of what makes the two com
 all. The gap was in a demo page, so the fix is in the demo page. (The Java implementation's
 page has the same gap: its `bubble()` assigns `textContent` too.)
 
+### Two model calls are two messages
+
+A tool-calling turn makes two model calls, and if the model says something before asking
+for the tool — *"I'll look that up for you."* — the second call's text is a new message
+rather than a continuation of the first. Appended raw, the two run together:
+
+```
+...and any tracking details.Here's what I found for order ORD-10042:
+```
+
+That reads as a typo in the answer rather than as the seam it is. The stream now carries a
+paragraph break at the boundary, in the streamed events and in what is persisted, so the
+next turn does not re-send a run-together message as history.
+
+It only appears when the model narrates before calling the tool, which is why the obvious
+test question — one that goes straight to the tool — never surfaces it. Found by the Java
+implementation's session in a screenshot it had been shipping, and reproduced here on a
+live turn in both languages before being fixed.
+
 ### Three things the page is careful about
 
 **Score bars are normalised within each result set**, not drawn from the raw score. e5
