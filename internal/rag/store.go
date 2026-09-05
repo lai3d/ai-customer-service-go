@@ -38,7 +38,25 @@ func (s *Store) Replace(ctx context.Context, docs []Document, vectors [][]float3
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx, `DELETE FROM faq_document`); err != nil {
+	// TRUNCATE, not DELETE, and this is a correctness fix rather than a speed one.
+	//
+	// DELETE leaves the old rows in the HNSW index as dead entries. An HNSW scan is
+	// approximate: it collects hnsw.ef_search candidates from the graph and only then
+	// drops the ones whose heap tuples are dead, so after enough reloads the candidates
+	// are mostly dead and `ORDER BY embedding <=> $1 LIMIT 8` quietly returns fewer than
+	// eight live rows -- or none. Reproduced here on pgvector 0.8.6 with autovacuum off:
+	// thirty DELETE-and-reinsert cycles over the same 36 rows, and an index scan returned
+	// 2 of 8 while a sequential scan returned 8 and a VACUUM restored the index. With
+	// autovacuum on it is a race with the daemon, which is exactly the kind of failure
+	// that shows up in one deployment in four and never on a laptop.
+	//
+	// TRUNCATE rebuilds the index empty. Readers block on its ACCESS EXCLUSIVE lock until
+	// the new rows are committed, which for a 36-document load is the right trade: a
+	// reader that waits is better than a reader that silently retrieves nothing.
+	//
+	// Found by the .NET implementation of this system, which shares the shape. This
+	// repository's own tests never met it because they ingest once per package.
+	if _, err := tx.Exec(ctx, `TRUNCATE faq_document`); err != nil {
 		return fmt.Errorf("clear corpus: %w", err)
 	}
 	rows := make([][]any, len(docs))

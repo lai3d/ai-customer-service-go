@@ -186,6 +186,12 @@ that show why it is not needed here.
   *other* session's service — which is how a readiness check came back 200 for a process
   that was not running. `lsof -nP -iTCP:<port> -sTCP:LISTEN` first, and confirm the pid is
   still alive rather than only that something answers.
+- **Clear `faq_document` with `TRUNCATE`, never `DELETE`.** An HNSW scan collects its
+  candidates from the graph and only then drops the dead ones, so rows deleted by previous
+  ingestions crowd out the live ones and a `LIMIT 8` search quietly returns fewer than
+  eight — measured at 2 of 8 after 60 reloads with autovacuum off. `TRUNCATE` rebuilds the
+  index empty. `TestRetrievalSurvivesManyCorpusReloads` pins it and needs sixty cycles:
+  thirty passed either way.
 - **A check that cannot be seen to fail is a claim, not a check.** `k8s/README.md` keeps an
   inventory of which harness assertions have actually been observed red. Three separate
   detectors in this repository have been silently blind — a `CREATE EXTENSION` check whose

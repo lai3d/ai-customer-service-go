@@ -138,6 +138,46 @@ Worth saying plainly: at eighteen entries, retrieval is barely earning its keep.
 this size could sit in the system prompt. The design matters for a corpus that cannot,
 and the measurements are what would carry over.
 
+## Reloading the corpus used to degrade the index
+
+Ingestion replaces the corpus rather than appending to it, and it runs on every process
+start. That is the right shape — a restart must not double the corpus — and the way it
+cleared the table was wrong in a way nothing here could see.
+
+`DELETE FROM faq_document` leaves every previous generation of the corpus in the HNSW
+index as dead entries. An HNSW scan is **approximate**: it collects `hnsw.ef_search`
+candidates by walking the graph and only afterwards discards the ones whose heap tuples
+are dead. After enough restarts the candidates are mostly dead, and
+`ORDER BY embedding <=> $1 LIMIT 8` returns fewer than eight live rows — or none — with no
+error, no log line, and a service that looks healthy.
+
+Measured on pgvector 0.8.6 (`pgvector/pgvector:pg17`), autovacuum disabled on the table so
+the daemon is not racing the measurement:
+
+| after 60 reload cycles | rows returned for `LIMIT 8` |
+| --- | --- |
+| HNSW index scan | **2** |
+| sequential scan (`enable_indexscan = off`) | 8 |
+| HNSW index scan after `VACUUM` | 8 |
+
+The table held 36 live rows throughout.
+
+`TRUNCATE` inside the same transaction rebuilds the index empty. Readers block on its
+`ACCESS EXCLUSIVE` lock until the new rows are committed, which for a 36-document load is
+the right trade: a reader that waits a moment is better than a reader that silently
+retrieves nothing.
+
+With autovacuum on — the default — this is a race with a background daemon rather than a
+certainty, which is what makes it dangerous. It appears in a deployment that restarts often
+and never on a laptop.
+
+**This repository did not find it.** The .NET implementation of this system did, in its own
+code, and reported the shape across; it was reproduced here in `psql` before anything was
+changed. The reason the existing tests could not have found it is worth keeping: they
+ingest once per package, so the second reload never happened. `TestRetrievalSurvivesManyCorpusReloads`
+does sixty, and sixty is measured rather than chosen — at thirty the test passed with
+`DELETE`, which would have made it a test that could not tell the fix from the defect.
+
 ---
 
 [← Back to the README](../README.md)

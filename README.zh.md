@@ -37,6 +37,7 @@ SSE 流式输出、按会话计的 token 预算、Prometheus 指标和 OpenTelem
 | 一个被拒绝的操作没有留下任何痕迹——审计记下了所有成功的动作，没记下任何被拒的 | [运营后台](docs/operations.md#reading-is-an-action) |
 | 关掉标签页的客户被记成了数据库故障，而那份记录的全部职责就是区分这两件事 | [运营后台](docs/operations.md#the-turn-record-is-not-the-chat-memory) |
 | 一个安全响应头写在配置里却没出现在响应上——nginx 不会把 add_header 继承进自己也设了 add_header 的 location | [运营后台](docs/operations.md#what-the-container-found-which-a-laptop-would-not-have) |
+| 重新载入语料会静默地劣化检索：被删除的行仍留在 HNSW 索引里，而近似扫描会把候选名额花在它们身上 | [检索](docs/retrieval.md#reloading-the-corpus-used-to-degrade-the-index) |
 | 客户原话没进 span，但模型编造的工具名进了 —— span 名同样是聚合维度 | [可观测性](docs/observability.md#attributes-are-not-the-only-way-into-a-backend) |
 | 页面把模型的 markdown 当字面星号显示，只有真实浏览器发现了 | [演示界面](docs/demo-ui.md#it-renders-the-models-markdown-in-a-deliberately-small-subset) |
 | 同一会话开两个标签页会交错，第二个请求的检索段落被静默丢弃 | [成本与失败](docs/reliability.md#one-turn-at-a-time-per-conversation) |

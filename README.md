@@ -40,6 +40,7 @@ recorded too.
 | A refused action left no trace at all — the audit trail recorded everything that succeeded and nothing that was denied | [Operations](docs/operations.md#reading-is-an-action) |
 | A customer who closed the tab was recorded as a database failure, in the record whose whole job is telling those apart | [Operations](docs/operations.md#the-turn-record-is-not-the-chat-memory) |
 | A security header was in the config file and not on the response, because nginx does not inherit one into a location that sets its own | [Operations](docs/operations.md#what-the-container-found-which-a-laptop-would-not-have) |
+| Reloading the corpus degraded retrieval silently: deleted rows stay in an HNSW index, and an approximate scan spends its candidates on them | [Retrieval](docs/retrieval.md#reloading-the-corpus-used-to-degrade-the-index) |
 | The customer's words were not in the spans, but a model-invented tool name was — a span name is an aggregated dimension too | [Observability](docs/observability.md#attributes-are-not-the-only-way-into-a-backend) |
 | The page showed the model's markdown as literal asterisks, and only a real browser noticed | [The demo UI](docs/demo-ui.md#it-renders-the-models-markdown-in-a-deliberately-small-subset) |
 | Two browser tabs on one conversation interleaved, and the second request lost its retrieved passages silently | [Cost and failure](docs/reliability.md#one-turn-at-a-time-per-conversation) |
