@@ -105,20 +105,45 @@ kubectl -n "$NS" rollout restart deploy/ai-customer-service-go >/dev/null 2>&1 |
 kubectl -n "$NS" rollout status deploy/ai-customer-service-go --timeout=300s || true
 
 say "assertions"
-# Select a pod that is *Ready*, not merely one whose phase says Running.
+# Resolving a pod is not a one-shot operation while a rollout is settling.
 #
-# `phase == "Running"` is true of a pod that is shutting down, and during the rollout this
-# script forces there are always some. The exec then fails with "cannot exec into a
-# container in a completed pod; current phase is Succeeded" -- which is what these checks
-# were failing on intermittently, and what the old helper hid by discarding stderr.
-POD=""
-for _ in $(seq 1 30); do
-  POD=$(kubectl -n "$NS" get pods -l app.kubernetes.io/component=app \
-        -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
-        | awk '$2=="True"{print $1; exit}')
-  [ -n "$POD" ] && break
-  sleep 2
-done
+# `phase == "Running"` is true of a pod that is shutting down, so the first version of
+# this failed intermittently with "cannot exec into a container in a completed pod;
+# current phase is Succeeded". Selecting a *Ready* pod instead was not enough either:
+# Ready and terminating are both true of an old pod for a few seconds, and the pod can
+# begin terminating between being chosen and being exec'd into.
+#
+# So: exclude anything with a deletionTimestamp, and re-resolve on failure rather than
+# trusting a name to stay valid. Two wrong fixes preceded this one, and both looked
+# right because the next run happened to pass.
+ready_pod() {
+  kubectl -n "$NS" get pods -l app.kubernetes.io/component=app \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{" "}{.metadata.deletionTimestamp}{"\n"}{end}' \
+    | awk '$2=="True" && $3==""{print $1; exit}'
+}
+
+# exec_in_pod DESCRIPTION EXPECTED-SUBSTRING -- COMMAND...
+exec_in_pod() {
+  local d=$1 pattern=$2; shift 2
+  local out="" pod=""
+  for _ in $(seq 1 10); do
+    pod=$(ready_pod)
+    if [ -n "$pod" ]; then
+      out=$(kubectl -n "$NS" exec "$pod" -- "$@" 2>&1) || true
+      case "$out" in
+        (*"completed pod"*|*"not found"*|*"is terminating"*) ;;   # stale name, re-resolve
+        (*) case "$out" in
+              (*"$pattern"*) ok "$d"; return;;
+              (*) bad "$d -- got: ${out:0:90}"; return;;
+            esac;;
+      esac
+    fi
+    sleep 2
+  done
+  bad "$d -- no Ready, non-terminating pod after 20s"
+}
+
+POD=$(ready_pod)
 
 replicas=$(kubectl -n "$NS" get deploy ai-customer-service-go -o jsonpath='{.status.readyReplicas}')
 [[ ${replicas:-0} == 2 ]] && ok "both replicas ready" || bad "readyReplicas=${replicas:-0}, want 2"
@@ -154,9 +179,8 @@ else
   ok "no replica lost the CREATE EXTENSION race"
 fi
 
-contains "runs as uid 10001" "10001" kubectl -n "$NS" exec "$POD" -- id -u
-contains "root filesystem is read-only" "Read-only" \
-         kubectl -n "$NS" exec "$POD" -- sh -c 'touch /nope'
+exec_in_pod "runs as uid 10001" "10001" id -u
+exec_in_pod "root filesystem is read-only" "Read-only" sh -c 'touch /nope'
 # The Java implementation needs a writable /tmp because ONNX Runtime unpacks its native
 # library there. This one does not, and that claim is worth checking rather than asserting
 # in a comment: the pod has no volumes at all and the process is serving.

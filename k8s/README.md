@@ -59,13 +59,33 @@ through the Service, Go metrics, the demo page, and a bad key surfacing as `502`
 than as a healthy pod returning errors. No API key needed; export `ANTHROPIC_API_KEY` to
 check the model call too.
 
+## Which assertions have been seen to fail
+
+An assertion nobody has seen go red is a claim, not a check — the `CREATE EXTENSION` one
+passed for two days without its condition ever arising. So this is the honest inventory.
+
+| Assertion | Seen red? |
+| --- | --- |
+| both replicas ready | **yes** — a placeholder `requests: 4Gi` left one `Pending` |
+| no container was OOMKilled | **yes** — forced with a 512Mi limit; note that *both replicas ready* stayed green at the same time, because a container can OOM, restart and recover. That is why they are separate checks. |
+| no replica lost the `CREATE EXTENSION` race | **yes** — reproduces on every cold start without the advisory lock |
+| runs as uid 10001 / read-only root filesystem | **yes, but spuriously** — pod churn, not the property. The property itself has never been observed failing. |
+| the directory apply left the Secret alone | no |
+| no writable volume is needed at all | no |
+| health, readiness, metrics, the demo page | no |
+| a bad key surfaces as 502 | the branch has been exercised (run without `ANTHROPIC_API_KEY`) and passed; it has never failed |
+
+The bottom half are unproven detectors. They are worth keeping — a check that has never
+fired is not the same as a check that cannot — but they should not be read as evidence
+until something has made each of them red.
+
 ## What running them found
 
 | | |
 | --- | --- |
 | A placeholder `requests: 4Gi` left the second replica `Pending` forever | 2 × 4Gi against a 7.75 GiB node. `Insufficient memory`, not a crash — a rollout that simply never finishes. |
 | The first memory measurement was self-inconsistent and I nearly published it | A row read `peak 1380 MiB` under a `1280Mi` limit, which is impossible. `kubectl rollout status` returns while the previous pod is still `Running`, and the sampler picked it. Every row now reads `memory.max` from inside the same pod it measures, so a row cannot lie about which pod it describes. |
-| Two assertions passed on the first run and failed on the second, against an identical pod | **Two wrong explanations before the right one, and the fix that found it was not the fix for it.** First blamed on `set -o pipefail` turning `producer \| grep -q` into a failure when it matched — a real trap, but not this one: pipefail does not propagate into `sh -c`, which every one of those checks used. Then on API-server pressure, also unproven. The actual cause: the pod was selected with `phase == "Running"`, which is true of a pod that is shutting down, and `kubectl exec` then fails with *"cannot exec into a container in a completed pod; current phase is Succeeded"*. It became visible only because the helper had been changed to print what it got instead of discarding it — a change made for the wrong reason that paid for itself immediately. Selection is now by the `Ready` condition. |
+| Two assertions failed roughly one run in three, against pods that were correct | **Three wrong fixes before the right one, and the change that found the cause was not a fix for it.** First blamed on `set -o pipefail` turning `producer \| grep -q` into a failure when it matched — a real trap, but not this one: pipefail does not propagate into `sh -c`, which every one of those checks used. Then on API-server pressure, also unproven. The actual cause: the pod was selected with `phase == "Running"`, which is true of a pod that is shutting down, and `kubectl exec` then fails with *"cannot exec into a container in a completed pod; current phase is Succeeded"*. It became visible only because the helper had been changed to print what it got instead of discarding it — a change made for the wrong reason that paid for itself immediately. Selecting a `Ready` pod was still not enough: Ready and terminating are both true of an old pod for a few seconds, and it can begin terminating between being chosen and being exec'd into. The check now excludes anything with a `deletionTimestamp` and re-resolves the pod on a stale-name error. Four consecutive clean runs, against roughly one failure in three before. |
 | A cold-database reset that invented a bug | `DROP EXTENSION vector CASCADE` takes the `embedding` column with it and leaves the table, so `CREATE TABLE IF NOT EXISTS` does nothing and the app serves 500s from a table with no vector column. No deployment reaches that state on its own. The reset drops and recreates the schema instead. |
 | The `CREATE EXTENSION` check had been passing without ever running | It only fires on a *cold* database, and no run had ever had two replicas start against one — the first run had a replica stuck `Pending`, and every later run reused an extension that already existed. Forced cold, it fails: `duplicate key value violates unique constraint "pg_extension_name_index"`, both replicas restarting. Fixed with a Postgres advisory lock around the DDL; `verify.sh` now drops the extension before each deploy so the check is exercised every run. |
 | Per-replica memory looked unequal and was not | 1347 MiB against 1527 MiB — entirely page cache for the 470 MB model file, charged to whichever cgroup faulted it in first. `anon` is 960 MiB in both. |
