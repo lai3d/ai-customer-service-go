@@ -288,6 +288,62 @@ contains "readiness reaches Postgres"       "UP" curl -sf localhost:18081/readyz
 contains "the metrics endpoint serves Go metrics" "go_goroutines" curl -sf localhost:18081/metrics
 contains "the demo page is served" "AI Customer Service" curl -sf localhost:18081/
 
+# The operations surface, both ways round.
+#
+# First the unconfigured case, and it has to be *made* unconfigured rather than assumed:
+# a --keep run reuses the Secret that the enabling half of this section patched last time,
+# so assuming would give an assertion that passes once and then fails forever after.
+if "${KUBECTL[@]}" -n "$NS" get secret ai-customer-service-go-secrets \
+     -o jsonpath='{.data.ADMIN_TOKENS}' 2>/dev/null | grep -q .; then
+  note "clearing ADMIN_TOKENS left by an earlier run, so the unconfigured case is real"
+  "${KUBECTL[@]}" -n "$NS" patch secret ai-customer-service-go-secrets --type=json \
+    -p '[{"op":"remove","path":"/data/ADMIN_TOKENS"}]' >/dev/null
+  "${KUBECTL[@]}" -n "$NS" rollout restart deploy/ai-customer-service-go >/dev/null
+  "${KUBECTL[@]}" -n "$NS" rollout status deploy/ai-customer-service-go --timeout=180s >/dev/null
+  kill $PF 2>/dev/null || true
+  "${KUBECTL[@]}" -n "$NS" port-forward svc/ai-customer-service-go 18081:8081 >/dev/null 2>&1 &
+  PF=$!; trap 'kill $PF 2>/dev/null || true' EXIT
+  sleep 4
+fi
+
+# Unconfigured has to mean the routes were never registered. A 404 says that. A 401 would
+# say the routes exist and something is deciding -- and a decision can be misconfigured,
+# while an absent route cannot. This is the assertion that would catch someone "fixing"
+# the surface by registering it and rejecting at the guard.
+status=$(curl -s -o /dev/null -w '%{http_code}' localhost:18081/admin/ || echo 000)
+[[ $status == 404 ]] && ok "with no ADMIN_TOKENS there is no admin surface (404, not 401)" \
+                     || bad "/admin/ returned $status with no ADMIN_TOKENS, want 404"
+
+# And then turn it on, because "documented but never deployed" is how the manifests in the
+# sibling Java repository were wrong twice. This patches the Secret the harness created
+# itself -- k8s/ is still applied unmodified -- and restarts, which is exactly what a real
+# operator would do.
+say "operations surface"
+PROBE_TOKEN=$(openssl rand -hex 24)
+"${KUBECTL[@]}" -n "$NS" patch secret ai-customer-service-go-secrets --type=merge \
+  -p "{\"stringData\":{\"ADMIN_TOKENS\":\"probe:${PROBE_TOKEN}:operator\"}}" >/dev/null
+"${KUBECTL[@]}" -n "$NS" rollout restart deploy/ai-customer-service-go >/dev/null
+"${KUBECTL[@]}" -n "$NS" rollout status deploy/ai-customer-service-go --timeout=180s >/dev/null
+
+# The old port-forward pointed at pods that no longer exist.
+kill $PF 2>/dev/null || true
+"${KUBECTL[@]}" -n "$NS" port-forward svc/ai-customer-service-go 18081:8081 >/dev/null 2>&1 &
+PF=$!; trap 'kill $PF 2>/dev/null || true' EXIT
+sleep 4
+
+contains "the admin page is served once ADMIN_TOKENS is set" "Operations" curl -sf localhost:18081/admin/
+
+status=$(curl -s -o /dev/null -w '%{http_code}' localhost:18081/api/admin/v1/whoami || echo 000)
+[[ $status == 401 ]] && ok "the admin API refuses a request with no token (401)" \
+                     || bad "whoami with no token returned $status, want 401"
+
+# The token is passed through a variable and never printed: a PASS line is the only thing
+# this assertion is allowed to leave behind.
+status=$(curl -s -o /dev/null -w '%{http_code}' localhost:18081/api/admin/v1/whoami \
+           -H "Authorization: Bearer ${PROBE_TOKEN}" || echo 000)
+[[ $status == 200 ]] && ok "an operator token is accepted through the Service (200)" \
+                     || bad "whoami with a valid token returned $status, want 200"
+
 # GOMAXPROCS comes from the cgroup CPU limit on Go 1.25+, and it is what the embedding
 # concurrency bound defaults to. Reported, because the number is the point.
 gomax=$(curl -s localhost:18081/metrics | awk '/^go_sched_gomaxprocs_threads/{print $2}')

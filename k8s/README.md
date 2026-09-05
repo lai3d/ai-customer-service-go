@@ -18,7 +18,7 @@ k8s/
 ├── examples/secret.yaml     a template, deliberately not in the directory apply path
 └── kind/
     ├── postgres.yaml        a Postgres for the throwaway cluster only
-    └── verify.sh            create a cluster, deploy, assert twelve things
+    └── verify.sh            create a cluster, deploy, assert sixteen things
 ```
 
 ## Apply
@@ -27,6 +27,7 @@ k8s/
 kubectl apply -f k8s/namespace.yaml
 
 # Create the Secret imperatively so real values never touch a file git can see.
+# Add ADMIN_TOKENS here too if you want the operations surface -- see below.
 kubectl -n ai-customer-service-go create secret generic ai-customer-service-go-secrets \
   --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
   --from-literal=POSTGRES_USER='csagent' \
@@ -35,6 +36,26 @@ kubectl -n ai-customer-service-go create secret generic ai-customer-service-go-s
 kubectl apply -f k8s/
 kubectl -n ai-customer-service-go rollout status deploy/ai-customer-service-go
 ```
+
+## The operations surface is off unless you put a token in the Secret
+
+`/admin` reads customer conversations, so it is opt-in and its credential belongs in the
+Secret rather than the ConfigMap. `deployment.yaml` takes the whole Secret through
+`envFrom`, so adding the key is the entire deployment change:
+
+```sh
+kubectl -n ai-customer-service-go patch secret ai-customer-service-go-secrets --type=merge \
+  -p "{\"stringData\":{\"ADMIN_TOKENS\":\"alex:$(openssl rand -hex 24):operator\"}}"
+kubectl -n ai-customer-service-go rollout restart deploy/ai-customer-service-go
+```
+
+`name:token[:role]`, comma separated; the roles are `viewer` (read) and `operator`
+(read and write), and an omitted role is a viewer. Tokens shorter than 16 characters are
+refused at startup rather than accepted and weak.
+
+**With the key absent, `/admin` is a 404 rather than a guarded 401** — the routes are never
+registered. `verify.sh` asserts both halves of that, because "documented but never
+deployed" is exactly how two of the Java implementation's manifests were wrong.
 
 ## Before you apply
 
@@ -61,12 +82,17 @@ k8s/kind/verify.sh --down   # delete it
 ```
 
 It applies `k8s/` **unmodified** and adds only the two things the manifests deliberately
-do not ship. Twelve assertions: both replicas ready, nothing OOMKilled, the Secret
+do not ship. Sixteen assertions: both replicas ready, nothing OOMKilled, the Secret
 untouched by the directory apply, no replica losing the `CREATE EXTENSION` race, uid
 10001, a read-only root filesystem, no writable volume needed at all, health and readiness
-through the Service, Go metrics, the demo page, and a bad key surfacing as `502` rather
-than as a healthy pod returning errors. No API key needed; export `ANTHROPIC_API_KEY` to
-check the model call too.
+through the Service, Go metrics, the demo page, the operations surface both off and on
+(four of them), and a bad key surfacing as `502` rather than as a healthy pod returning
+errors. No API key needed; export `ANTHROPIC_API_KEY` to check the model call too.
+
+The four admin assertions are the only ones that change the cluster: they patch
+`ADMIN_TOKENS` into the Secret the harness created itself and restart the deployment, so
+that the documented way to turn the surface on is the way it was tested. The token is
+generated per run and never printed.
 
 ## The harness never touches your kubeconfig
 
@@ -115,10 +141,13 @@ passed for two days without its condition ever arising. So this is the honest in
 | health, readiness, metrics, the demo page | no |
 | a bad key surfaces as 502 | the branch has been exercised (run without `ANTHROPIC_API_KEY`) and passed; it has never failed |
 | the node has room for the replicas | **yes** — forced with `requests: 4Gi`, which fits the node's 7931 MiB and not the 7641 MiB actually free |
+| with no `ADMIN_TOKENS` there is no admin surface (404) | **yes** — run with the clearing step removed against a cluster an earlier run had enabled: *`/admin/` returned 200 with no ADMIN_TOKENS, want 404*. That red is also what the clearing step is for: without it the assertion passes on a fresh cluster and fails on every `--keep` rerun after. |
+| the admin page serves, refuses a tokenless request (401), accepts an operator token (200) | **yes, all three** — run with the enabling patch removed: the page check got an empty body and both API checks got `404` where they wanted `401` and `200`. That is the specific way they could have been vacuous: passing because the surface was already on from a previous run rather than because this run turned it on. |
 
-The bottom half are unproven detectors. They are worth keeping — a check that has never
-fired is not the same as a check that cannot — but they should not be read as evidence
-until something has made each of them red.
+Four remain unproven: the directory apply leaving the Secret alone, no writable volume,
+the four service-level checks, and the 502. They are worth keeping — a check that has
+never fired is not the same as a check that cannot — but they should not be read as
+evidence until something has made each of them red.
 
 ## What running them found
 

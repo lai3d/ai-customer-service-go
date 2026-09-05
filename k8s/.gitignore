@@ -1,2 +1,9 @@
+# A real Secret must never be committed.
+#
+# The negation is not decoration. `secret.yaml` on its own also matches
+# examples/secret.yaml -- the template the README's file tree points a reader at -- so
+# that file existed on this machine, was written and reviewed, and was never in the
+# repository. Nothing noticed for as long as it took someone to clone and look.
 secret.yaml
 *.secret.yaml
+!examples/secret.yaml

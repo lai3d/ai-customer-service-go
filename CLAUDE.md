@@ -142,6 +142,13 @@ that show why it is not needed here.
   because `trap ... EXIT` replaces the previous handler rather than adding to it. Verify by
   hashing the file, not by reading `current-context` — the weaker check passes for a script
   that rewrites the file and puts the context back.
+- **`grep` in this shell is ripgrep, which skips anything `.gitignore` matches.** A
+  repo-wide search for a variable name silently missed `k8s/examples/secret.yaml` — a file
+  that was on disk, referenced by a README, and not in the repository, because a bare
+  `secret.yaml` ignore rule matched it too. Use `command grep`, `git grep` or `rg --no-ignore`
+  when the question is "does this exist anywhere", and remember that the filesystem is not
+  the repository: `TestEveryPathTheKubernetesReadmeDrawsIsInTheRepository` asks git,
+  because an `os.Stat` would have passed the whole time.
 - **A check that cannot be seen to fail is a claim, not a check.** `k8s/README.md` keeps an
   inventory of which harness assertions have actually been observed red. Three separate
   detectors in this repository have been silently blind — a `CREATE EXTENSION` check whose
