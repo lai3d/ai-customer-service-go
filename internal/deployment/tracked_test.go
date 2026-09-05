@@ -23,11 +23,9 @@ import (
 // check that consults the same source as the thing it is checking.
 func TestEveryPathTheKubernetesReadmeDrawsIsInTheRepository(t *testing.T) {
 	root := repoRoot(t)
-	if err := exec.Command("git", "-C", root, "rev-parse", "--git-dir").Run(); err != nil {
-		// A build from a source tarball has no git. Skipped rather than failed, and
-		// named loudly, because a silent skip is how a check stops being one.
-		t.Skip("not a git checkout: this test cannot tell tracked from merely present")
-	}
+	// A build from a source tarball has no git. Skipped rather than failed, and named
+	// loudly, because a silent skip is how a check stops being one.
+	requireGit(t, root)
 
 	raw, err := os.ReadFile(filepath.Join(root, "k8s", "README.md"))
 	if err != nil {
@@ -84,4 +82,85 @@ func ignoredBy(rule string) string {
 		return "\nIt is not ignored, so it was simply never added."
 	}
 	return "\nIt is ignored by: " + rule
+}
+
+// The same question as the test above, asked of every link in every document rather than
+// of one drawing: a relative link in a markdown file must point at something the
+// repository actually contains.
+//
+// The k8s tree test would not have caught this class anywhere else, because a drawn tree
+// is not a link, and the sweep that proved the rest of the documentation clean was run by
+// hand once. A check run by hand once is a fact about that afternoon.
+//
+// Links are checked against `git ls-files`, again not against the filesystem, and the
+// count of links checked is asserted -- a link regex that stops matching would otherwise
+// pass this test by finding nothing to disagree with.
+func TestEveryFileTheDocumentationLinksToIsInTheRepository(t *testing.T) {
+	root := repoRoot(t)
+	requireGit(t, root)
+
+	out, err := exec.Command("git", "-C", root, "ls-files").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracked := map[string]bool{}
+	var dirs []string
+	for _, f := range strings.Fields(string(out)) {
+		tracked[f] = true
+		for d := filepath.Dir(f); d != "." && d != "/"; d = filepath.Dir(d) {
+			dirs = append(dirs, d)
+		}
+	}
+	trackedDir := map[string]bool{}
+	for _, d := range dirs {
+		trackedDir[d] = true
+	}
+
+	// A scheme (http:, mailto:, and the javascript: that docs/operations.md quotes while
+	// explaining why the renderer refuses links) is not a path.
+	scheme := regexp.MustCompile(`^[a-z][a-z0-9+.-]*:`)
+	link := regexp.MustCompile(`\]\(([^)]+)\)`)
+
+	checked := 0
+	for f := range tracked {
+		if !strings.HasSuffix(f, ".md") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(root, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range link.FindAllStringSubmatch(string(raw), -1) {
+			target := strings.Fields(m[1])[0] // drop a ("title") suffix
+			target, _, _ = strings.Cut(target, "#")
+			if target == "" || scheme.MatchString(target) {
+				continue
+			}
+			p := filepath.Clean(filepath.Join(filepath.Dir(f), target))
+			if strings.HasPrefix(p, "..") {
+				// A link into the sibling Java repository. Real, and not checkable from
+				// inside this one -- whoever clones this has no such sibling.
+				continue
+			}
+			checked++
+			if tracked[p] || trackedDir[p] {
+				continue
+			}
+			ignored, _ := exec.Command("git", "-C", root, "check-ignore", "-v", p).Output()
+			t.Errorf("%s links to %s, which is not in the repository.%s",
+				f, target, ignoredBy(string(ignored)))
+		}
+	}
+	if checked < 20 {
+		t.Errorf("only %d relative links were checked; the link pattern has stopped "+
+			"matching and this test is no longer looking at anything", checked)
+	}
+	t.Logf("%d relative links checked against git ls-files", checked)
+}
+
+func requireGit(t *testing.T, root string) {
+	t.Helper()
+	if err := exec.Command("git", "-C", root, "rev-parse", "--git-dir").Run(); err != nil {
+		t.Skip("not a git checkout: this test cannot tell tracked from merely present")
+	}
 }
