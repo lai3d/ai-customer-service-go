@@ -110,6 +110,21 @@ that show why it is not needed here.
 - **The ticket table and the budget table are both bounded LRUs.** A map keyed by
   conversation id that nothing removes from is a memory leak with a long fuse.
 
+## Two rules that came out of being wrong
+
+**A test written from the same understanding as the code confirms the understanding, not
+the code.** Three defects here were covered by passing tests that asserted against
+fixtures built to satisfy the very claim being tested — a stub returning usage where no
+real client did, a mocked model standing in for a database row, a four-sample assertion
+cited as a regression guard. When a test and the code it covers were written together from
+one mental model, the test is evidence about the model. Push the assertion below the seam:
+drive the real client against an `httptest` server, read the actual row, widen the sample.
+
+**A detector that disagrees with a fix you have just verified is evidence about the
+detector at least as often as about the fix.** A regex for run-together sentences reported
+three failures in Chinese after the fix demonstrably worked in English. The regex was
+measuring the language — Chinese prose puts no space after 。 — not the bug.
+
 ## Measurements, and how to change one
 
 `docs/` holds one document per decision and every number in it was produced by a test or
