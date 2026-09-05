@@ -142,7 +142,11 @@ that show why it is not needed here.
   re-derives a translation, so the test compares heading-level sequences -- the drift that
   actually happens.
 
-## Two rules that came out of being wrong
+## Four things that came out of being wrong
+
+The first two are rules. The last two are not, and saying so is the point: they are
+failure modes nobody in this exchange found a technique for, and inventing one would be
+worse than naming the gap.
 
 **A test written from the same understanding as the code confirms the understanding, not
 the code.** Three defects here were covered by passing tests that asserted against
@@ -156,6 +160,21 @@ drive the real client against an `httptest` server, read the actual row, widen t
 detector at least as often as about the fix.** A regex for run-together sentences reported
 three failures in Chinese after the fix demonstrably worked in English. The regex was
 measuring the language — Chinese prose puts no space after 。 — not the bug.
+
+**The front door does not get re-read when the thing behind it changes.** Docs are
+revisited when the code they describe moves, because that is what makes someone open them.
+A lead paragraph, a repository description, a topic list — these are revisited when
+someone writes them, and then never, and they go on reading fine because they were true
+once. The Java implementation's README opened by naming one provider while its status line
+four lines below named four; this one's lead is current only because it was written after
+the providers existed. **When a capability changes, re-read the first paragraph of both
+READMEs and the GitHub description and topics.** Nothing else will prompt you to.
+
+**Verification is a claim about a moment, not a property of the thing.** The cross-repo
+link in `README.zh.md` was checked live and returned 200; ninety seconds later the other
+repository renamed the file and it was a 404. The check was not careless — care is what
+produced it. There is no rule here for when a verified fact needs re-verifying, only the
+knowledge that "I checked" has a timestamp on it.
 
 ## Measurements, and how to change one
 
