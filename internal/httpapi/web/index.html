@@ -2,6 +2,11 @@
 <meta charset="utf-8">
 <title>AI Customer Service — Go</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- Inline, so the browser makes no request for it. Three 404s (/favicon.ico,
+     /favicon.svg, /apple-touch-icon.png) were the page's only console errors, and a
+     console with a permanent error in it trains its reader to ignore the console. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2300758d'/%3E%3Cpath d='M8 12h16M8 17h11' stroke='white' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2300758d'/%3E%3C/svg%3E">
 <style>
   :root {
     --bg: #fbfbfa; --panel: #fff; --ink: #1a1a18; --muted: #6b6b66;
@@ -29,6 +34,13 @@
   .msg.bot { align-self:flex-start; background:var(--panel); border:1px solid var(--line) }
   .msg.err { align-self:flex-start; background:transparent; border:1px solid var(--warm);
              color:var(--warm) }
+  .msg p { margin:0 0 .5em }
+  .msg p:last-child { margin-bottom:0 }
+  .msg ul { margin:.35em 0; padding-left:1.35em }
+  .msg li { margin:.15em 0 }
+  .msg strong { font-weight:640 }
+  .msg code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.92em;
+              background:rgba(127,127,127,.16); padding:.08em .34em; border-radius:4px }
   form { display:flex; gap:8px; padding:14px 20px; border-top:1px solid var(--line) }
   input,button { font:inherit; border-radius:8px; border:1px solid var(--line) }
   input { flex:1; padding:9px 12px; background:var(--panel); color:var(--ink) }
@@ -92,6 +104,61 @@ const el = (tag, cls, text) => {
   if (text !== undefined) n.textContent = text;
   return n;
 };
+
+// The model writes markdown -- bold spans and hyphen lists in almost every reply -- and
+// the page used to show the asterisks and hyphens to the customer, verbatim. Found by
+// driving the page in a real browser; no test would have noticed, because the text was
+// arriving correctly and only the rendering was wrong.
+//
+// This renders a deliberately small subset by building DOM nodes. No innerHTML anywhere
+// on the page, so nothing the model writes is ever parsed as markup -- which matters
+// more here than in an ordinary chat client, because the model's input includes
+// retrieved passages, the injection path the system prompt can only ask about.
+//
+// Links are absent on purpose. Every other construct here is formatting; a link is a
+// capability, and `[text](javascript:...)` or a model-authored href pointing anywhere is
+// the one piece of markdown that does something rather than looks like something.
+//
+// The system prompt is untouched. Telling the model to answer in plain text would fix
+// this in one sentence, and it would also make this implementation's prompt differ from
+// the Java one -- and prompt parity is part of what makes the two comparable at all.
+// This is a gap in a demo page, not in the system.
+function renderMarkdown(container, text) {
+  container.replaceChildren();
+  const lines = text.split('\n');
+  let list = null;
+
+  const flushList = () => { list = null; };
+
+  for (const line of lines) {
+    const item = /^\s*[-*]\s+(.*)$/.exec(line);
+    if (item) {
+      if (!list) { list = el('ul'); container.append(list); }
+      const li = el('li');
+      appendInline(li, item[1]);
+      list.append(li);
+      continue;
+    }
+    flushList();
+    if (line.trim() === '') continue;
+    const p = el('p');
+    appendInline(p, line);
+    container.append(p);
+  }
+}
+
+// appendInline handles **bold** and `code`, and appends everything else as text nodes.
+function appendInline(parent, text) {
+  const pattern = /\*\*([^*]+)\*\*|`([^`]+)`/g;
+  let last = 0, match;
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > last) parent.append(text.slice(last, match.index));
+    if (match[1] !== undefined) parent.append(el('strong', null, match[1]));
+    else parent.append(el('code', null, match[2]));
+    last = pattern.lastIndex;
+  }
+  if (last < text.length) parent.append(text.slice(last));
+}
 
 function card(title) {
   const c = el('div', 'card');
@@ -163,6 +230,7 @@ form.addEventListener('submit', async (e) => {
 
   const bubble = el('div', 'msg bot', '');
   log.append(bubble);
+  let answer = '';
 
   try {
     const res = await fetch('/api/v1/chat/stream', {
@@ -194,7 +262,11 @@ form.addEventListener('submit', async (e) => {
         const dataLine = frame.split('\n').find(l => l.startsWith('data: '));
         if (!dataLine) continue;
         const event = JSON.parse(dataLine.slice(6));
-        if (event.type === 'message') { bubble.textContent += event.text; log.scrollTop = log.scrollHeight; }
+        if (event.type === 'message') {
+          answer += event.text;
+          renderMarkdown(bubble, answer);
+          log.scrollTop = log.scrollHeight;
+        }
         else if (event.type === 'retrieval') renderRetrieval(event.passages || []);
         else if (event.type === 'tool') renderTool(event.tool);
         else if (event.type === 'usage') renderUsage(event.usage);
@@ -203,7 +275,7 @@ form.addEventListener('submit', async (e) => {
         }
       }
     }
-    if (!bubble.textContent) bubble.remove();
+    if (!answer) bubble.remove();
   } catch (err) {
     bubble.remove();
     log.append(el('div', 'msg err', 'The connection failed: ' + err.message));

@@ -36,6 +36,7 @@ recorded too.
 | A cost meter that silently reads zero is worse than none, so the misses are counted | [Cost and failure](docs/reliability.md#the-model-in-the-metrics-is-not-the-model-you-asked-for) |
 | An abandoned stream had already been billed, and the test that would have caught it could only pass because it tested the stub | [Cost and failure](docs/reliability.md#an-abandoned-stream-has-usually-already-been-billed) |
 | The customer's words were not in the spans, but a model-invented tool name was — a span name is an aggregated dimension too | [Observability](docs/observability.md#attributes-are-not-the-only-way-into-a-backend) |
+| The page showed the model's markdown as literal asterisks, and only a real browser noticed | [The demo UI](docs/demo-ui.md#it-renders-the-models-markdown-in-a-deliberately-small-subset) |
 
 ---
 
@@ -242,6 +243,8 @@ throughout.
 - **No evaluation harness.** The retrieval measurements say which passage was found, not
   whether the answer built from it was good.
 - **The ticket cap is per replica**, not a distributed guarantee, and says so.
+- **The demo page was verified headless**, with a throwaway profile. Font fallback and
+  anything gated on a real display are not covered.
 
 Deliberately out of scope: authentication, multi-tenancy, MCP.
 

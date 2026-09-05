@@ -22,6 +22,31 @@ event: error        a failure after the response was already committed
 
 A production widget would read `message` and `error` and ignore the rest.
 
+### It renders the model's markdown, in a deliberately small subset
+
+The model writes markdown — bold spans and hyphen lists in almost every reply — and the
+page showed the customer the asterisks and hyphens, verbatim, in the pane a reader looks
+at first. Nothing was broken except the rendering, the text arrived correctly, and no test
+noticed. It was found by driving the page in a real browser, which is the only reason to
+do that at all.
+
+Bold, unordered lists and inline code are rendered. **Links are not**, on purpose: every
+other construct is formatting, and a link is a capability — a model-authored `href` is the
+one piece of markdown that does something rather than looks like something.
+
+The rendering builds DOM nodes. There is no `innerHTML` on the page, and
+`TestTheDemoPageNeverTurnsAStringIntoMarkup` asserts that every sink that turns a string
+into markup stays absent. Model text becomes a text node or it does not appear —
+`**<script>…</script>**` renders as a bold span whose *text* is `<script>…</script>`. That
+matters more here than in an ordinary chat client, because the model's input includes
+retrieved passages: the injection path the system prompt can only ask about.
+
+**The system prompt was not touched.** One sentence telling the model to answer in plain
+text would have closed this, and it would also have made this implementation's prompt
+differ from the Java one — and prompt parity is part of what makes the two comparable at
+all. The gap was in a demo page, so the fix is in the demo page. (The Java implementation's
+page has the same gap: its `bubble()` assigns `textContent` too.)
+
 ### Three things the page is careful about
 
 **Score bars are normalised within each result set**, not drawn from the raw score. e5
@@ -38,6 +63,25 @@ needs to see what was retrieved.
 least two, and a UI that showed one number for "the model call" would hide half of what
 the turn cost. When the count is above one the card says so in a sentence, because the
 number alone reads like a bug.
+
+### Verified in a browser, and what that did not cover
+
+Driven in a headless Chromium at 1440×950 by the Java implementation's session, sampling
+the DOM every 120 ms:
+
+```
+ 123 ms   retrieval panel — 8 passages, scores, relative bars
+1933 ms   tool pill — lookup_order_status → found
+3629 ms   the first word of the answer
+5065 ms   usage card — claude-opus-5, model calls 2, 3,816 in / 238 out
+```
+
+Retrieval is on screen three and a half seconds before the first word of the answer, and
+the tool pill a second and a half before it. The same turn timed independently on the wire
+lines up, so the page adds no reordering of its own.
+
+Headless, with a throwaway profile. Font fallback and anything gated on a real display are
+not covered by that.
 
 ### What it does not show
 

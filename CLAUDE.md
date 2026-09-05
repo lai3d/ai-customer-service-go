@@ -138,8 +138,16 @@ Chinese, through the container as well as from source. Traces arrive in Jaeger w
 `gen_ai.usage.*` and per-tool spans, and carry no customer text — checked by grepping the
 backend.
 
-**Not verified:** the demo page has not been driven in a real browser. It serves and its
-event contract is tested; the rendering is not.
+**The demo page, verified in a headless Chromium** by the Java implementation's session on
+2026-09-05: the panes fill in event order — retrieval on screen at 123 ms, the tool pill at
+1933 ms, the first word of the answer at 3629 ms, the usage card at 5065 ms reporting
+**two model calls** on a tool-calling turn. So "retrieval appears while the model is still
+thinking" is a measurement, not a claim: 3.5 seconds before the first word. Independently
+timed on the wire, the page adds no reordering of its own.
+
+That run found the page was showing the model's markdown to the customer as literal
+asterisks and hyphens, which is fixed. **Still not covered:** the run was headless with a
+throwaway profile, so font fallback and anything gated on a real display are unverified.
 
 ## Scope
 
