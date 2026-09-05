@@ -50,14 +50,37 @@ contains(){ local d=$1 pattern=$2; shift 2
   local out; out=$("$@" 2>&1) || true
   case "$out" in (*"$pattern"*) ok "$d";; (*) bad "$d -- got: ${out:0:80}";; esac; }
 
-if [[ ${1:-} == --down ]]; then kind delete cluster --name "$CLUSTER"; exit 0; fi
+# A kubeconfig of the harness's own, so the user's is never opened for writing.
+#
+# Pinning --context was the previous fix and it was incomplete: `kind create cluster`
+# writes the new context into $KUBECONFIG and switches to it, so a *fresh* run modified
+# the user's file even though every later command was context-pinned. The claim "this
+# harness never touches your kubeconfig" was true only for runs that reused a cluster.
+#
+# Saving and restoring would work and is not worth it. What this guards is which cluster
+# somebody's next `kubectl delete` reaches, and this kubeconfig has production-shaped
+# contexts in it -- a mechanism that has to be right is worse than one that cannot be
+# wrong. `trap ... EXIT` replacing rather than adding is how the Java implementation's
+# harness lost a restore it had just added and tested.
+export KUBECONFIG="$(dirname "$0")/.kubeconfig"
+
+if [[ ${1:-} == --down ]]; then
+  kind delete cluster --name "$CLUSTER"
+  rm -f "$KUBECONFIG"
+  exit 0
+fi
 
 for t in kind kubectl docker; do
   command -v "$t" >/dev/null || { echo "missing: $t" >&2; exit 1; }
 done
 
 say "cluster"
-kind get clusters 2>/dev/null | grep -qx "$CLUSTER" || kind create cluster --name "$CLUSTER" --wait 120s
+if kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
+  # The cluster exists but this kubeconfig may not describe it yet.
+  kind export kubeconfig --name "$CLUSTER" >/dev/null
+else
+  kind create cluster --name "$CLUSTER" --wait 120s
+fi
 
 # Never `kubectl config use-context`. It is global state in the caller's kubeconfig, and
 # this machine runs two of these harnesses -- the sibling Java implementation's session had
@@ -69,8 +92,8 @@ kind get clusters 2>/dev/null | grep -qx "$CLUSTER" || kind create cluster --nam
 # second trap further down silently disables the restore and nothing errors. That happened
 # to the Java harness, to a restore that had just been added, tested, and announced.
 #
-# Passing --context on every call needs no restore, so there is nothing for a trap to
-# disable.
+# Belt and braces: the kubeconfig above already contains only this cluster, and pinning
+# the context means a stray KUBECONFIG in the environment cannot redirect a command.
 KUBECTL=(kubectl --context "kind-$CLUSTER")
 
 say "image  $IMAGE"

@@ -70,21 +70,34 @@ check the model call too.
 
 ## The harness never touches your kubeconfig
 
-`verify.sh` passes `--context` on every call and never runs `kubectl config use-context`.
-That is a safety property, not a courtesy: this kubeconfig has production-shaped contexts
-in it, and a script that switches the current context and does not switch it back decides
-where somebody's next `kubectl delete` lands.
+`verify.sh` exports a `KUBECONFIG` of its own (`k8s/kind/.kubeconfig`, gitignored) and
+never opens yours. That is a safety property rather than a courtesy: this machine's
+kubeconfig has production-shaped contexts in it, and a script that changes the current
+context decides where somebody's next `kubectl delete` lands.
 
-The obvious alternative — save the context, restore it in a `trap` — is worse than it
-looks. `trap ... EXIT` **replaces** the previous handler rather than adding to it, so a
-second `trap` anywhere below silently disables the restore and nothing errors. The Java
-implementation's harness lost a restore that way, one that had just been added, tested,
-and announced. Pinning the context per call leaves nothing for a trap to disable.
+Three versions, and the first two were both incomplete:
 
-Verified by switching the caller to an unrelated context and confirming a full run leaves
-it there. The first version of that check was worthless: it tried to switch to a context
-that no longer existed, the switch failed silently, and the "before" value was already the
-one the script would have set — a negative test that could not fail.
+1. `kubectl config use-context` — switched the caller's context and left it switched. It
+   did this from the day the script was written, including in the run that switched the
+   sibling Java session's context out from under it.
+2. `--context` on every call — better, and still wrong on a *fresh* run, because
+   `kind create cluster` writes the new context into `$KUBECONFIG` and switches to it. The
+   claim "never touches your kubeconfig" was true only for runs that reused a cluster.
+3. A dedicated `KUBECONFIG`. Nothing to restore.
+
+Save-and-restore was never attempted, deliberately. `trap ... EXIT` **replaces** the
+previous handler rather than adding to it, so a second `trap` below silently disables the
+restore and nothing errors — that is how the Java harness lost a restore it had just
+added, tested and announced. What this guards is which cluster a `kubectl delete` reaches,
+and a mechanism that has to be right is worse than one that cannot be wrong.
+
+**Verified by hash, not by reading the context.** The user's kubeconfig is byte-identical
+by `sha256` before and after a full run *including a fresh cluster build* — the case
+version 2 did not cover. Checking `current-context` would have passed for a script that
+rewrote the file and put the context back, and the first attempt at even that weaker check
+was worthless: it switched to a context that no longer existed, the switch failed
+silently, and the "before" value was already the one the script would have set. A negative
+test that could not fail.
 
 ## Which assertions have been seen to fail
 
