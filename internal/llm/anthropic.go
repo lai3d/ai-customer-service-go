@@ -81,10 +81,19 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, onText func(string)
 	// cumulative totals overwrite rather than add. See docs/reliability.md.
 	usageFrames := 0
 
+	// A failure does not return early, because by the time one happens the provider has
+	// usually already told us what it billed. Anthropic sends the input count at
+	// message_start, before a single token of the answer, so a stream that dies
+	// half-way through -- most often because the customer closed the tab -- has spent
+	// real money that the caller is willing to record. Returning a zero Result here
+	// would throw it away one layer below the comment that promises otherwise.
+	var streamErr error
+
 	for stream.Next() {
 		event := stream.Current()
 		if err := message.Accumulate(event); err != nil {
-			return Result{}, fmt.Errorf("accumulate stream event: %w", err)
+			streamErr = fmt.Errorf("accumulate stream event: %w", err)
+			break
 		}
 		if event.Usage.OutputTokens > 0 || event.Message.Usage.InputTokens > 0 {
 			usageFrames++
@@ -95,24 +104,25 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, onText func(string)
 		if delta, ok := event.AsAny().(anthropic.ContentBlockDeltaEvent); ok {
 			if text, ok := delta.Delta.AsAny().(anthropic.TextDelta); ok && text.Text != "" {
 				if err := onText(text.Text); err != nil {
-					return Result{}, err
+					streamErr = err
+					break
 				}
 			}
 		}
 	}
-	if err := stream.Err(); err != nil {
-		return Result{}, classify(err)
+	if streamErr == nil {
+		streamErr = classify(stream.Err())
 	}
 
 	slog.Debug("model call finished",
 		"provider", "anthropic", "usage_frames", usageFrames,
 		"input_tokens", message.Usage.InputTokens,
-		"output_tokens", message.Usage.OutputTokens)
+		"output_tokens", message.Usage.OutputTokens,
+		"error", streamErr)
 
 	result := Result{
 		StopReason: string(message.StopReason),
 		Model:      string(message.Model),
-		Native:     message.ToParam(),
 		// Accumulate has already resolved usage for this call: Anthropic sends
 		// cumulative whole-message totals, so the last frame overwrites rather than
 		// adds. One call in, one call's usage out.
@@ -120,6 +130,11 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, onText func(string)
 			InputTokens:  message.Usage.InputTokens,
 			OutputTokens: message.Usage.OutputTokens,
 		},
+	}
+	// Only for a call that finished. Native exists so a tool round can echo an assistant
+	// turn back unchanged, and a half-streamed one is not something to send anywhere.
+	if streamErr == nil && len(message.Content) > 0 {
+		result.Native = message.ToParam()
 	}
 	for _, block := range message.Content {
 		switch variant := block.AsAny().(type) {
@@ -133,7 +148,7 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, onText func(string)
 			})
 		}
 	}
-	return result, nil
+	return result, streamErr
 }
 
 func toAnthropicMessages(messages []Message) []anthropic.MessageParam {

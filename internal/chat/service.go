@@ -102,49 +102,27 @@ func (s *Service) Turn(ctx context.Context, conversationID, message string, emit
 	defer span.End()
 	span.SetAttributes(attribute.String("conversation.id", conversationID))
 
-	if err := s.budget.Check(conversationID); err != nil {
-		return err
-	}
-
-	if err := s.memory.Append(ctx, conversationID, llm.RoleUser, message); err != nil {
-		return err
-	}
-
-	retrievalStart := time.Now()
-	passages, err := s.retriever.Retrieve(ctx, message)
-	if err != nil {
-		span.SetStatus(codes.Error, "retrieval failed")
-		return fmt.Errorf("retrieval: %w", err)
-	}
-	s.metrics.Retrieval.Observe(time.Since(retrievalStart).Seconds())
-	emit(Event{Type: EventRetrieval, Passages: toPassageEvents(passages)})
-
-	history, err := s.memory.History(ctx, conversationID)
-	if err != nil {
-		return err
-	}
-
-	request := llm.Request{
-		System:    SystemPrompt,
-		Messages:  withPassages(history, passages),
-		Tools:     s.toolDefs,
-		MaxTokens: s.maxTokens,
-	}
-
 	var reply strings.Builder
 	var usage llm.Usage
 	modelCalls := 0
 	reportedModel := s.client.Model()
 	outcome := "failed"
 
-	// Whatever the model managed to say is persisted, however the turn ended. A client
-	// that disconnects mid-answer would otherwise leave an orphaned user message
-	// behind, and the next turn would open with two user messages in a row.
+	// Installed before anything can fail, not after the model call is set up.
 	//
-	// The write uses a context detached from the request's: on a disconnect the
-	// request context is already cancelled, and a cancelled context cannot write to
-	// Postgres. This is the one place that detachment is correct -- the work is
-	// finished, only the recording is left.
+	// It was the other way round first, and the four returns below it -- a budget
+	// rejection, a memory write, a retrieval failure -- incremented nothing at all. A
+	// retrieval outage then showed up as *silence* in chat_turns_total rather than as a
+	// spike in failures, which is the wrong direction for the first metric anyone would
+	// look at.
+	//
+	// The other half of this block is that whatever the model managed to say is
+	// persisted however the turn ended. A client that disconnects mid-answer would
+	// otherwise leave an orphaned user message behind, and the next turn would open
+	// with two user messages in a row. The write uses a context detached from the
+	// request's: on a disconnect the request context is already cancelled, and a
+	// cancelled context cannot write to Postgres. This is the one place that
+	// detachment is correct -- the work is finished, only the recording is left.
 	defer func() {
 		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
@@ -157,6 +135,39 @@ func (s *Service) Turn(ctx context.Context, conversationID, message string, emit
 		s.metrics.Turns.WithLabelValues(outcome).Inc()
 		s.metrics.TurnSeconds.WithLabelValues(reportedModel).Observe(time.Since(started).Seconds())
 	}()
+
+	if err := s.budget.Check(conversationID); err != nil {
+		outcome = "budget_exceeded"
+		return err
+	}
+
+	if err := s.memory.Append(ctx, conversationID, llm.RoleUser, message); err != nil {
+		outcome = "memory_failed"
+		return err
+	}
+
+	retrievalStart := time.Now()
+	passages, err := s.retriever.Retrieve(ctx, message)
+	if err != nil {
+		span.SetStatus(codes.Error, "retrieval failed")
+		outcome = "retrieval_failed"
+		return fmt.Errorf("retrieval: %w", err)
+	}
+	s.metrics.Retrieval.Observe(time.Since(retrievalStart).Seconds())
+	emit(Event{Type: EventRetrieval, Passages: toPassageEvents(passages)})
+
+	history, err := s.memory.History(ctx, conversationID)
+	if err != nil {
+		outcome = "memory_failed"
+		return err
+	}
+
+	request := llm.Request{
+		System:    SystemPrompt,
+		Messages:  withPassages(history, passages),
+		Tools:     s.toolDefs,
+		MaxTokens: s.maxTokens,
+	}
 
 	for round := 0; ; round++ {
 		// One span per model call, because a turn is not a model call. A trace that
@@ -203,8 +214,18 @@ func (s *Service) Turn(ctx context.Context, conversationID, message string, emit
 			return callErr
 		}
 
-		if !result.WantsTools() || round >= maxToolRounds-1 {
+		if !result.WantsTools() {
 			outcome = "completed"
+			break
+		}
+		if round >= maxToolRounds-1 {
+			// The model still wanted a tool and will not get one. The customer sees
+			// whatever text had accumulated, which may be nothing -- indistinguishable
+			// from a completed turn unless the meters say otherwise, and the first
+			// thing anyone would want to know before changing the cap.
+			outcome = "tool_limit"
+			slog.Warn("a turn hit the tool-round cap with the model still asking",
+				"conversation_id", conversationID, "cap", maxToolRounds)
 			break
 		}
 
@@ -266,21 +287,35 @@ func (s *Service) runTools(ctx context.Context, conversationID string,
 		go func(i int, call llm.ToolCall) {
 			defer wg.Done()
 
-			toolCtx, toolSpan := obs.Tracer().Start(ctx, "tool "+call.Name)
+			// The name is written by the model, so it is validated before it can
+			// become a metric label or a span name. Both are aggregated dimensions in
+			// their backends, and an unbounded set of values takes the backend down --
+			// the same hazard the conversation id is kept out of, arriving through a
+			// different door and with attacker influence behind it, since a retrieved
+			// passage can carry an instruction to call a tool that does not exist.
+			tool, known := s.tools[call.Name]
+			reportedName := call.Name
+			if !known {
+				reportedName = "unknown"
+			}
+
+			toolCtx, toolSpan := obs.Tracer().Start(ctx, "tool "+reportedName)
 			defer toolSpan.End()
 			// The tool's arguments are not on the span either: they are written by the
 			// model from what the customer said.
-			toolSpan.SetAttributes(attribute.String("tool.name", call.Name))
+			toolSpan.SetAttributes(attribute.String("tool.name", reportedName))
 
-			tool, ok := s.tools[call.Name]
-			if !ok {
+			if !known {
 				// The model invented a tool. Say so plainly; it can recover.
+				// The model gets the name it asked for -- it needs that to recover --
+				// while the meters and the span get the bounded one.
 				results[i] = llm.ToolResult{CallID: call.ID, IsError: true,
 					Content: fmt.Sprintf("There is no tool named %q.", call.Name)}
+				slog.Warn("the model asked for a tool that does not exist", "requested", call.Name)
 				mu.Lock()
 				emit(Event{Type: EventTool, Tool: &ToolEvent{Name: call.Name, Outcome: "unknown_tool"}})
 				mu.Unlock()
-				s.metrics.ToolCalls.WithLabelValues(call.Name, "unknown_tool").Inc()
+				s.metrics.ToolCalls.WithLabelValues(reportedName, "unknown_tool").Inc()
 				toolSpan.SetAttributes(attribute.String("tool.outcome", "unknown_tool"))
 				return
 			}
@@ -298,7 +333,7 @@ func (s *Service) runTools(ctx context.Context, conversationID string,
 			mu.Lock()
 			emit(Event{Type: EventTool, Tool: &ToolEvent{Name: call.Name, Outcome: result.Outcome}})
 			mu.Unlock()
-			s.metrics.ToolCalls.WithLabelValues(call.Name, result.Outcome).Inc()
+			s.metrics.ToolCalls.WithLabelValues(reportedName, result.Outcome).Inc()
 			toolSpan.SetAttributes(attribute.String("tool.outcome", result.Outcome))
 		}(i, call)
 	}

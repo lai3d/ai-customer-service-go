@@ -34,6 +34,8 @@ recorded too.
 | The customer's words reach no span — checked by grepping the backend, not by reading docs | [Observability](docs/observability.md#the-customers-words-are-not-in-the-trace-and-that-was-checked-rather-than-assumed) |
 | Every provider's current model rejects `temperature`, and the OpenAI protocol hides usage unless asked | [Chat providers](docs/providers.md#what-only-a-live-call-found) |
 | A cost meter that silently reads zero is worse than none, so the misses are counted | [Cost and failure](docs/reliability.md#the-model-in-the-metrics-is-not-the-model-you-asked-for) |
+| An abandoned stream had already been billed, and the test that would have caught it could only pass because it tested the stub | [Cost and failure](docs/reliability.md#an-abandoned-stream-has-usually-already-been-billed) |
+| The customer's words were not in the spans, but a model-invented tool name was — a span name is an aggregated dimension too | [Observability](docs/observability.md#attributes-are-not-the-only-way-into-a-backend) |
 
 ---
 

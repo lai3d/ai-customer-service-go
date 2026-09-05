@@ -99,7 +99,14 @@ that show why it is not needed here.
   listed in the app service's `environment:`; `internal/deployment` asserts it. Never dump
   `docker compose config` — it interpolates real secrets.
 - **Metrics are tagged by model, never by conversation id.** Per-conversation tags are
-  unbounded cardinality.
+  unbounded cardinality — and so is anything the *model* writes. A tool name is validated
+  against `s.tools` before it can become a metric label or a span name; a span name is an
+  aggregated dimension just like a label.
+- **Never return early from a client `Stream` on error.** Anthropic reports the input
+  count at `message_start`, so an abandoned stream has already been billed. Build the
+  result from whatever accumulated and return it alongside the error. The contract is
+  asserted in `internal/llm/stream_test.go` against an `httptest` provider, not in a
+  stub — a stub can satisfy any contract, which is how this shipped in the first place.
 - **The ticket table and the budget table are both bounded LRUs.** A map keyed by
   conversation id that nothing removes from is a memory leak with a long fuse.
 

@@ -86,6 +86,14 @@ func (c *openAIProtocol) Stream(ctx context.Context, req Request, onText func(st
 	// summing frames wrong in an implementation that could not see call boundaries.
 	usageFrames := 0
 
+	// As on the Anthropic client, a failure does not return early: whatever the
+	// provider has already reported is handed up so it can be billed for. The
+	// asymmetry is worth naming, because it is a property of the protocol rather than
+	// of this code -- usage arrives here in a single final chunk, so a call that dies
+	// mid-stream genuinely has nothing to report and this returns a zero usage
+	// honestly, where the same abort on Anthropic returns a real input count.
+	var streamErr error
+
 	for stream.Next() {
 		chunk := stream.Current()
 		accumulator.AddChunk(chunk)
@@ -95,19 +103,26 @@ func (c *openAIProtocol) Stream(ctx context.Context, req Request, onText func(st
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Content != "" {
 				if err := onText(choice.Delta.Content); err != nil {
-					return Result{}, err
+					streamErr = err
+					break
 				}
 			}
 		}
+		if streamErr != nil {
+			break
+		}
 	}
-	if err := stream.Err(); err != nil {
-		return Result{}, classifyOpenAI(err)
+	if streamErr == nil {
+		if err := stream.Err(); err != nil {
+			streamErr = classifyOpenAI(err)
+		}
 	}
 
 	slog.Debug("model call finished",
 		"provider", c.provider, "usage_frames", usageFrames,
 		"input_tokens", accumulator.Usage.PromptTokens,
-		"output_tokens", accumulator.Usage.CompletionTokens)
+		"output_tokens", accumulator.Usage.CompletionTokens,
+		"error", streamErr)
 
 	result := Result{
 		Model: accumulator.Model,
@@ -118,7 +133,9 @@ func (c *openAIProtocol) Stream(ctx context.Context, req Request, onText func(st
 			InputTokens:  accumulator.Usage.PromptTokens,
 			OutputTokens: accumulator.Usage.CompletionTokens,
 		},
-		Native: accumulator.ChatCompletion,
+	}
+	if streamErr == nil {
+		result.Native = accumulator.ChatCompletion
 	}
 	if len(accumulator.Choices) > 0 {
 		choice := accumulator.Choices[0]
@@ -135,7 +152,7 @@ func (c *openAIProtocol) Stream(ctx context.Context, req Request, onText func(st
 	if result.Model == "" {
 		result.Model = c.model
 	}
-	return result, nil
+	return result, streamErr
 }
 
 func toOpenAIMessages(req Request) []openai.ChatCompletionMessageParamUnion {

@@ -77,6 +77,29 @@ not what the documentation says is included.** A library that adds one helpful a
 is doing something reasonable for a library and something unacceptable for a support
 system, and it will not be listed under the switches that turn content logging off.
 
+### Attributes are not the only way into a backend
+
+The check above searches for customer *text*. A cross-review from the Java implementation
+pointed out that it was the wrong question — or rather, too narrow a one. Every
+`SetAttributes` call in this repository carries a literal, a model id, a count, a tool
+name or the conversation id, and none of that is customer-typed. But **a span name is
+also an aggregated dimension**, and so is a metric label.
+
+The tool name is written by the model. It reached both — `tool <name>` as a span name and
+`{tool=<name>}` as a Prometheus label — including on the branch taken precisely when the
+name is one the model invented. That is unbounded cardinality arriving through a
+different door than the one `metrics.go` carefully shut against conversation ids, and it
+is attacker-influenced rather than merely unbounded: a retrieved passage can carry an
+instruction to call a tool that does not exist.
+
+The name is now validated against the tool table before it can become either, and the
+literal `unknown` is emitted when it does not match. The model is still told the name it
+asked for, in the tool result, because it needs that to recover.
+`TestAnInventedToolNameNeverBecomesAMetricLabel` sends a 200-character invented name and
+asserts exactly one bounded label value.
+
+The general form: **ask what reaches the backend, not what is in the attribute list.**
+
 ### Metrics
 
 ```

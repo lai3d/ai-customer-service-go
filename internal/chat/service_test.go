@@ -90,7 +90,11 @@ func (c *stubClient) Stream(_ context.Context, req llm.Request, onText func(stri
 		c.onCall(call)
 	}
 	if c.err != nil {
-		return llm.Result{Usage: llm.Usage{InputTokens: 100}}, c.err
+		// Both error paths carry usage, because both real clients do. A stub that
+		// invents a contract its production counterpart does not honour makes the
+		// suite test the fixture; internal/llm/stream_test.go is where that contract
+		// is actually asserted, against the clients themselves.
+		return llm.Result{Usage: llm.Usage{InputTokens: 100}, Model: "stub-model-2026-01-01"}, c.err
 	}
 	if call >= len(c.script) {
 		return llm.Result{}, fmt.Errorf("stub ran out of script at call %d", call)
@@ -98,7 +102,7 @@ func (c *stubClient) Stream(_ context.Context, req llm.Request, onText func(stri
 	result := c.script[call]
 	if result.Text != "" {
 		if err := onText(result.Text); err != nil {
-			return llm.Result{}, err
+			return llm.Result{Usage: result.Usage, Model: "stub-model-2026-01-01"}, err
 		}
 	}
 	if result.Model == "" {
@@ -123,6 +127,7 @@ type fixture struct {
 	client  *stubClient
 	tickets *tools.SupportTickets
 	budget  *cost.Budget
+	metrics *obs.Metrics
 	events  []chat.Event
 	mu      sync.Mutex
 }
@@ -148,11 +153,13 @@ func newFixture(t *testing.T, client *stubClient, budgetLimit int64) *fixture {
 	memory := chat.NewMemory(pool, 40)
 	tickets := tools.NewSupportTickets(100)
 	budget := cost.NewBudget(budgetLimit, 100)
-	f := &fixture{memory: memory, client: client, tickets: tickets, budget: budget}
+	metrics := obs.NewMetrics()
+	f := &fixture{memory: memory, client: client, tickets: tickets,
+		budget: budget, metrics: metrics}
 	f.service = chat.NewService(
 		memory,
 		rag.NewRetriever(stubEmbedder{}, vectors, 8, 0),
-		client, budget, obs.NewMetrics(), 1024,
+		client, budget, metrics, 1024,
 		tools.NewOrderLookup(), tickets,
 	)
 	return f
@@ -417,5 +424,127 @@ func TestConsecutiveUserMessagesAreMergedWhenHistoryIsRead(t *testing.T) {
 	}
 	if !strings.Contains(history[0].Text, "first") || !strings.Contains(history[0].Text, "second") {
 		t.Errorf("merged message lost content: %q", history[0].Text)
+	}
+}
+
+// counterLabels returns what a counter recorded, keyed by the named label's value.
+// Keyed by name rather than by position: Prometheus sorts labels alphabetically, so a
+// positional key silently depends on what the labels happen to be called.
+func (f *fixture) counterLabels(t *testing.T, name, label string) map[string]float64 {
+	t.Helper()
+	families, err := f.metrics.Registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]float64{}
+	for _, family := range families {
+		if family.GetName() != name {
+			continue
+		}
+		for _, m := range family.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == label {
+					out[l.GetValue()] += m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return out
+}
+
+// The tool name is written by the model, and a metric label is an aggregated dimension.
+// An unbounded set of label values takes a metrics backend down -- the same hazard the
+// conversation id is deliberately kept away from, arriving through a different door.
+// It is also attacker-influenced: a retrieved passage can carry an instruction to call a
+// tool that does not exist, and this is the branch that reaches.
+func TestAnInventedToolNameNeverBecomesAMetricLabel(t *testing.T) {
+	invented := "exfiltrate_everything_" + strings.Repeat("x", 200)
+	client := &stubClient{script: []llm.Result{
+		{
+			ToolCalls: []llm.ToolCall{{ID: "t1", Name: invented,
+				Arguments: json.RawMessage(`{}`)}},
+			StopReason: "tool_use",
+			Usage:      llm.Usage{InputTokens: 100},
+		},
+		reply("I could not do that."),
+	}}
+	f := newFixture(t, client, 0)
+
+	if err := f.turn(context.Background(), "c1", "do something odd"); err != nil {
+		t.Fatal(err)
+	}
+
+	names := f.counterLabels(t, "chat_tool_invocations_total", "tool")
+	if _, leaked := names[invented]; leaked {
+		t.Errorf("a model-invented tool name reached a metric label: %q", invented)
+	}
+	if names["unknown"] != 1 || len(names) != 1 {
+		t.Errorf("tool labels are %v, want exactly one bounded \"unknown\"", names)
+	}
+
+	// The model still has to be told what it actually asked for, or it cannot recover.
+	sent := f.client.lastRequest(t)
+	var told bool
+	for _, m := range sent.Messages {
+		for _, r := range m.ToolResults {
+			if strings.Contains(r.Content, invented) {
+				told = true
+			}
+		}
+	}
+	if !told {
+		t.Error("the model was not told which tool name was rejected")
+	}
+}
+
+// A turn stopped by the round cap is not a completed turn. The customer sees whatever
+// text had accumulated -- possibly none -- and without a distinct outcome it is
+// indistinguishable in the meters from a turn that answered, which is the first thing
+// anyone would want to know before changing the cap.
+func TestATurnStoppedByTheToolCapIsNotRecordedAsCompleted(t *testing.T) {
+	askForATool := llm.Result{
+		ToolCalls: []llm.ToolCall{{ID: "t1", Name: "lookup_order_status",
+			Arguments: json.RawMessage(`{"orderNumber":"ORD-10042"}`)}},
+		StopReason: "tool_use",
+		Usage:      llm.Usage{InputTokens: 100, OutputTokens: 10},
+	}
+	client := &stubClient{script: []llm.Result{askForATool, askForATool, askForATool, askForATool}}
+	f := newFixture(t, client, 0)
+
+	if err := f.turn(context.Background(), "c1", "where is my order?"); err != nil {
+		t.Fatal(err)
+	}
+
+	outcomes := f.counterLabels(t, "chat_turns_total", "outcome")
+	if outcomes["completed"] != 0 {
+		t.Errorf("a turn that never answered was counted as completed: %v", outcomes)
+	}
+	if outcomes["tool_limit"] != 1 {
+		t.Errorf("turn outcomes are %v, want tool_limit", outcomes)
+	}
+}
+
+// A failure before the model is reached is still a turn. Counting only the turns that
+// got as far as a model call makes a retrieval outage look like silence in
+// chat_turns_total rather than a spike -- the wrong direction for the first metric
+// anyone reaches for.
+func TestAFailureBeforeTheModelIsStillCountedAsATurn(t *testing.T) {
+	client := &stubClient{script: []llm.Result{reply("first")}}
+	f := newFixture(t, client, 200)
+	ctx := context.Background()
+
+	if err := f.turn(ctx, "c1", "first question"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.turn(ctx, "c1", "second question"); err == nil {
+		t.Fatal("expected the second turn to be refused")
+	}
+
+	outcomes := f.counterLabels(t, "chat_turns_total", "outcome")
+	if outcomes["budget_exceeded"] != 1 {
+		t.Errorf("turn outcomes are %v, want one budget_exceeded", outcomes)
+	}
+	if outcomes["completed"] != 1 {
+		t.Errorf("turn outcomes are %v, want the first turn counted as completed", outcomes)
 	}
 }

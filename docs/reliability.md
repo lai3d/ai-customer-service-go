@@ -46,6 +46,34 @@ wrong was generalising it. This matters beyond bookkeeping, because the heuristi
 failure mode of its own: two calls whose prompts tokenise to exactly the same length merge
 into one group and are under-counted.
 
+### An abandoned stream has usually already been billed
+
+A cross-review from the Java implementation found this one, and it is the same bug that
+implementation shipped under the name *aborted-stream accounting*: every error path in
+both clients returned a zero result, so the usage the provider had already reported was
+discarded one layer below the comment promising it would be recorded.
+
+Anthropic sends the input count at `message_start`, before a single token of the answer.
+So by the time a stream is abandoned — most often because the customer closed the tab —
+those tokens are spent and the provider has already counted them. `internal/llm` now
+builds the result from whatever accumulated and returns it alongside the error.
+`TestAnthropicKeepsTheUsageItWasAlreadyToldWhenTheConsumerGivesUp` fails against the old
+code with 1,842 input tokens dropped.
+
+The asymmetry is worth stating, because it is a property of the protocols rather than of
+the care taken: on the OpenAI protocol usage arrives only in a final chunk, so an
+abandoned call there genuinely has nothing to report and zero is the honest answer. One
+protocol loses real tokens on an abort and the other loses nothing. Code that returns
+early treats them the same and is wrong about one of them.
+
+**The test for this could not live above the client.** The service-level stub returned
+usage alongside an error while neither real client did, so the suite encoded the correct
+contract and the only thing satisfying it was the fixture. The assertion moved below the
+seam: an `httptest` server speaks the provider's own stream format, sends `message_start`,
+and then either has the consumer give up or hangs up the connection. That is the general
+lesson — a stub can satisfy any contract, so a contract about a boundary has to be tested
+at the boundary.
+
 ### Streamed usage does not arrive the same way twice
 
 Anthropic sends usage without being asked. The OpenAI protocol — and anything on it,
@@ -112,6 +140,23 @@ dedupe tables and an upper bound of `replicas × 3`. A real implementation would
 idempotency key in Postgres behind a unique constraint and do the capacity check in the
 same transaction as the insert. The cap demonstrates where the boundary belongs; it is not
 a distributed guarantee.
+
+### A turn that never answered is not a completed turn
+
+`chat_turns_total` distinguishes `completed`, `cancelled`, `failed`, `tool_limit`,
+`budget_exceeded`, `retrieval_failed` and `memory_failed`. Two of those exist because of
+the same cross-review:
+
+A turn stopped by the tool-round cap used to be recorded as `completed`. The customer
+sees whatever text had accumulated — possibly none, if the model's last output was a tool
+request it never got to use — and the meters said it answered. `tool_limit` is the first
+thing worth knowing before raising or lowering the cap.
+
+And the deferred block that records the outcome was installed *after* the budget check,
+the memory write and retrieval, so a failure in any of those incremented nothing at all.
+A retrieval outage showed up as **silence** in `chat_turns_total` rather than as a spike
+in failures — the wrong direction for the first metric anyone reaches for. It is now
+installed before anything can fail.
 
 ### Failures a client can act on
 
