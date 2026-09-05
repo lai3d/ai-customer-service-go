@@ -149,6 +149,19 @@ That run found the page was showing the model's markdown to the customer as lite
 asterisks and hyphens, which is fixed. **Still not covered:** the run was headless with a
 throwaway profile, so font fallback and anything gated on a real display are unverified.
 
+## Driving the demo page in a browser
+
+Neither the claude-in-chrome extension nor the MCP Playwright server attaches in this
+workspace. The way through, from the Java implementation's session: a plain Node script
+importing Playwright from the npx cache (`~/.npm/_npx/<hash>/node_modules/playwright`) and
+launching with `executablePath` pointed at the installed Chrome. The cached
+`ms-playwright` Chromium builds are the wrong build numbers for that package, which is
+what the confusing "Executable doesn't exist" error actually means.
+
+Worth the trouble: driving the page found two defects nothing else could. The model emits
+markdown and the page was showing the asterisks; and the text of two model calls was run
+together, which only appears when the model narrates before asking for a tool.
+
 ## Scope
 
 No authentication, no multi-tenancy, no MCP. No Gemini — three providers, and
