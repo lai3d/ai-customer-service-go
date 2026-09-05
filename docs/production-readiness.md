@@ -132,6 +132,23 @@ without re-embedding**, so `faq.json` stays byte-identical and every retrieval n
 comparable while the product gets editable knowledge. The caveat above is answered, not
 traded away.
 
+**One thing to measure rather than inherit.** The Java side tested this design against the
+HNSW dead-entry defect — twenty publications with autovacuum off, `n_dead_tup` over 300,
+and a top-8 that still returned eight live rows for four questions in both languages. That
+is stronger evidence than anything argued, and it says the design survives what `DELETE`
+did not.
+
+What it does not settle is whether that holds as retention grows, because versioning
+replaces one problem with a related one: the search is filtered to the active version, so
+candidates spent on *retired but live* rows are lost the same way candidates spent on dead
+ones are. A synthetic probe here — three live versions of 36 rows, ~600 deleted — returned
+8 of 8 unfiltered and **4 of 8 with a version filter**, but its vectors are duplicated
+across versions, which is the pathological case for exactly that measurement, so it settles
+nothing. When this is built, measure the filtered path against the real corpus at the
+retention count that will actually be configured, and treat `hnsw.ef_search` as a parameter
+of the design rather than a default. Note that `hnsw.iterative_scan` does not exist in the
+`pgvector/pgvector:pg17` image both repositories use, so it is not available as a mitigation.
+
 Plus, and separately: tool calls that a retrieved passage can influence must be constrained
 by the caller's identity rather than by the model's judgement.
 

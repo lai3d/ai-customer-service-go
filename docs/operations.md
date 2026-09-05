@@ -192,6 +192,13 @@ the same design. Some of that is taste. One of it is not.
 | Where the conclusion lives | a `resolution` column on `support_ticket` | on the resolving `ticket_event`, never on the row |
 | Opening a conversation | writes an audit row | not audited today |
 | A refused action | writes an audit row | writes nothing today |
+| How the UI reaches the API | a separate origin and a CORS allowlist | its nginx proxies `/admin/api`, so the browser sees one origin |
+
+The last row is a real fork rather than a detail. A proxy means there is no CORS to
+configure and no allowlist to get wrong; it also means nothing exercises the cross-origin
+path, and the day the UI moves to its own hostname the whole question arrives at once. This
+side pays the configuration cost and gets a browser enforcing it in every test run. Neither
+is wrong, and only one of them can be wrong quietly.
 
 The third row is the one worth reading twice. Storing the conclusion on the event rather
 than on the ticket means **a reopen has nothing to carry forward** — the defect this page's
