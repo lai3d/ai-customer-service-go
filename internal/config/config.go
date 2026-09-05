@@ -24,6 +24,7 @@ type Config struct {
 	RAG      RAG
 	Cost     Cost
 	Obs      Obs
+	Admin    Admin
 }
 
 type Postgres struct {
@@ -136,6 +137,14 @@ type Cost struct {
 	TrackedConversations    int
 }
 
+// Admin configures the operations surface. Empty means it is not mounted at all.
+type Admin struct {
+	// Tokens is `name:token[:role]`, comma separated. Parsed by internal/admin, not
+	// here, because the parse is the security check and belongs with the thing it
+	// guards.
+	Tokens string
+}
+
 type Obs struct {
 	OTLPEndpoint  string
 	OTLPEnabled   bool
@@ -191,6 +200,13 @@ func Load() (Config, error) {
 		Cost: Cost{
 			ConversationTokenBudget: int64(envInt("CONVERSATION_TOKEN_BUDGET", 200_000)),
 			TrackedConversations:    envInt("TRACKED_CONVERSATIONS", 10_000),
+		},
+		Admin: Admin{
+			// Deliberately no default. The operations surface shows customer
+			// conversations, which every other part of this service takes trouble to
+			// keep out of logs, spans and metric labels; it should exist only where
+			// somebody decided it should.
+			Tokens: os.Getenv("ADMIN_TOKENS"),
 		},
 		Obs: Obs{
 			OTLPEndpoint:        env("OTLP_TRACING_ENDPOINT", "http://localhost:4318"),

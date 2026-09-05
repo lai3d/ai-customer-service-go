@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lai3d/ai-customer-service-go/internal/admin"
 	"github.com/lai3d/ai-customer-service-go/internal/chat"
 	"github.com/lai3d/ai-customer-service-go/internal/config"
 	"github.com/lai3d/ai-customer-service-go/internal/cost"
@@ -150,6 +151,22 @@ func run() error {
 
 	mux := http.NewServeMux()
 	httpapi.NewServer(service, cfg.Chat).Routes(mux)
+
+	// The operations surface, or nothing at all.
+	//
+	// With no operator configured the routes are never registered, so /admin and
+	// /api/admin/v1/* are 404 in the ordinary way rather than 401 from a guard. A guard
+	// is a thing that can be misconfigured; an absent route cannot be.
+	operators, err := admin.ParseOperators(cfg.Admin.Tokens)
+	if err != nil {
+		return fmt.Errorf("ADMIN_TOKENS: %w", err)
+	}
+	if operators.Enabled() {
+		admin.NewServer(admin.NewStore(pool), tickets, operators).Routes(mux)
+		slog.Info("operations surface mounted at /admin", "operators", operators.Names())
+	} else {
+		slog.Info("no operations surface: ADMIN_TOKENS is unset")
+	}
 	mux.Handle("GET /metrics", promhttp.HandlerFor(metrics.Registry, promhttp.HandlerOpts{}))
 	mux.Handle("GET /", httpapi.DemoUI())
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {

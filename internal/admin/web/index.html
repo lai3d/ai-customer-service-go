@@ -1,0 +1,532 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Operations · AI Customer Service</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23b8551f'/%3E%3Cpath d='M8 11h16M8 16h16M8 21h10' stroke='white' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg:#fbfbfa; --panel:#fff; --ink:#1a1a18; --muted:#6b6b66; --line:#e6e4df;
+    --accent:#00758d; --warm:#b8551f; --ok:#2d7d46; --shade:rgba(127,127,127,.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16161a; --panel:#1e1e23; --ink:#e8e6e1; --muted:#9a978f;
+            --line:#33333c; --accent:#4db8d0; --warm:#e08a52; --ok:#5cbf7a;
+            --shade:rgba(255,255,255,.05); }
+  }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:14px/1.55 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif }
+  header { padding:12px 20px; border-bottom:1px solid var(--line); display:flex;
+           align-items:center; gap:16px; flex-wrap:wrap }
+  header h1 { font-size:15px; margin:0; font-weight:640 }
+  header .who { margin-left:auto; color:var(--muted); font-size:12.5px }
+  nav { display:flex; gap:2px; padding:0 14px; border-bottom:1px solid var(--line) }
+  nav button { background:none; border:none; border-bottom:2px solid transparent;
+               padding:9px 12px; color:var(--muted); cursor:pointer; font:inherit }
+  nav button[aria-selected="true"] { color:var(--ink); border-bottom-color:var(--accent) }
+  main { padding:18px 20px; max-width:1180px }
+  .cards { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:18px }
+  .card { border:1px solid var(--line); border-radius:9px; padding:11px 14px;
+          background:var(--panel); min-width:132px }
+  .card .n { font-size:22px; font-variant-numeric:tabular-nums; font-weight:620 }
+  .card .k { color:var(--muted); font-size:11.5px; text-transform:uppercase;
+             letter-spacing:.06em }
+  table { width:100%; border-collapse:collapse; font-size:13px }
+  th { text-align:left; color:var(--muted); font-weight:600; font-size:11.5px;
+       text-transform:uppercase; letter-spacing:.05em; padding:6px 10px;
+       border-bottom:1px solid var(--line) }
+  td { padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:top }
+  tr.click:hover { background:var(--shade); cursor:pointer }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px }
+  .pill { display:inline-block; padding:1px 7px; border-radius:99px; font-size:11.5px;
+          border:1px solid var(--line); white-space:nowrap }
+  .pill.completed,.pill.found,.pill.created,.pill.RESOLVED,.pill.CLOSED { border-color:var(--ok); color:var(--ok) }
+  .pill.failed,.pill.retrieval_failed,.pill.memory_failed,.pill.recording_failed { border-color:var(--warm); color:var(--warm) }
+  .pill.cancelled,.pill.tool_limit,.pill.budget_exceeded,.pill.in_flight { border-color:var(--muted); color:var(--muted) }
+  .pill.OPEN { border-color:var(--warm); color:var(--warm) }
+  .pill.IN_PROGRESS { border-color:var(--accent); color:var(--accent) }
+  input,select,textarea,button.action { font:inherit; padding:6px 9px; border-radius:7px;
+          border:1px solid var(--line); background:var(--panel); color:var(--ink) }
+  button.action { background:var(--accent); color:#fff; border-color:transparent;
+                  cursor:pointer; font-weight:560 }
+  button.action[disabled] { opacity:.5; cursor:default }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:12px }
+  .turn { border:1px solid var(--line); border-radius:9px; margin-bottom:12px;
+          background:var(--panel) }
+  .turn > .head { padding:9px 12px; border-bottom:1px solid var(--line); display:flex;
+                  gap:10px; align-items:center; flex-wrap:wrap }
+  .turn > .body { padding:11px 12px }
+  .q, .a { white-space:pre-wrap; overflow-wrap:anywhere; margin:0 0 8px }
+  .q { font-weight:560 }
+  .a { color:var(--ink) }
+  .evidence { display:flex; gap:18px; flex-wrap:wrap; font-size:12.5px;
+              color:var(--muted); border-top:1px dashed var(--line); padding-top:8px }
+  .muted { color:var(--muted) }
+  .warn { color:var(--warm) }
+  .empty { color:var(--muted); padding:26px 4px }
+  dialog { border:1px solid var(--line); border-radius:11px; background:var(--panel);
+           color:var(--ink); max-width:620px; width:92%; padding:0 }
+  dialog::backdrop { background:rgba(0,0,0,.45) }
+  dialog .head { padding:12px 16px; border-bottom:1px solid var(--line);
+                 display:flex; gap:10px; align-items:center }
+  dialog .body { padding:14px 16px }
+  dialog .foot { padding:12px 16px; border-top:1px solid var(--line); display:flex;
+                 gap:8px; justify-content:flex-end }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 3px }
+  textarea { width:100%; min-height:62px; resize:vertical }
+  .hist { font-size:12.5px; border-left:2px solid var(--line); padding-left:10px;
+          margin-top:12px }
+  .hist div { margin-bottom:5px }
+</style>
+
+<header>
+  <h1>Operations</h1>
+  <span class="muted" id="scope"></span>
+  <span class="who" id="who"></span>
+</header>
+
+<nav>
+  <button id="tab-overview" aria-selected="true">Overview</button>
+  <button id="tab-conversations">Conversations</button>
+  <button id="tab-tickets">Tickets</button>
+  <button id="tab-audit">Audit</button>
+</nav>
+
+<main id="main"></main>
+
+<dialog id="dialog"></dialog>
+
+<script>
+'use strict';
+
+// Kept in sessionStorage, not localStorage: this token reads every customer conversation
+// in the database, and a tab that closes should not leave it behind on the machine.
+const TOKEN_KEY = 'ops-token';
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined && text !== null) n.textContent = String(text);
+  return n;
+};
+const $ = id => document.getElementById(id);
+const main = $('main');
+let me = null;
+
+function token() { try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } }
+function setToken(v) { try { v ? sessionStorage.setItem(TOKEN_KEY, v) : sessionStorage.removeItem(TOKEN_KEY); } catch {} }
+
+async function api(path, options = {}) {
+  const res = await fetch('/api/admin/v1' + path, {
+    ...options,
+    headers: { ...(options.headers || {}), 'Authorization': 'Bearer ' + token(),
+               ...(options.body ? {'Content-Type': 'application/json'} : {}) },
+  });
+  if (res.status === 401) { setToken(''); askForToken('That token was not accepted.'); throw new Error('unauthorised'); }
+  if (!res.ok) throw new Error((await res.text()).trim() || ('HTTP ' + res.status));
+  return res.status === 204 ? null : res.json();
+}
+
+function askForToken(message) {
+  main.replaceChildren();
+  const card = el('div', 'card');
+  card.style.maxWidth = '520px';
+  card.append(el('div', 'k', 'Operator token'));
+  if (message) card.append(el('p', 'warn', message));
+  card.append(el('p', 'muted',
+    'This page shows what customers wrote. Every conversation you open is recorded in the audit trail with your name.'));
+  const input = el('input');
+  input.type = 'password';
+  input.placeholder = 'bearer token';
+  input.style.width = '100%';
+  input.autocomplete = 'off';
+  const go = el('button', 'action', 'Sign in');
+  const form = el('form');
+  form.style.marginTop = '10px';
+  form.append(input, ' ', go);
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    setToken(input.value.trim());
+    await start();
+  });
+  card.append(form);
+  main.append(card);
+  input.focus();
+}
+
+// ---------------------------------------------------------------- overview
+
+async function showOverview() {
+  const o = await api('/overview?hours=168');
+  main.replaceChildren();
+  $('scope').textContent = 'last 7 days';
+
+  const cards = el('div', 'cards');
+  const totalTurns = Object.values(o.turnsByOutcome).reduce((a, b) => a + b, 0);
+  const card = (k, n, cls) => {
+    const c = el('div', 'card');
+    const v = el('div', 'n', n);
+    if (cls) v.classList.add(cls);
+    c.append(v, el('div', 'k', k));
+    return c;
+  };
+  cards.append(card('turns', totalTurns));
+  cards.append(card('conversations', o.conversations));
+  cards.append(card('completed', o.turnsByOutcome.completed || 0));
+  const bad = totalTurns - (o.turnsByOutcome.completed || 0);
+  cards.append(card('not completed', bad));
+  cards.append(card('tokens in', o.inputTokens.toLocaleString()));
+  cards.append(card('tokens out', o.outputTokens.toLocaleString()));
+  cards.append(card('estimated cost', '$' + (o.costUsd || 0).toFixed(4)));
+  main.append(cards);
+
+  if (o.unpricedTurns > 0) {
+    // A total that silently omits turns is worse than one that says how many.
+    main.append(el('p', 'muted',
+      `${o.unpricedTurns} turn(s) used a model with no price entry. Their tokens are counted above and their cost is not — the figure is an estimate and an incomplete one.`));
+  }
+
+  main.append(el('h2', null, 'Turn outcomes'));
+  const t = table(['outcome', 'turns'],
+    Object.entries(o.turnsByOutcome).sort((a, b) => b[1] - a[1]).map(([k, v]) => {
+      const tr = el('tr');
+      const td = el('td'); td.append(el('span', 'pill ' + k, k));
+      tr.append(td, el('td', 'mono', v));
+      return tr;
+    }));
+  main.append(t);
+
+  main.append(el('h2', null, 'Tickets'));
+  main.append(table(['state', 'tickets'],
+    Object.entries(o.tickets).map(([k, v]) => {
+      const tr = el('tr');
+      const td = el('td'); td.append(el('span', 'pill ' + k, k));
+      tr.append(td, el('td', 'mono', v));
+      return tr;
+    })));
+}
+
+function table(headers, rows) {
+  const t = el('table');
+  const thead = el('thead'); const htr = el('tr');
+  for (const h of headers) htr.append(el('th', null, h));
+  thead.append(htr);
+  const tbody = el('tbody');
+  if (!rows.length) {
+    const tr = el('tr'); const td = el('td', 'empty', 'Nothing here yet.');
+    td.colSpan = headers.length; tr.append(td); tbody.append(tr);
+  } else rows.forEach(r => tbody.append(r));
+  t.append(thead, tbody);
+  return t;
+}
+
+const when = iso => new Date(iso).toLocaleString();
+
+// ---------------------------------------------------------- conversations
+
+let convFilter = { outcome: '', q: '' };
+
+async function showConversations() {
+  $('scope').textContent = '';
+  const params = new URLSearchParams();
+  if (convFilter.outcome) params.set('outcome', convFilter.outcome);
+  if (convFilter.q) params.set('q', convFilter.q);
+  const data = await api('/conversations?' + params);
+
+  main.replaceChildren();
+  const row = el('div', 'row');
+  const search = el('input');
+  search.placeholder = 'conversation id contains…';
+  search.value = convFilter.q;
+  const outcome = el('select');
+  for (const o of ['', 'completed', 'cancelled', 'failed', 'tool_limit', 'budget_exceeded',
+                   'retrieval_failed', 'memory_failed', 'in_flight']) {
+    const opt = el('option', null, o || 'any outcome'); opt.value = o;
+    if (o === convFilter.outcome) opt.selected = true;
+    outcome.append(opt);
+  }
+  const apply = el('button', 'action', 'Filter');
+  apply.addEventListener('click', () => {
+    convFilter = { outcome: outcome.value, q: search.value.trim() };
+    showConversations().catch(showError);
+  });
+  row.append(search, outcome, apply, el('span', 'muted', `${data.total} conversation(s)`));
+  main.append(row);
+
+  main.append(table(['conversation', 'turns', 'outcomes', 'tokens', 'tickets', 'last activity'],
+    (data.conversations || []).map(c => {
+      const tr = el('tr', 'click');
+      const outcomes = el('td');
+      c.outcomes.forEach(o => outcomes.append(el('span', 'pill ' + o, o), ' '));
+      tr.append(
+        el('td', 'mono', c.conversationId),
+        el('td', 'mono', c.turns),
+        outcomes,
+        el('td', 'mono', (c.inputTokens + c.outputTokens).toLocaleString()),
+        el('td', 'mono', c.tickets || ''),
+        el('td', 'muted', when(c.lastAt)));
+      tr.addEventListener('click', () => showConversation(c.conversationId).catch(showError));
+      return tr;
+    })));
+}
+
+async function showConversation(id) {
+  const data = await api('/conversations/' + encodeURIComponent(id));
+  main.replaceChildren();
+
+  const back = el('button', 'action', '← Conversations');
+  back.addEventListener('click', () => showConversations().catch(showError));
+  const row = el('div', 'row');
+  row.append(back, el('span', 'mono', id));
+  main.append(row);
+  main.append(el('p', 'muted', 'Opening this conversation is recorded in the audit trail.'));
+
+  for (const t of data.turns) {
+    const box = el('div', 'turn');
+    const head = el('div', 'head');
+    head.append(el('span', 'pill ' + t.outcome, t.outcome),
+                el('span', 'muted', when(t.startedAt)));
+    if (t.model) head.append(el('span', 'mono', t.model));
+    head.append(el('span', 'muted',
+      `${t.modelCalls} model call${t.modelCalls === 1 ? '' : 's'} · ` +
+      `${t.inputTokens.toLocaleString()} in / ${t.outputTokens.toLocaleString()} out` +
+      (t.costUsd != null ? ` · $${t.costUsd.toFixed(5)}` : ' · cost unknown')));
+    box.append(head);
+
+    const body = el('div', 'body');
+    body.append(el('p', 'q', t.question));
+    if (t.reply) body.append(el('p', 'a', t.reply));
+    else body.append(el('p', 'muted', 'No reply was recorded for this turn.'));
+    if (t.detail) body.append(el('p', 'warn', t.detail));
+
+    const ev = el('div', 'evidence');
+    if (t.passages && t.passages.length) {
+      const p = el('div');
+      p.append(el('strong', null, 'retrieved: '));
+      t.passages.forEach(x => p.append(`${x.entryId} (${x.language}, ${x.score.toFixed(4)})  `));
+      ev.append(p);
+    }
+    if (t.toolCalls && t.toolCalls.length) {
+      const c = el('div');
+      c.append(el('strong', null, 'tools: '));
+      t.toolCalls.forEach(x => c.append(`${x.name} → ${x.outcome}  `));
+      ev.append(c);
+    }
+    if (t.traceId) ev.append(el('div', 'mono', 'trace ' + t.traceId));
+    if (ev.childNodes.length) body.append(ev);
+    box.append(body);
+    main.append(box);
+  }
+}
+
+// --------------------------------------------------------------- tickets
+
+let ticketFilter = { state: '' };
+
+async function showTickets() {
+  $('scope').textContent = '';
+  const params = new URLSearchParams();
+  if (ticketFilter.state) params.set('state', ticketFilter.state);
+  const data = await api('/tickets?' + params);
+
+  main.replaceChildren();
+  const row = el('div', 'row');
+  const state = el('select');
+  for (const s of ['', 'OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED']) {
+    const opt = el('option', null, s || 'any state'); opt.value = s;
+    if (s === ticketFilter.state) opt.selected = true;
+    state.append(opt);
+  }
+  state.addEventListener('change', () => {
+    ticketFilter = { state: state.value };
+    showTickets().catch(showError);
+  });
+  row.append(state, el('span', 'muted', `${data.total} ticket(s)`));
+  if (!me.canWrite) row.append(el('span', 'muted', '· your role is read-only'));
+  main.append(row);
+
+  main.append(table(['ticket', 'state', 'assignee', 'summary', 'conversation', 'updated'],
+    (data.tickets || []).map(t => {
+      const tr = el('tr', 'click');
+      const st = el('td'); st.append(el('span', 'pill ' + t.state, t.state));
+      tr.append(el('td', 'mono', t.ticketNumber), st,
+                el('td', null, t.assignee || '—'),
+                el('td', null, t.summary),
+                el('td', 'mono', t.conversationId),
+                el('td', 'muted', when(t.updatedAt)));
+      tr.addEventListener('click', () => openTicket(t.ticketNumber).catch(showError));
+      return tr;
+    })));
+}
+
+const NEXT_STATES = {
+  OPEN: ['IN_PROGRESS', 'CLOSED'],
+  IN_PROGRESS: ['RESOLVED', 'CLOSED'],
+  RESOLVED: ['IN_PROGRESS', 'CLOSED'],
+  CLOSED: ['IN_PROGRESS'],
+};
+
+async function openTicket(number) {
+  const { ticket: t, history } = await api('/tickets/' + encodeURIComponent(number));
+  const dlg = $('dialog');
+  dlg.replaceChildren();
+
+  const head = el('div', 'head');
+  head.append(el('strong', null, t.ticketNumber), el('span', 'pill ' + t.state, t.state),
+              el('span', 'muted', 'v' + t.version));
+  dlg.append(head);
+
+  const body = el('div', 'body');
+  body.append(el('p', null, t.summary));
+  body.append(el('p', 'muted', `${t.category} · conversation ${t.conversationId}` +
+    (t.orderNumber ? ` · order ${t.orderNumber}` : '')));
+
+  const openConv = el('button', 'action', 'Open the conversation');
+  openConv.addEventListener('click', () => {
+    dlg.close();
+    selectTab('conversations');
+    showConversation(t.conversationId).catch(showError);
+  });
+  body.append(openConv);
+
+  let state = null, assignee = null, resolution = null, reason = null, note = null;
+  if (me.canWrite) {
+    body.append(el('label', null, 'Move to'));
+    state = el('select');
+    const keep = el('option', null, 'leave as ' + t.state); keep.value = '';
+    state.append(keep);
+    (NEXT_STATES[t.state] || []).forEach(s => {
+      const o = el('option', null, s); o.value = s; state.append(o);
+    });
+    body.append(state);
+
+    body.append(el('label', null, 'Assignee (blank to unassign)'));
+    assignee = el('input'); assignee.value = t.assignee || ''; assignee.style.width = '100%';
+    body.append(assignee);
+
+    body.append(el('label', null, 'Resolution — required to resolve'));
+    resolution = el('textarea'); resolution.value = t.resolution || '';
+    body.append(resolution);
+
+    body.append(el('label', null, 'Reason — required to reopen'));
+    reason = el('textarea');
+    body.append(reason);
+
+    body.append(el('label', null, 'Note'));
+    note = el('textarea');
+    body.append(note);
+  }
+
+  if (history && history.length) {
+    const h = el('div', 'hist');
+    h.append(el('strong', null, 'History'));
+    history.forEach(e => {
+      const line = el('div');
+      line.append(el('span', 'muted', when(e.at) + ' · '), `${e.actor} ${e.action}`);
+      if (e.detail) line.append(el('span', 'muted', ' — ' + e.detail));
+      h.append(line);
+    });
+    body.append(h);
+  }
+  dlg.append(body);
+
+  const foot = el('div', 'foot');
+  const problem = el('span', 'warn');
+  const close = el('button', 'action', 'Close');
+  close.style.background = 'transparent';
+  close.style.color = 'var(--muted)';
+  close.addEventListener('click', () => dlg.close());
+  foot.append(problem, close);
+
+  if (me.canWrite) {
+    const save = el('button', 'action', 'Save');
+    save.addEventListener('click', async () => {
+      save.disabled = true;
+      problem.textContent = '';
+      try {
+        await api('/tickets/' + encodeURIComponent(number), {
+          method: 'PATCH',
+          body: JSON.stringify({
+            expectedVersion: t.version,
+            state: state.value || undefined,
+            assignee: (assignee.value.trim() !== (t.assignee || '')) ? assignee.value.trim() : undefined,
+            resolution: resolution.value.trim() || undefined,
+            reason: reason.value.trim() || undefined,
+            note: note.value.trim() || undefined,
+          }),
+        });
+        dlg.close();
+        await showTickets();
+      } catch (err) {
+        // A conflict is the common case and it is recoverable: somebody else changed
+        // this ticket while it was open. Saying so beats a generic failure.
+        problem.textContent = String(err.message || err);
+        save.disabled = false;
+      }
+    });
+    foot.append(save);
+  }
+  dlg.append(foot);
+  dlg.showModal();
+}
+
+// ----------------------------------------------------------------- audit
+
+async function showAudit() {
+  $('scope').textContent = '';
+  const data = await api('/audit?limit=200');
+  main.replaceChildren();
+  main.append(el('p', 'muted',
+    'Every operator action, including opening a conversation. Nothing in this service can edit or delete these rows.'));
+  main.append(table(['when', 'actor', 'action', 'object', 'outcome', 'detail'],
+    (data.entries || []).map(e => {
+      const tr = el('tr');
+      tr.append(el('td', 'muted', when(e.at)), el('td', null, e.actor),
+                el('td', null, e.action), el('td', 'mono', e.object),
+                el('td', null, e.outcome), el('td', 'muted', e.detail || ''));
+      return tr;
+    })));
+}
+
+// ------------------------------------------------------------------ shell
+
+const TABS = {
+  overview: showOverview,
+  conversations: showConversations,
+  tickets: showTickets,
+  audit: showAudit,
+};
+
+function selectTab(name) {
+  for (const key of Object.keys(TABS)) {
+    $('tab-' + key).setAttribute('aria-selected', String(key === name));
+  }
+}
+
+for (const key of Object.keys(TABS)) {
+  $('tab-' + key).addEventListener('click', () => {
+    selectTab(key);
+    TABS[key]().catch(showError);
+  });
+}
+
+function showError(err) {
+  if (String(err.message) === 'unauthorised') return;
+  main.replaceChildren();
+  main.append(el('p', 'warn', String(err.message || err)));
+}
+
+async function start() {
+  if (!token()) { askForToken(); return; }
+  try {
+    me = await api('/whoami');
+  } catch (err) {
+    if (String(err.message) !== 'unauthorised') showError(err);
+    return;
+  }
+  $('who').textContent = `${me.name} · ${me.role}`;
+  selectTab('overview');
+  await showOverview();
+}
+
+start().catch(showError);
+</script>

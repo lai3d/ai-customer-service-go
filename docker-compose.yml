@@ -61,6 +61,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-csagent}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-csagent}
       CONVERSATION_TOKEN_BUDGET: ${CONVERSATION_TOKEN_BUDGET:-200000}
+      # Unset by default, which means the operations surface is not mounted. See
+      # .env.example for why it is opt-in rather than opt-out.
+      ADMIN_TOKENS: ${ADMIN_TOKENS:-}
       EMBEDDING_MAX_CONCURRENCY: ${EMBEDDING_MAX_CONCURRENCY:-0}
       # On here, because this is the stack that brings Jaeger up alongside the app.
       OTLP_TRACING_EXPORT_ENABLED: "true"
