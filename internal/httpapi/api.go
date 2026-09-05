@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -42,6 +45,10 @@ type problem struct {
 	Title  string `json:"title"`
 	Status int    `json:"status"`
 	Detail string `json:"detail,omitempty"`
+	// RetryAfter, when set, becomes the Retry-After header. It is not part of the
+	// problem document: RFC 9457 has no field for it, and a client that reads one header
+	// should not have to parse a body to find out how long to wait.
+	RetryAfter time.Duration `json:"-"`
 }
 
 // Turner is the one thing this package needs from the chat service. It is an interface
@@ -124,6 +131,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, p)
 		return
 	}
+	if p := s.admit(r, subject); p != nil {
+		writeProblem(w, p)
+		return
+	}
 	id, p := s.conversationFor(r.Context(), req.ConversationID, subject)
 	if p != nil {
 		writeProblem(w, p)
@@ -149,6 +160,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			reply.Usage = e.Usage
 		}
 	})
+	// Before the error check: an abandoned or failed turn has usually already been billed
+	// for its input tokens, which is the same reason the client returns a partial result
+	// alongside its error rather than discarding it.
+	s.charge(reply.Usage)
 	if err != nil {
 		writeProblem(w, problemFor(err))
 		return
@@ -192,6 +207,11 @@ func writeProblem(w http.ResponseWriter, p *problem) {
 		p.Type = "about:blank"
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
+	if p.RetryAfter > 0 {
+		// Seconds, rounded up: a Retry-After of 0 tells a client to try again now, which
+		// is exactly what it was just refused for doing.
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(p.RetryAfter.Seconds()))))
+	}
 	w.WriteHeader(p.Status)
 	if err := json.NewEncoder(w).Encode(p); err != nil {
 		slog.Error("could not write problem response", "error", err)

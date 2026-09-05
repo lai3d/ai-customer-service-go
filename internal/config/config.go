@@ -158,6 +158,15 @@ type Auth struct {
 	Mode string
 	// SessionTTL is how long an issued session stays valid.
 	SessionTTL time.Duration
+	// TurnsPerMinute bounds one subject. Zero disables it.
+	TurnsPerMinute int
+	// SessionsPerHourPerIP bounds the endpoint that mints subjects. Zero disables it.
+	SessionsPerHourPerIP int
+	// DailyTokenBudget is the whole service's ceiling for a UTC day. Zero disables it.
+	//
+	// This is the one the per-conversation budget cannot be: conversation ids are free,
+	// so a per-conversation ceiling is a ceiling on politeness.
+	DailyTokenBudget int64
 }
 
 type Obs struct {
@@ -230,8 +239,11 @@ func Load() (Config, error) {
 			// Deliberately off by default: turning identity on changes what the
 			// benchmark measures, and a default that silently changes a measurement is
 			// worse than one that has to be chosen.
-			Mode:       env("AUTH_MODE", "off"),
-			SessionTTL: time.Duration(envInt("SESSION_TTL_HOURS", 24)) * time.Hour,
+			Mode:                 env("AUTH_MODE", "off"),
+			SessionTTL:           time.Duration(envInt("SESSION_TTL_HOURS", 24)) * time.Hour,
+			TurnsPerMinute:       envInt("TURNS_PER_MINUTE", 20),
+			SessionsPerHourPerIP: envInt("SESSIONS_PER_HOUR_PER_IP", 60),
+			DailyTokenBudget:     int64(envInt("DAILY_TOKEN_BUDGET", 0)),
 		},
 		Obs: Obs{
 			OTLPEndpoint:        env("OTLP_TRACING_ENDPOINT", "http://localhost:4318"),

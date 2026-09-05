@@ -162,11 +162,20 @@ func run() error {
 	}
 	var ident *httpapi.Identity
 	if mode == identity.ModeSession {
+		limits := identity.NewLimits(pool)
+		limits.TurnsPerMinute = cfg.Auth.TurnsPerMinute
+		limits.SessionsPerHourPerIP = cfg.Auth.SessionsPerHourPerIP
+		limits.DailyTokenBudget = cfg.Auth.DailyTokenBudget
 		ident = &httpapi.Identity{
 			Sessions:      identity.NewSessions(pool, cfg.Auth.SessionTTL),
 			Conversations: identity.NewConversations(pool),
+			Limits:        limits,
 		}
-		slog.Info("chat sessions are required", "session_ttl", cfg.Auth.SessionTTL)
+		slog.Info("chat sessions are required",
+			"session_ttl", cfg.Auth.SessionTTL,
+			"turns_per_minute", cfg.Auth.TurnsPerMinute,
+			"sessions_per_hour_per_ip", cfg.Auth.SessionsPerHourPerIP,
+			"daily_token_budget", cfg.Auth.DailyTokenBudget)
 	} else {
 		slog.Warn("AUTH_MODE=off: the chat endpoints are unauthenticated and a conversation " +
 			"id is the whole of the authorisation. Anyone who knows one can append to that " +

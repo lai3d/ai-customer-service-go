@@ -53,3 +53,13 @@ data:
   # in the admin-ui ConfigMap, or the browser discards every response and the page shows
   # a network error with nothing in the server log.
   ADMIN_CORS_ORIGINS: ""
+
+  # Identity. "off" is the pre-identity behaviour -- client-supplied conversation ids and
+  # no ownership -- which the benchmark drives and which is not a production setting.
+  AUTH_MODE: "off"
+  SESSION_TTL_HOURS: "24"
+  TURNS_PER_MINUTE: "20"
+  SESSIONS_PER_HOUR_PER_IP: "60"
+  # Zero disables the whole-service daily ceiling. Set it before this takes real traffic:
+  # the per-conversation budget cannot bound spend, because conversation ids are free.
+  DAILY_TOKEN_BUDGET: "0"

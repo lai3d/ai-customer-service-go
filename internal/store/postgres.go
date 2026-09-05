@@ -127,6 +127,26 @@ CREATE TABLE IF NOT EXISTS conversation_owner (
 );
 CREATE INDEX IF NOT EXISTS conversation_owner_subject_idx ON conversation_owner (subject);
 
+-- A fixed-window counter, shared because a counter in a process is replicas x limit.
+-- The bucket column keeps the per-subject turn limit and the per-IP session limit in one
+-- table rather than two that would need the same sweep.
+CREATE TABLE IF NOT EXISTS rate_window (
+    bucket       TEXT        NOT NULL,
+    subject      TEXT        NOT NULL,
+    window_start TIMESTAMPTZ NOT NULL,
+    count        INT         NOT NULL,
+    PRIMARY KEY (bucket, subject, window_start)
+);
+CREATE INDEX IF NOT EXISTS rate_window_start_idx ON rate_window (window_start);
+
+-- What the whole service has spent today, in tokens, so a ceiling can exist that a new
+-- conversation id does not reset. The per-conversation budget cannot do this job:
+-- conversation ids are free.
+CREATE TABLE IF NOT EXISTS daily_spend (
+    day    DATE   NOT NULL PRIMARY KEY,
+    tokens BIGINT NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS turn (
     id              TEXT        NOT NULL PRIMARY KEY,
     conversation_id VARCHAR(64) NOT NULL,

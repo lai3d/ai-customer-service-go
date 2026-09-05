@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lai3d/ai-customer-service-go/internal/chat"
 	"github.com/lai3d/ai-customer-service-go/internal/identity"
 )
 
@@ -19,6 +21,7 @@ import (
 type Identity struct {
 	Sessions      *identity.Sessions
 	Conversations *identity.Conversations
+	Limits        *identity.Limits
 }
 
 // resolve returns the subject for a request, or the problem to send.
@@ -45,6 +48,65 @@ func (s *Server) resolve(r *http.Request) (identity.Subject, *problem) {
 		}
 	}
 	return subject, nil
+}
+
+// admit applies the two ceilings a turn has to pass: how often this subject may ask, and
+// whether the service has anything left to spend today.
+//
+// The daily budget is checked here rather than inside the turn because it is not the
+// customer's fault and not fixed by rephrasing: it is the service saying no. 503 with a
+// Retry-After to the end of the day is the honest shape -- 429 would tell the customer to
+// slow down, which changes nothing.
+func (s *Server) admit(r *http.Request, subject identity.Subject) *problem {
+	if s.identity == nil || s.identity.Limits == nil {
+		return nil
+	}
+	if p := s.allow(r, "turn", subject.ID,
+		s.identity.Limits.TurnsPerMinute, time.Minute); p != nil {
+		return p
+	}
+	if err := s.identity.Limits.CheckDailyBudget(r.Context()); err != nil {
+		if errors.Is(err, identity.ErrBudgetExhausted) {
+			slog.Warn("the daily token budget is exhausted; refusing new turns")
+			return &problem{Title: "The service has reached its budget for today",
+				Status:     http.StatusServiceUnavailable,
+				Detail:     "A human agent can take it from here.",
+				RetryAfter: time.Until(endOfUTCDay())}
+		}
+		// Same reasoning as the limiter: a budget that cannot be read must not become an
+		// outage on its own.
+		slog.Warn("could not read the daily budget; allowing the turn", "error", err)
+	}
+	return nil
+}
+
+// charge adds a finished turn's tokens to the day's total.
+//
+// On a detached context and after the response, for the reason the turn record already
+// works this way: a customer who closed the tab still spent the money, and a spend that is
+// only recorded when the client is still listening is a budget that under-counts exactly
+// the traffic worth counting.
+func (s *Server) charge(usage *chat.UsageEvent) {
+	if s.identity == nil || s.identity.Limits == nil || usage == nil {
+		return
+	}
+	total := usage.InputTokens + usage.OutputTokens
+	if total <= 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 5*time.Second)
+	defer cancel()
+	if err := s.identity.Limits.RecordSpend(ctx, total); err != nil {
+		// Logged, not returned: the tokens are already spent and failing the response
+		// would not unspend them. A budget that silently stops counting is what the
+		// alerting item on the readiness list is for.
+		slog.Error("could not record the day's spend", "tokens", total, "error", err)
+	}
+}
+
+func endOfUTCDay() time.Time {
+	now := time.Now().UTC()
+	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).Add(24 * time.Hour)
 }
 
 // conversationFor decides which conversation this turn belongs to and refuses one that is
@@ -88,6 +150,44 @@ func (s *Server) conversationFor(ctx context.Context, supplied string, subject i
 	}
 }
 
+// allow applies a limit and turns a refusal into the response the client should see.
+//
+// Retry-After is set on both, and it is not decoration: without it a client backs off by
+// guessing, and the guesses that get written are "immediately" and "a minute", neither of
+// which is the answer.
+func (s *Server) allow(r *http.Request, bucket, key string, limit int, window time.Duration) *problem {
+	if s.identity == nil || s.identity.Limits == nil {
+		return nil
+	}
+	retryAfter, err := s.identity.Limits.Allow(r.Context(), bucket, key, limit, window)
+	switch {
+	case errors.Is(err, identity.ErrTooManyRequests):
+		return &problem{Title: "Too many requests", Status: http.StatusTooManyRequests,
+			Detail:     "This session is asking faster than this service answers. Try again shortly.",
+			RetryAfter: retryAfter}
+	case err != nil:
+		// A limiter that cannot reach its counter must not become an outage. It fails
+		// open and says so: the alternative is that a database blip stops every customer,
+		// which is a worse failure than a minute of unbounded requests.
+		slog.Warn("the rate limiter could not read its counter; allowing the request",
+			"bucket", bucket, "error", err)
+		return nil
+	}
+	return nil
+}
+
+// clientIP is the best available identifier for "who is minting sessions". Behind a proxy
+// it is the proxy unless X-Forwarded-For is trusted, and trusting that header from an
+// untrusted network is how a limit becomes a header a client sets. It is deliberately
+// RemoteAddr only, and the deployment note says what to do about it.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
 type sessionReply struct {
 	Token     string    `json:"token"`
 	ExpiresAt time.Time `json:"expiresAt"`
@@ -99,6 +199,15 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, &problem{Title: "Sessions are not enabled", Status: http.StatusNotFound,
 			Detail: "This service is running with AUTH_MODE=off."})
 		return
+	}
+	// This is the one endpoint reachable without a session, so it is the one that mints
+	// subjects -- and a per-subject limit is worth nothing if subjects are free.
+	if s.identity.Limits != nil {
+		if p := s.allow(r, "session", clientIP(r),
+			s.identity.Limits.SessionsPerHourPerIP, time.Hour); p != nil {
+			writeProblem(w, p)
+			return
+		}
 	}
 	token, _, expires, err := s.identity.Sessions.Issue(r.Context())
 	if err != nil {

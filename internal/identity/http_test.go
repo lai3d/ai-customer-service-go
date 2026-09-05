@@ -23,6 +23,12 @@ type answering struct{ conversations []string }
 func (a *answering) Turn(_ context.Context, id, _ string, emit func(chat.Event)) error {
 	a.conversations = append(a.conversations, id)
 	emit(chat.Event{Type: chat.EventMessage, Text: "ok"})
+	// A real turn reports what it spent, and the day's ledger is fed from this event. A
+	// stub that stays silent would let the spend path be removed with every test still
+	// green -- which is how this stub was written the first time.
+	emit(chat.Event{Type: chat.EventUsage, Usage: &chat.UsageEvent{
+		Model: "test-model", ModelCalls: 1, InputTokens: 100, OutputTokens: 20,
+	}})
 	return nil
 }
 
@@ -181,5 +187,168 @@ func TestTheStreamRefusesBeforeItStartsStreaming(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("the stream returned %d for a request with no session", resp.StatusCode)
+	}
+}
+
+func serveWithLimits(t *testing.T, limits *identity.Limits) (*httptest.Server, *answering) {
+	t.Helper()
+	turner := &answering{}
+	mux := http.NewServeMux()
+	httpapi.NewServer(turner, config.Chat{
+		MaxMessageLength: 4000, MaxConversationIDLength: 64,
+		KeepAliveInterval: 50 * time.Millisecond,
+	}, &httpapi.Identity{
+		Sessions:      identity.NewSessions(pool, time.Hour),
+		Conversations: identity.NewConversations(pool),
+		Limits:        limits,
+	}).Routes(mux)
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server, turner
+}
+
+// A per-conversation token budget already existed, and it is not this: conversation ids
+// are free, so anyone who wants more of one starts another conversation. This bounds the
+// subject.
+func TestASubjectAskingTooFastIsRefusedAndToldWhenToReturn(t *testing.T) {
+	limits := identity.NewLimits(pool)
+	limits.TurnsPerMinute = 3
+	server, turner := serveWithLimits(t, limits)
+	token := newSession(t, server)
+
+	for i := 1; i <= 3; i++ {
+		if resp := chatAs(t, server, token, "", "/api/v1/chat"); resp.StatusCode != http.StatusOK {
+			t.Fatalf("turn %d returned %d within the limit", i, resp.StatusCode)
+		}
+	}
+	ran := len(turner.conversations)
+
+	resp := chatAs(t, server, token, "", "/api/v1/chat")
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("the fourth turn in a minute returned %d, want 429", resp.StatusCode)
+	}
+	// A limit that refuses after running the turn has cost the money it exists to save.
+	if len(turner.conversations) != ran {
+		t.Error("the refused turn ran anyway")
+	}
+	// Without this a client backs off by guessing, and the guesses that get written are
+	// "immediately" and "a minute".
+	if resp.Header.Get("Retry-After") == "" {
+		t.Error("a 429 with no Retry-After")
+	}
+
+	// Another subject is unaffected: the bucket is per subject, not global.
+	other := newSession(t, server)
+	if resp := chatAs(t, server, other, "", "/api/v1/chat"); resp.StatusCode != http.StatusOK {
+		t.Errorf("a different session was refused (%d); the limit is not per subject",
+			resp.StatusCode)
+	}
+}
+
+// The endpoint that mints subjects has to be bounded, or a per-subject limit is a limit on
+// how fast one subject can be discarded.
+func TestSessionsCannotBeMintedWithoutLimit(t *testing.T) {
+	limits := identity.NewLimits(pool)
+	limits.SessionsPerHourPerIP = 2
+	server, _ := serveWithLimits(t, limits)
+
+	for i := 1; i <= 2; i++ {
+		resp, err := server.Client().Post(server.URL+"/api/v1/session", "application/json", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("session %d returned %d", i, resp.StatusCode)
+		}
+	}
+	resp, err := server.Client().Post(server.URL+"/api/v1/session", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("the third session from one address returned %d, want 429", resp.StatusCode)
+	}
+}
+
+// The ceiling a new conversation id cannot reset.
+func TestWhenTheDayIsSpentTheServiceSaysSoRatherThanSlowingDown(t *testing.T) {
+	ctx := context.Background()
+	limits := identity.NewLimits(pool)
+	limits.DailyTokenBudget = 1_000_000_000
+	server, turner := serveWithLimits(t, limits)
+	token := newSession(t, server)
+
+	if resp := chatAs(t, server, token, "", "/api/v1/chat"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("a turn under the budget returned %d", resp.StatusCode)
+	}
+	ran := len(turner.conversations)
+
+	if err := limits.RecordSpend(ctx, limits.DailyTokenBudget); err != nil {
+		t.Fatal(err)
+	}
+	resp := chatAs(t, server, token, "", "/api/v1/chat")
+	// 503, not 429: this is the service saying no, and telling the customer to slow down
+	// would be a lie about whose problem it is.
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("a turn over the daily budget returned %d, want 503", resp.StatusCode)
+	}
+	if len(turner.conversations) != ran {
+		t.Error("the turn ran anyway, which is the money the budget exists to not spend")
+	}
+	if resp.Header.Get("Retry-After") == "" {
+		t.Error("no Retry-After on the budget refusal")
+	}
+
+	// And a fresh conversation does not reset it, which is what the per-conversation
+	// budget could never do.
+	if resp := chatAs(t, server, token, "", "/api/v1/chat"); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("a new conversation got past the daily budget: %d", resp.StatusCode)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM daily_spend`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The ledger the budget reads has to be fed by the turn, not only by tests calling
+// RecordSpend. Without this the budget is a ceiling on a number that never rises.
+func TestATurnAddsWhatItSpentToTheDay(t *testing.T) {
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `DELETE FROM daily_spend`); err != nil {
+		t.Fatal(err)
+	}
+	limits := identity.NewLimits(pool)
+	limits.DailyTokenBudget = 1_000_000
+	server, _ := serveWithLimits(t, limits)
+	token := newSession(t, server)
+
+	for _, path := range []string{"/api/v1/chat", "/api/v1/chat/stream"} {
+		before, err := limits.UsedToday(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp := chatAs(t, server, token, "", path); resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s returned %d", path, resp.StatusCode)
+		}
+		// The spend is recorded on a detached context after the response, so it can land
+		// just after the client is answered.
+		var after int64
+		for i := 0; i < 50; i++ {
+			if after, err = limits.UsedToday(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if after > before {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if after != before+120 {
+			t.Errorf("%s moved the day's total from %d to %d; the turn reported 120 tokens",
+				path, before, after)
+		}
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM daily_spend`); err != nil {
+		t.Fatal(err)
 	}
 }

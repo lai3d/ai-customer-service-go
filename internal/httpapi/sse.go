@@ -38,6 +38,10 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, p)
 		return
 	}
+	if p := s.admit(r, subject); p != nil {
+		writeProblem(w, p)
+		return
+	}
 	id, p := s.conversationFor(r.Context(), req.ConversationID, subject)
 	if p != nil {
 		writeProblem(w, p)
@@ -56,7 +60,14 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	events := make(chan sseEvent, 64)
 	go func() {
 		defer close(events)
+		// The stream is the path a real customer uses, so a spend recorded only on the
+		// blocking endpoint is a budget that counts the traffic nobody sends.
+		var usage *chat.UsageEvent
+		defer func() { s.charge(usage) }()
 		err := s.chat.Turn(r.Context(), id, message, func(e chat.Event) {
+			if e.Type == chat.EventUsage {
+				usage = e.Usage
+			}
 			select {
 			case events <- sseEvent{name: string(e.Type), payload: e}:
 			case <-r.Context().Done():

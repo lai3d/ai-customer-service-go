@@ -31,7 +31,7 @@ What is missing is almost entirely product, not scaffolding.
 
 | # | Item | Blocks | Scope | Status | Estimate |
 | --- | --- | --- | --- | --- | --- |
-| 1 | [Identity, session ownership, rate limiting, global budget](#1-anyone-can-read-anyone-elses-conversation) | launch | both | **ownership done**, limits next | 3–4 h |
+| 1 | [Identity, session ownership, rate limiting, global budget](#1-anyone-can-read-anyone-elses-conversation) | launch | both | **done** 2026-09-06 | 3–4 h |
 | 2 | [Knowledge as a knowledge base, not a fixture](#2-the-corpus-is-a-test-fixture) | launch | both | not started | 4–6 h |
 | 3 | [The loop back to a human](#3-a-ticket-is-a-row-and-nothing-else-happens) | launch | both | not started | 3–5 h |
 | 4 | [Real tools instead of the mock](#4-the-tools-are-fiction) | week 1 | both | not started | 2–3 h |
@@ -57,27 +57,50 @@ numbers.
 
 ### 1. Anyone can read anyone else's conversation
 
-`POST /api/v1/chat` has no authentication, and `conversationId` comes from the client with
-only a length check (`internal/httpapi/api.go`). Chat memory is keyed on that id. So
-sending a message with somebody else's conversation id appends to *their* history, and the
-model's reply is composed with their context in the prompt.
+**Done, 2026-09-06.** `AUTH_MODE=session`.
 
-That is a confidentiality break, not a missing feature. The absence of authentication is
-documented as deliberate scope, and it is the right scope for a comparison repository —
-but it is the first thing that stops being acceptable when a real customer types into it.
+`conversationId` came from the client with only a length check and chat memory is keyed on
+it, so a message sent with somebody else's id appended to their history and composed the
+model's reply from their context. The budget made the other half worse rather than better:
+`CONVERSATION_TOKEN_BUDGET` is per conversation and conversation ids are free.
 
-The budget makes the second half worse rather than better: `CONVERSATION_TOKEN_BUDGET` is
-per conversation, and conversation ids are free, so anyone who wants to spend your model
-budget rotates the id. Nothing rate-limits anything.
+What exists now:
 
-**Done looks like:** the server issues the conversation id and binds it to an
-authenticated subject; a request carrying an id that is not the subject's is a 404, not a
-403 (a 403 confirms the id exists); rate limits per subject and per IP; a global daily
-spend ceiling that trips a circuit breaker rather than a page in a dashboard.
+| | |
+| --- | --- |
+| `POST /api/v1/session` | issues an opaque token; the row stores its SHA-256, so a database dump is not a set of live sessions |
+| Conversation ownership | server-issued ids, claimed atomically; someone else's conversation and a non-existent one return the *same* 404, because a 403 confirms an id exists |
+| `TURNS_PER_MINUTE` | per subject, a fixed window in Postgres, with `Retry-After` |
+| `SESSIONS_PER_HOUR_PER_IP` | the endpoint that mints subjects, because a per-subject limit is worth nothing if subjects are free |
+| `DAILY_TOKEN_BUDGET` | the whole service, per UTC day, fed by every finished turn on both the blocking and the streaming path; refused as 503 rather than 429, because it is the service saying no and telling the customer to slow down would be a lie about whose problem it is |
 
-**Watch for:** the id is currently echoed in `X-Conversation-Id` and used by the demo page
-across turns — whatever replaces it has to survive a page reload, and "survives a reload"
-is where people accidentally put a bearer token in `localStorage`.
+Sessions are anonymous on purpose. This service does not know who a customer is and the
+product it embeds in does; what is needed here is only that two customers are different
+subjects and that a subject cannot be guessed. **Verifying an identity the host product
+asserts — a JWT, an OIDC subject — is deliberately not built.** It is a fork that depends
+on what that product already has, and `identity.Subject` plus the resolve step in
+`internal/httpapi/identity.go` is the seam it arrives through. That is the remaining work
+on this item, and it needs a decision rather than an hour.
+
+`AUTH_MODE=off` keeps the old behaviour, because the benchmark and the cross-repository
+comparison drive it and changing that changes what the two implementations measure. It is
+not a production mode and the server logs a warning saying so at every start-up.
+
+**How it was checked.** Every property was forced red first: SELECT-then-INSERT let three
+of twelve concurrent subjects claim one conversation; removing the ownership check let
+another session in on both paths; a 403 instead of a 404 made the endpoint an oracle for
+which ids exist; storing the token unhashed put a credential in every dump; a read-then-
+write limiter let the fourth request through; checking the limit after the turn ran it
+anyway. Live, against a real model: two sessions and an identical 404 for another's
+conversation and for a made-up one, `429` with `Retry-After: 8` on the third turn of a
+minute, and `503` with `Retry-After` to the end of the UTC day once the day's ledger
+passed the ceiling — including for a brand-new session and a brand-new conversation, which
+is the thing the per-conversation budget could never do.
+
+Two things found on the way. A test that aged a session with a negative TTL passed while
+proving only that the zero-TTL guard exists. And `SSE_KEEPALIVE=0` panicked
+`time.NewTicker` inside the handler on every streamed turn — `Load` refuses it now, and
+the handler clamps, because a panic mid-response is a worse failure than a wrong heartbeat.
 
 ### 2. The corpus is a test fixture
 
