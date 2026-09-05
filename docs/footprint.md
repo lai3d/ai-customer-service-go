@@ -17,7 +17,7 @@ Measured on a kind cluster, `replicas: 2`, one node, from each container's own c
 | --- | --- | --- |
 | Process memory (`anon`), at rest | **960 MiB** | — |
 | Process RSS, at rest | **1004 MiB** | 1.65 GiB *(published, "steady state")* |
-| cgroup peak, including page cache | **1347–1527 MiB** | 2.82 GiB *(published, "peak RSS")* |
+| cgroup peak, including page cache | **1347–1527 MiB** | **2.82 GiB** (`memory.peak`, same reading) |
 | OOMKilled at | 1152Mi and below | 2560Mi and below |
 | Starts at | 1280Mi (99% of limit) | 3Gi (94% of limit) |
 | Deployed `requests` / `limits` | 1536Mi / 2Gi | 3Gi / 4Gi |
@@ -26,7 +26,10 @@ Measured on a kind cluster, `replicas: 2`, one node, from each container's own c
 Roughly half, on every row. The dominant term in both is the same 470 MB fp32 ONNX model
 loaded into the process; the difference is everything around it.
 
-**Two caveats, and the second is why the Java column is in italics.**
+The cgroup row is a like-for-like comparison: both numbers are `/sys/fs/cgroup/memory.peak`,
+confirmed by asking rather than assumed from a word in a README. **1.9–2.1× on that row.**
+
+**Two caveats remain.**
 
 *Page cache is not a fixed cost.* The Go rows show 1347 MiB in one replica and 1527 MiB in
 the other, from the *same deployment*: `anon` is 960 MiB in both, and the difference is
@@ -34,11 +37,18 @@ page cache for the model file, charged by the kernel to whichever cgroup faulted
 first. It is reclaimable. A cgroup peak is therefore an upper bound that depends on which
 replica you look at, which is why the Go column gives three numbers rather than one.
 
-*The Java numbers are published by that repository, not re-measured here*, and its README
-calls them "peak RSS" without saying whether that is the process's RSS or the cgroup's
-working set. Those differ by 300–500 MiB on the Go side, so the honest reading is that Go
-uses roughly half as much by either definition — not that the exact ratio is known.
-Re-measuring both under one harness is the way to settle it and has not been done.
+*How much of the Java number is page cache is not yet known.* That side has not measured
+the anon/file split. Until it does, the *ratio* is established and the *reason* is not.
+
+Worth stating because it nearly went in wrong: both implementations load the **same file**
+— `intfloat/multilingual-e5-small/onnx/model.onnx`, 470,268,510 bytes, verified byte count
+on both sides. The Java repository describes it as 87–90 MB in two places, which is left
+over from an earlier model, so the page-cache share should be comparable rather than much
+smaller there. This paragraph briefly said the opposite, on the strength of being told so.
+
+*The Java rows are that repository's measurements, not re-measured here.* The definitions
+now match, which is what makes the comparison publishable; running both under one harness
+is still the only thing that would make it airtight, and it has not been done.
 
 ## Startup
 

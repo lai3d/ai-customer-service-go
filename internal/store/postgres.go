@@ -89,12 +89,41 @@ func Open(ctx context.Context, url string, maxConns int32, dimensions int) (*pgx
 	return pool, nil
 }
 
+// schemaLockKey is an arbitrary constant, shared by every replica of this service and
+// by nothing else. Postgres advisory locks live in one 64-bit keyspace for the whole
+// database, so the value matters only in that two different applications must not
+// collide on it.
+const schemaLockKey = 0x41_49_43_53_47_4F_01 // "AICSGO" + 1
+
 func applySchema(ctx context.Context, cfg *pgx.ConnConfig, dimensions int) error {
 	conn, err := pgx.ConnectConfig(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("connect to postgres: %w", err)
 	}
 	defer conn.Close(ctx)
+
+	// Serialise DDL across replicas.
+	//
+	// `CREATE EXTENSION IF NOT EXISTS` is not concurrency-safe: it checks the catalogue
+	// and then inserts, with nothing holding the gap. Two replicas starting together
+	// against a cold database and one of them dies with
+	//
+	//   duplicate key value violates unique constraint "pg_extension_name_index"
+	//
+	// which fails startup and puts the pod into a restart loop until the other replica
+	// has finished. Reproduced on kind with two replicas and a freshly dropped
+	// extension; both replicas restarted.
+	//
+	// The advisory lock is released when this connection closes, but it is released
+	// explicitly so the window is the DDL rather than the rest of Open.
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, int64(schemaLockKey)); err != nil {
+		return fmt.Errorf("take the schema lock: %w", err)
+	}
+	defer func() {
+		// A failure to unlock is not worth failing startup for: closing the connection
+		// releases it, and the deferred Close above always runs.
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, int64(schemaLockKey))
+	}()
 
 	if _, err := conn.Exec(ctx, fmt.Sprintf(Schema, dimensions)); err != nil {
 		return fmt.Errorf("apply schema: %w", err)

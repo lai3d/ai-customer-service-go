@@ -31,16 +31,21 @@ ok()   { printf '  \033[32mPASS\033[0m %s\n' "$*"; PASS=$((PASS+1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$*"; FAIL=$((FAIL+1)); }
 note() { printf '  \033[33mNOTE\033[0m %s\n' "$*"; }
 check(){ local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
-# Compare captured output instead of piping into `grep -q`.
+# Compare captured output instead of discarding it.
 #
-# Under `set -o pipefail`, `producer | grep -q pattern` fails *because it matched*: grep
-# exits at the first hit, the producer takes SIGPIPE and exits 141, and pipefail reports
-# the pipeline as failed. Whether it loses the race depends on how fast the producer
-# finishes, so it is flaky rather than broken -- these checks passed on the first run of
-# this script and failed on the second against an identical pod.
+# The `check` helper above sends stdout and stderr to /dev/null, so an assertion failure
+# and a transient infrastructure failure look identical -- a bare FAIL with nothing to
+# read. Two checks here failed exactly once, against a pod that was demonstrably correct,
+# while the cluster's API server was intermittently timing out under memory pressure, and
+# the helper gave no way to tell those apart.
 #
-# The Java implementation's harness documents this trap for its `grep -c` detector. This
-# script copied the harness, kept the comment, and fell into the same trap somewhere else.
+# `contains` prints what it actually got, so the next such failure says whether the
+# assertion was wrong or the cluster was.
+#
+# (An earlier version of this comment blamed `set -o pipefail` turning `producer | grep -q`
+# into a failure when it matched -- a real trap, documented in the Java implementation's
+# harness. It is not what happened here: pipefail is a shell option and does not propagate
+# into `sh -c`, which every one of these checks used. Verified rather than assumed.)
 contains(){ local d=$1 pattern=$2; shift 2
   local out; out=$("$@" 2>&1) || true
   case "$out" in (*"$pattern"*) ok "$d";; (*) bad "$d -- got: ${out:0:80}";; esac; }
@@ -76,16 +81,44 @@ kubectl -n "$NS" create secret generic ai-customer-service-go-secrets \
   --from-literal=POSTGRES_PASSWORD=csagent \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
+# Make the cold-database path real on every run, not just the first.
+#
+# CREATE EXTENSION IF NOT EXISTS is not concurrency-safe, and the check below is only
+# meaningful if both replicas actually start against a database without the extension.
+# On a --keep run the extension already exists from last time, so the race cannot happen
+# and the check passes without testing anything. It reported PASS for two days that way.
+#
+# The whole schema, not just the extension. `DROP EXTENSION vector CASCADE` takes the
+# `embedding` column with it and leaves the table behind, so `CREATE TABLE IF NOT EXISTS`
+# then does nothing and the app comes up serving 500s from a table with no vector column.
+# That is a state no deployment reaches on its own -- it was the harness inventing a bug.
+kubectl -n "$NS" exec deploy/postgres -- psql -U csagent -d csagent \
+  -c 'DROP SCHEMA public CASCADE' -c 'CREATE SCHEMA public' >/dev/null 2>&1 || true
+
 # The directory form on purpose: it has to be safe, which is why the Secret template
 # lives in k8s/examples/.
 kubectl apply -f "$ROOT/k8s/"
+# Force both replicas to start together against that cold database.
+kubectl -n "$NS" rollout restart deploy/ai-customer-service-go >/dev/null 2>&1 || true
 # Not fatal. A failed rollout is a result: the assertions below say *why*, and
 # "OOMKilled -- the memory limit is too low" is a better last line than a rollout timeout.
 kubectl -n "$NS" rollout status deploy/ai-customer-service-go --timeout=300s || true
 
 say "assertions"
-POD=$(kubectl -n "$NS" get pods -l app.kubernetes.io/component=app \
-        -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}' | awk '{print $1}')
+# Select a pod that is *Ready*, not merely one whose phase says Running.
+#
+# `phase == "Running"` is true of a pod that is shutting down, and during the rollout this
+# script forces there are always some. The exec then fails with "cannot exec into a
+# container in a completed pod; current phase is Succeeded" -- which is what these checks
+# were failing on intermittently, and what the old helper hid by discarding stderr.
+POD=""
+for _ in $(seq 1 30); do
+  POD=$(kubectl -n "$NS" get pods -l app.kubernetes.io/component=app \
+        -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+        | awk '$2=="True"{print $1; exit}')
+  [ -n "$POD" ] && break
+  sleep 2
+done
 
 replicas=$(kubectl -n "$NS" get deploy ai-customer-service-go -o jsonpath='{.status.readyReplicas}')
 [[ ${replicas:-0} == 2 ]] && ok "both replicas ready" || bad "readyReplicas=${replicas:-0}, want 2"

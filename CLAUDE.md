@@ -135,6 +135,12 @@ that show why it is not needed here.
   result from whatever accumulated and return it alongside the error. The contract is
   asserted in `internal/llm/stream_test.go` against an `httptest` provider, not in a
   stub — a stub can satisfy any contract, which is how this shipped in the first place.
+- **Schema creation takes a Postgres advisory lock.** `CREATE EXTENSION IF NOT EXISTS` is
+  not concurrency-safe — it checks the catalogue and then inserts, with nothing holding the
+  gap — so two replicas starting against a cold database crash one of them with
+  `duplicate key value violates unique constraint "pg_extension_name_index"`.
+  `TestConcurrentStartersAgainstAColdDatabaseAllSucceed` needs its own container, because
+  the shared fixture has already created the extension by the time any other test runs.
 - **A turn holds a per-conversation lock for its whole length** (`internal/chat/serialize.go`).
   History read, model call, budget record and reply persistence are only coherent together;
   without it two browser tabs on one conversation interleave and the second request loses
