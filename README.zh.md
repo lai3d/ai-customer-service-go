@@ -10,7 +10,7 @@
 SSE 流式输出、按会话计的 token 预算、Prometheus 指标和 OpenTelemetry 链路。**嵌入模型跑在
 本进程内**；对话模型默认是 Anthropic Claude，OpenAI 和 xAI 通过配置切换。
 
-**这是同一套系统的第二个实现，第一个[在 Java 里](https://github.com/lai3d/ai-customer-service-java/blob/main/README.zh-CN.md)。**
+**这是同一套系统的第二个实现，第一个[在 Java 里](https://github.com/lai3d/ai-customer-service-java/blob/main/README.zh.md)。**
 （那边的 [English README](https://github.com/lai3d/ai-customer-service-java)。）
 它不是移植。两边共享一份语料、一套测量方法和一套判断标准，除此之外没有任何共用代码 ——
 **对比本身才是目的**。数字不一致的地方，两个数字都会报出来。这个实现发现 Java 那边错了，
