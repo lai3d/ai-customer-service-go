@@ -204,18 +204,27 @@ say "assertions"
 # So: exclude anything with a deletionTimestamp, and re-resolve on failure rather than
 # trusting a name to stay valid. Two wrong fixes preceded this one, and both looked
 # right because the next run happened to pass.
+# ready_pod [COMPONENT] -- defaults to the API, since most assertions are about it.
 ready_pod() {
-  "${KUBECTL[@]}" -n "$NS" get pods -l app.kubernetes.io/component=app \
+  "${KUBECTL[@]}" -n "$NS" get pods -l "app.kubernetes.io/component=${1:-app}" \
     -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{" "}{.metadata.deletionTimestamp}{"\n"}{end}' \
     | awk '$2=="True" && $3==""{print $1; exit}'
 }
 
 # exec_in_pod DESCRIPTION EXPECTED-SUBSTRING -- COMMAND...
+#
+# COMPONENT selects which deployment's pod to enter; it is a variable rather than an
+# argument so the existing calls read unchanged.
+#
+# Use this rather than `kubectl exec ... | grep -q`. Under `set -o pipefail` the exec's
+# own non-zero exit -- which is exactly what a successful "this should fail" assertion
+# produces -- fails the pipeline even when grep matched. That cost a red assertion against
+# a pod whose filesystem was demonstrably read-only.
 exec_in_pod() {
   local d=$1 pattern=$2; shift 2
   local out="" pod=""
   for _ in $(seq 1 10); do
-    pod=$(ready_pod)
+    pod=$(ready_pod "${COMPONENT:-app}")
     if [ -n "$pod" ]; then
       out=$("${KUBECTL[@]}" -n "$NS" exec "$pod" -- "$@" 2>&1) || true
       case "$out" in
@@ -290,6 +299,11 @@ contains "the demo page is served" "AI Customer Service" curl -sf localhost:1808
 
 # The operations surface, both ways round.
 #
+# Note what is *not* asserted here any more: that /admin/ is a 404 when ADMIN_TOKENS is
+# unset. It is a 404 now whatever the configuration says, because the API serves no page
+# at all -- so the assertion would pass for a reason unrelated to what it claimed to
+# check. An API path is used instead, which is absent only when no operator is configured.
+#
 # First the unconfigured case, and it has to be *made* unconfigured rather than assumed:
 # a --keep run reuses the Secret that the enabling half of this section patched last time,
 # so assuming would give an assertion that passes once and then fails forever after.
@@ -308,20 +322,27 @@ fi
 
 # Unconfigured has to mean the routes were never registered. A 404 says that. A 401 would
 # say the routes exist and something is deciding -- and a decision can be misconfigured,
-# while an absent route cannot. This is the assertion that would catch someone "fixing"
-# the surface by registering it and rejecting at the guard.
+# while an absent route cannot.
+status=$(curl -s -o /dev/null -w '%{http_code}' localhost:18081/api/admin/v1/whoami || echo 000)
+[[ $status == 404 ]] && ok "with no ADMIN_TOKENS the admin API does not exist (404, not 401)" \
+                     || bad "whoami returned $status with no ADMIN_TOKENS, want 404"
+
+# The API serves no UI at any configuration. It used to embed one.
 status=$(curl -s -o /dev/null -w '%{http_code}' localhost:18081/admin/ || echo 000)
-[[ $status == 404 ]] && ok "with no ADMIN_TOKENS there is no admin surface (404, not 401)" \
-                     || bad "/admin/ returned $status with no ADMIN_TOKENS, want 404"
+[[ $status == 404 ]] && ok "the API serves no page at /admin" \
+                     || bad "/admin/ on the API returned $status, want 404"
 
 # And then turn it on, because "documented but never deployed" is how the manifests in the
-# sibling Java repository were wrong twice. This patches the Secret the harness created
-# itself -- k8s/ is still applied unmodified -- and restarts, which is exactly what a real
-# operator would do.
+# sibling Java repository were wrong twice. This patches the Secret and the ConfigMap the
+# harness created itself -- k8s/ is still applied unmodified -- and restarts, which is
+# exactly what a real operator would do.
 say "operations surface"
 PROBE_TOKEN=$(openssl rand -hex 24)
+UI_ORIGIN="http://localhost:18090"
 "${KUBECTL[@]}" -n "$NS" patch secret ai-customer-service-go-secrets --type=merge \
   -p "{\"stringData\":{\"ADMIN_TOKENS\":\"probe:${PROBE_TOKEN}:operator\"}}" >/dev/null
+"${KUBECTL[@]}" -n "$NS" patch configmap ai-customer-service-go-config --type=merge \
+  -p "{\"data\":{\"ADMIN_CORS_ORIGINS\":\"${UI_ORIGIN}\"}}" >/dev/null
 "${KUBECTL[@]}" -n "$NS" rollout restart deploy/ai-customer-service-go >/dev/null
 "${KUBECTL[@]}" -n "$NS" rollout status deploy/ai-customer-service-go --timeout=180s >/dev/null
 
@@ -330,8 +351,6 @@ kill $PF 2>/dev/null || true
 "${KUBECTL[@]}" -n "$NS" port-forward svc/ai-customer-service-go 18081:8081 >/dev/null 2>&1 &
 PF=$!; trap 'kill $PF 2>/dev/null || true' EXIT
 sleep 4
-
-contains "the admin page is served once ADMIN_TOKENS is set" "Operations" curl -sf localhost:18081/admin/
 
 status=$(curl -s -o /dev/null -w '%{http_code}' localhost:18081/api/admin/v1/whoami || echo 000)
 [[ $status == 401 ]] && ok "the admin API refuses a request with no token (401)" \
@@ -343,6 +362,65 @@ status=$(curl -s -o /dev/null -w '%{http_code}' localhost:18081/api/admin/v1/who
            -H "Authorization: Bearer ${PROBE_TOKEN}" || echo 000)
 [[ $status == 200 ]] && ok "an operator token is accepted through the Service (200)" \
                      || bad "whoami with a valid token returned $status, want 200"
+
+# The UI is a separate origin now, so the browser decides whether it may read these
+# responses. These two are that decision, and they are the assertions that would catch a
+# ConfigMap whose ADMIN_CORS_ORIGINS does not match where the UI is actually served from.
+status=$(curl -s -o /dev/null -w '%{http_code}' -X OPTIONS localhost:18081/api/admin/v1/whoami \
+           -H "Origin: ${UI_ORIGIN}" -H 'Access-Control-Request-Method: GET' || echo 000)
+[[ $status == 204 ]] && ok "a preflight from the configured UI origin is answered (204)" \
+                     || bad "preflight from ${UI_ORIGIN} returned $status, want 204"
+
+status=$(curl -s -o /dev/null -w '%{http_code}' -X OPTIONS localhost:18081/api/admin/v1/whoami \
+           -H 'Origin: http://not-the-ui.test' -H 'Access-Control-Request-Method: GET' || echo 000)
+[[ $status == 403 ]] && ok "a preflight from any other origin is refused (403)" \
+                     || bad "preflight from an unlisted origin returned $status, want 403"
+
+say "operations UI"
+UI_IMAGE=$(grep -m1 'image: ghcr.io/lai3d/ai-customer-service-go-admin-ui' "$ROOT/k8s/admin-ui.yaml" | awk '{print $2}')
+if [[ ${1:-} != --keep ]] || ! docker image inspect "$UI_IMAGE" >/dev/null 2>&1; then
+  docker build -q -t "$UI_IMAGE" "$ROOT/admin-ui" >/dev/null
+fi
+kind load docker-image "$UI_IMAGE" --name "$CLUSTER" >/dev/null
+
+# The API base the browser will use is the port-forward, because that is where a browser
+# on this machine would reach the cluster from.
+"${KUBECTL[@]}" apply -f "$ROOT/k8s/admin-ui.yaml" >/dev/null
+"${KUBECTL[@]}" -n "$NS" patch configmap ai-customer-service-go-admin-ui --type=merge \
+  -p '{"data":{"ADMIN_API_BASE":"http://localhost:18081"}}' >/dev/null
+"${KUBECTL[@]}" -n "$NS" rollout restart deploy/ai-customer-service-go-admin-ui >/dev/null
+if "${KUBECTL[@]}" -n "$NS" rollout status deploy/ai-customer-service-go-admin-ui --timeout=180s >/dev/null; then
+  ok "the operations UI rolled out"
+else
+  bad "the operations UI did not become ready"
+fi
+
+"${KUBECTL[@]}" -n "$NS" port-forward svc/ai-customer-service-go-admin-ui 18090:8080 >/dev/null 2>&1 &
+PFUI=$!; trap 'kill $PF $PFUI 2>/dev/null || true' EXIT
+sleep 4
+
+contains "the operations UI is served" "<title>Operations</title>" curl -sf localhost:18090/
+
+# config.js is written at start-up from the ConfigMap. If this said the wrong origin the
+# page would load, look correct, and fail every request with an opaque network error.
+contains "config.js carries the API base from the ConfigMap" "localhost:18081" \
+  curl -sf localhost:18090/config.js
+
+# nginx does not inherit add_header into a location that sets one of its own, which is how
+# this header went missing from / while remaining in the config file.
+if curl -sfI localhost:18090/ | grep -qi content-security-policy; then
+  ok "the UI sends a Content-Security-Policy on the document itself"
+else
+  bad "no Content-Security-Policy on GET / from the UI"
+fi
+
+COMPONENT=admin-ui exec_in_pod "the UI runs as uid 101" "101" id -u
+COMPONENT=admin-ui exec_in_pod "the UI's root filesystem is read-only" "Read-only" \
+  sh -c 'touch /nope'
+# ...and /tmp is writable, because config.js is written there at start-up and a read-only
+# root with nowhere to write is a pod that starts and serves the wrong API base.
+COMPONENT=admin-ui exec_in_pod "the UI can still write /tmp, where config.js goes" "ok" \
+  sh -c 'touch /tmp/probe && echo ok' 
 
 # GOMAXPROCS comes from the cgroup CPU limit on Go 1.25+, and it is what the embedding
 # concurrency bound defaults to. Reported, because the number is the point.

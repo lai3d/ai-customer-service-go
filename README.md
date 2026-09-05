@@ -39,6 +39,7 @@ recorded too.
 | An abandoned stream had already been billed, and the test that would have caught it could only pass because it tested the stub | [Cost and failure](docs/reliability.md#an-abandoned-stream-has-usually-already-been-billed) |
 | A refused action left no trace at all — the audit trail recorded everything that succeeded and nothing that was denied | [Operations](docs/operations.md#reading-is-an-action) |
 | A customer who closed the tab was recorded as a database failure, in the record whose whole job is telling those apart | [Operations](docs/operations.md#the-turn-record-is-not-the-chat-memory) |
+| A security header was in the config file and not on the response, because nginx does not inherit one into a location that sets its own | [Operations](docs/operations.md#what-the-container-found-which-a-laptop-would-not-have) |
 | The customer's words were not in the spans, but a model-invented tool name was — a span name is an aggregated dimension too | [Observability](docs/observability.md#attributes-are-not-the-only-way-into-a-backend) |
 | The page showed the model's markdown as literal asterisks, and only a real browser noticed | [The demo UI](docs/demo-ui.md#it-renders-the-models-markdown-in-a-deliberately-small-subset) |
 | Two browser tabs on one conversation interleaved, and the second request lost its retrieved passages silently | [Cost and failure](docs/reliability.md#one-turn-at-a-time-per-conversation) |
@@ -250,7 +251,7 @@ out. See [Retrieval](docs/retrieval.md#retrieval-quality).
 | [Chat providers](docs/providers.md) | Anthropic, OpenAI and xAI — and why xAI is a provider rather than a base-URL trick |
 | [Observability](docs/observability.md) | GenAI spans over OTLP, and grepping the backend to prove the customer's words are not in it |
 | [The demo UI](docs/demo-ui.md) | A glass box rather than a chat widget, and why the score bars are normalised |
-| [The operations surface](docs/operations.md) | Why `/admin` does not exist unless you configure it, and why reading a conversation is an audited action |
+| [The operations surface](docs/operations.md) | Two applications across an origin: why the API does not exist unless you configure it, what the CORS allowlist actually permits, and why reading a conversation is an audited action |
 
 ---
 
@@ -286,15 +287,21 @@ model throughout.
   are built; editing and publishing the FAQ is not, because it changes the corpus — the
   one fixture that makes every retrieval number in this pair comparable. Doing it properly
   needs a versioned index and an atomic switch, and half of it would be worse than none.
-- **The admin page was driven in a real browser, and it found two defects.** It showed
-  the customer's ticket number to the operator as literal `**TKT-4700**`, and reopening a
-  ticket left the old conclusion on the row, so a ticket could be `IN_PROGRESS` and still
-  claim to be concluded. Both are fixed. What is still unverified is width: one operator,
-  one conversation, one browser, nothing wide enough to make a table scroll.
+- **The operations UI is a separate application** (`admin-ui/`: React, TypeScript, Vite,
+  Ant Design), its own image, its own origin, talking to `/api/admin/v1/*` across CORS.
+  The Go service serves no page. That makes the allowlist a real control, and it puts two
+  contracts in two languages — the ticket state machine and the no-markup rule — which Go
+  tests check by reading the TypeScript, because nothing re-derives a translation.
+- **It was driven in a real browser across both origins**, and browsers are the only thing
+  that enforces CORS, so that run is also the check on the allowlist. Two defects found
+  this way in the page it replaces are fixed and stayed fixed: the model's markdown is
+  rendered rather than shown as asterisks, and the resolution box is not filled from the
+  row. Still unverified: one browser, one operator at a time, nothing wide enough to make
+  a table scroll.
 
 Deliberately out of scope: multi-tenancy and MCP. Authentication now exists, but only for
-`/admin` — the chat endpoints are still unauthenticated, and shipping an operator login
-does not make this a service with customer identity.
+the operations API — the chat endpoints are still unauthenticated, and shipping an operator
+login does not make this a service with customer identity.
 
 ---
 

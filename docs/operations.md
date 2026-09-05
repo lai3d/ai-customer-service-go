@@ -1,8 +1,14 @@
 # The operations surface
 
 
-`/admin` is where people who answer for this service look at what it did: the
-conversations, the tickets the assistant raised, and a record of who looked.
+The operations surface is where people who answer for this service look at what it did:
+the conversations, the tickets the assistant raised, and a record of who looked.
+
+It is **two applications**. `admin-ui/` is a React and TypeScript bundle served by nginx
+from its own image; the Go service exposes `/api/admin/v1/*` and no page at all. They meet
+across an origin, which turns two things that were implicit into configuration you can get
+wrong: an allowlist saying which origin may read these responses, and a contract in two
+languages that nothing re-derives.
 
 It exists because the Java implementation of this system built one and this repository
 was asked to match it. It was argued against first, and the argument is answered rather
@@ -20,9 +26,13 @@ This page displays that text on purpose. An agent working a ticket has to read w
 customer wrote. So it is the one surface where all of that care is concentrated in a
 single place, and whatever protects it protects everything the tracing work protected.
 
-With `ADMIN_TOKENS` unset, the routes are **never registered**. `/admin` and
-`/api/admin/v1/*` return 404 the way any unknown path does — not 401 from a guard. A guard
-is a thing that can be misconfigured. An absent route cannot be.
+With `ADMIN_TOKENS` unset, the routes are **never registered**. `/api/admin/v1/*` returns
+404 the way any unknown path does — not 401 from a guard. A guard is a thing that can be
+misconfigured. An absent route cannot be.
+
+The kind harness used to assert this against `/admin/`. That assertion is gone, because
+`/admin/` is now 404 whatever the configuration says — it would have gone on passing while
+checking nothing, which is the failure this repository keeps finding in its own checks.
 
 ```bash
 ADMIN_TOKENS="alex:$(openssl rand -hex 24):operator,dana:$(openssl rand -hex 24)"
@@ -36,6 +46,50 @@ ADMIN_TOKENS="alex:$(openssl rand -hex 24):operator,dana:$(openssl rand -hex 24)
 | Tokens shorter than 16 characters are refused at startup | This is the credential for every customer conversation in the database. |
 | Comparison is constant-time, across every configured token | The time a rejection takes should not say which operator exists or how much of a guess was right. |
 | Permission is checked on the server for every request | Hiding a button is a user-interface decision. |
+
+## Two origins, and what the browser decides
+
+The UI runs on its own origin, so every request it makes is cross-origin and the browser —
+not the server — decides whether the page may read the response. `ADMIN_CORS_ORIGINS` is
+that decision, and it is a security control rather than plumbing: what it permits is other
+pages reading the support inbox.
+
+| Rule | Why it is that way |
+| --- | --- |
+| No wildcard is reachable from configuration | `*` is the value that makes the error disappear in development and reappear as "any page can read the conversations". `ADMIN_CORS_ORIGINS=*` is treated as an origin literally named `*`, which nothing is. |
+| Origins match whole, never by prefix | A prefix match on `https://ops.example.com` also accepts `https://ops.example.com.evil.test`, a domain anyone can register. |
+| `Vary: Origin` on every response that could have carried the header | Without it a shared cache can hand one origin's allowed response to another — the same hole, arrived at by accident. |
+| CORS wraps authentication, not the reverse | A browser sends no `Authorization` header on a preflight. Authenticating first rejects every cross-origin request before the real one is sent, and the page sees an opaque network error with nothing in the server log. |
+| Every route has an `OPTIONS` twin | Go's mux matches on method, so a preflight without one is a 405 that the browser reports as a CORS failure — the least informative error in the browser. |
+| Empty means no CORS at all | Correct behind a reverse proxy that serves both from one origin, and the reason the empty value is not a permissive default. |
+
+All six were forced red before being trusted: a prefix match let the lookalike through,
+authenticating first made the preflight a 401, dropping `Vary` went unnoticed by everything
+else, and honouring a literal `*` let an arbitrary origin read a response.
+
+**The dev server deliberately does not proxy the API.** A proxy makes development
+same-origin and production cross-origin, and that difference is exactly what hides a CORS
+mistake until the day it ships. `VITE_API_BASE` points the dev server at the real API, so
+the preflight, the allowlist and the `Vary` header are exercised from the first minute.
+
+## Two copies of the same contract
+
+Splitting the UI out gave it its own copy of two things the server also knows, in a
+language the server's compiler never sees. Both are checked by Go tests that read the
+TypeScript:
+
+- **The ticket state machine.** `NEXT_STATES` in `admin-ui/src/api/types.ts` against
+  `allowedTransitions` in `internal/ticket/admin.go`. Drift in one direction offers a move
+  the server answers with 422 — annoying, but visible. Drift in the other hides a legal
+  move, and nobody reports a button that was never there.
+- **The markup rule.** React escapes by default, so the only way to put a model's words
+  into the DOM as markup is to ask for it by name. A test walks every `.ts` and `.tsx` for
+  `dangerouslySetInnerHTML` and friends, and for `localStorage`, since the token reads
+  every conversation in the database and `localStorage` outlives the tab.
+
+The second test's first run failed on the *comment* in `Markdown.tsx` that explains why the
+prop is never used — the third detector in this repository to measure the prose instead of
+the code. It matches a use now.
 
 ## Reading is an action
 
@@ -181,10 +235,41 @@ lost, because the state change that resolved it carries the text in the history.
 Both are the same shape as the finding this repository has now recorded five times: the data
 was correct at every seam a test can reach, and the defect lived in what a person would see.
 
-**Still not verified:** one operator, one conversation, one ticket, one browser. Nothing has
-been driven at a width where a table needs to scroll, and no second operator has had the same
-ticket open in another window — the conflict path is covered by tests and by `curl`, not by
-two people.
+Both survive the rewrite. The React application renders the same markdown subset, refuses
+links for the same reason, and its resolution box is deliberately **not** filled from the
+row — the conclusion a ticket already has is in the history below it, where resubmitting it
+by accident is not possible.
+
+## What the container found, which a laptop would not have
+
+Two more, from the same habit applied one layer down.
+
+**Writing `config.js` into the web root fails as a non-root user**, and would fail again
+under Kubernetes' read-only root filesystem. The API's origin is written at container
+start-up rather than baked in by `vite build`, because a build-time value means a rebuilt
+image per environment — and then the image that was tested is not the image that ships. It
+is written under `/tmp` and served by an `alias`, so the same file works on a laptop, in
+Compose, and in a pod that cannot write to its own image.
+
+**nginx does not inherit `add_header` into a location that sets one of its own.** The
+`Content-Security-Policy` was declared once at server level and was silently absent from
+`GET /` — the only response where it matters, because the location for `index.html` sets a
+`Cache-Control` and that is enough to drop every inherited header. The config read
+correctly. `curl -I` on each path did not, and the headers are an `include` now.
+
+## Verified across two origins, in a real browser
+
+Driven in Chrome on 2026-09-06 with the UI on `localhost:8090` and the API on
+`localhost:8082`, against a live model that raised `TKT-4701` from a Chinese complaint:
+the reply rendered with its ticket number in bold and no literal asterisks; the resolution
+box came up empty; a claim moved the ticket to `IN_PROGRESS` and wrote its audit row; and
+signing in with a `viewer` token produced a dialog with the history and no Save button.
+No console error, no failed request — which is also how the CORS configuration was checked,
+because a browser is the only thing that enforces it.
+
+**Still not verified:** one browser, one operator at a time. Nothing has been driven at a
+width where a table needs to scroll, and no second operator has had the same ticket open in
+another window — the 409 path is covered by tests and by `curl`, not by two people.
 
 ---
 

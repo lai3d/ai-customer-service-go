@@ -15,10 +15,11 @@ k8s/
 ├── configmap.yaml
 ├── service.yaml
 ├── deployment.yaml
+├── admin-ui.yaml            the operations UI: its own Deployment, Service and ConfigMap
 ├── examples/secret.yaml     a template, deliberately not in the directory apply path
 └── kind/
     ├── postgres.yaml        a Postgres for the throwaway cluster only
-    └── verify.sh            create a cluster, deploy, assert sixteen things
+    └── verify.sh            create a cluster, deploy, assert twenty-six things
 ```
 
 ## Apply
@@ -57,6 +58,30 @@ refused at startup rather than accepted and weak.
 registered. `verify.sh` asserts both halves of that, because "documented but never
 deployed" is exactly how two of the Java implementation's manifests were wrong.
 
+## The operations UI is a second deployment
+
+`k8s/admin-ui.yaml` is a static bundle on nginx: its own Deployment, Service and
+ConfigMap, two replicas, `10m`/`24Mi` requested. It holds no secret and reaches no
+database — everything it displays arrives in the operator's own browser, authenticated by
+the operator's own token — so a compromised UI pod has nothing to steal that the operator
+did not already have.
+
+Two values have to agree, and nothing but the harness checks that they do:
+
+```
+k8s/admin-ui.yaml   ADMIN_API_BASE      the URL a BROWSER will call
+k8s/configmap.yaml  ADMIN_CORS_ORIGINS  must contain that URL's origin, verbatim
+```
+
+`ADMIN_API_BASE` is a browser's view, not the cluster's: a Service DNS name resolves
+nowhere on the operator's laptop. If the two disagree the page loads, looks correct, and
+fails every request with an opaque network error and nothing in the server log — which is
+why `verify.sh` asserts the pair rather than either half.
+
+Unlike the API pod, this one needs writable volumes. `config.js` is written at start-up
+from the ConfigMap so one built image serves any environment, and nginx wants its own
+temporary directories; all three are `emptyDir`, and the root filesystem stays read-only.
+
 ## Before you apply
 
 1. `deployment.yaml` → `image` — currently `ghcr.io/lai3d/ai-customer-service-go:0.1.0`.
@@ -82,17 +107,24 @@ k8s/kind/verify.sh --down   # delete it
 ```
 
 It applies `k8s/` **unmodified** and adds only the two things the manifests deliberately
-do not ship. Sixteen assertions: both replicas ready, nothing OOMKilled, the Secret
+do not ship. Twenty-six assertions: both replicas ready, nothing OOMKilled, the Secret
 untouched by the directory apply, no replica losing the `CREATE EXTENSION` race, uid
 10001, a read-only root filesystem, no writable volume needed at all, health and readiness
-through the Service, Go metrics, the demo page, the operations surface both off and on
-(four of them), and a bad key surfacing as `502` rather than as a healthy pod returning
-errors. No API key needed; export `ANTHROPIC_API_KEY` to check the model call too.
+through the Service, Go metrics, the demo page, the operations API off and then on, the
+CORS allowlist answering one origin and refusing another, the operations UI rolling out
+and serving with its `config.js` and its security headers as a non-root user on a
+read-only filesystem, and a bad key surfacing as `502` rather than as a healthy pod
+returning errors. No API key needed; export `ANTHROPIC_API_KEY` to check the model call
+too.
 
-The four admin assertions are the only ones that change the cluster: they patch
-`ADMIN_TOKENS` into the Secret the harness created itself and restart the deployment, so
-that the documented way to turn the surface on is the way it was tested. The token is
-generated per run and never printed.
+The operations assertions are the only ones that change the cluster: they patch
+`ADMIN_TOKENS` into the Secret and `ADMIN_CORS_ORIGINS` into the ConfigMap the harness
+created itself, then restart, so that the documented way to turn the surface on is the way
+it was tested. The token is generated per run and never printed.
+
+One assertion was **deleted** rather than kept: that `/admin/` is a 404 when
+`ADMIN_TOKENS` is unset. The API serves no page at all now, so it would have gone on
+passing while checking nothing. An API path replaced it.
 
 ## The harness never touches your kubeconfig
 
@@ -142,10 +174,16 @@ passed for two days without its condition ever arising. So this is the honest in
 | a bad key surfaces as 502 | the branch has been exercised (run without `ANTHROPIC_API_KEY`) and passed; it has never failed |
 | the node has room for the replicas | **yes** — forced with `requests: 4Gi`, which fits the node's 7931 MiB and not the 7641 MiB actually free |
 | with no `ADMIN_TOKENS` there is no admin surface (404) | **yes** — run with the clearing step removed against a cluster an earlier run had enabled: *`/admin/` returned 200 with no ADMIN_TOKENS, want 404*. That red is also what the clearing step is for: without it the assertion passes on a fresh cluster and fails on every `--keep` rerun after. |
-| the admin page serves, refuses a tokenless request (401), accepts an operator token (200) | **yes, all three** — run with the enabling patch removed: the page check got an empty body and both API checks got `404` where they wanted `401` and `200`. That is the specific way they could have been vacuous: passing because the surface was already on from a previous run rather than because this run turned it on. |
+| the admin API refuses a tokenless request (401), accepts an operator token (200) | **yes, both** — run with the enabling patch removed: both got `404` where they wanted `401` and `200`. That is the specific way they could have been vacuous: passing because the surface was already on from a previous run rather than because this run turned it on. |
+| `config.js` carries the API base from the ConfigMap | **yes** — run with the harness's own ConfigMap patch removed, and the failure printed the value it got, which was the manifest's default rather than the port-forward. |
+| the UI sends a Content-Security-Policy on the document itself | **yes** — forced with an image whose nginx declared the header only at server level. That is not a hypothetical mistake: it is what the config did before the include, and `curl -I /` came back with no policy at all while the config file read correctly. |
+| the UI's root filesystem is read-only | **yes, but spuriously first** — the assertion was red against a pod that was demonstrably read-only, because `kubectl exec ... \| grep -q` fails under `pipefail` when the exec's own exit code is non-zero, which is exactly what a successful "this must fail" check produces. It uses the retrying helper now. |
+| the CORS preflight is answered for one origin and refused for another | no, not in the harness — the six CORS rules were each forced red in `internal/admin`, but nothing has made these two go red on a cluster |
+| the UI rolls out, is served, runs as uid 101, can write /tmp | no |
 
-Four remain unproven: the directory apply leaving the Secret alone, no writable volume,
-the four service-level checks, and the 502. They are worth keeping — a check that has
+Unproven: the directory apply leaving the Secret alone, no writable volume, the four
+service-level checks, the 502, the two cluster-level CORS checks, and the four that only
+say the UI came up. They are worth keeping — a check that has
 never fired is not the same as a check that cannot — but they should not be read as
 evidence until something has made each of them red.
 

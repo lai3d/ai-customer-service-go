@@ -50,6 +50,12 @@ make fmt
 docker compose up -d postgres jaeger   # dependencies only
 make run                               # the app from source, on :8081
 docker compose up -d                   # the whole stack, app included
+docker compose --profile ops up -d     # plus the operations UI on :8090
+
+cd admin-ui && npm ci                  # the operations UI (React, TS, Vite, antd)
+npm run dev                            # :5173, pointed at VITE_API_BASE
+npm run typecheck && npm test          # vite build does NOT typecheck; run both
+npm run build
 ```
 
 Ports avoid the Java stack's on purpose: Postgres 5433, app 8081, Jaeger 16687/4319, and
@@ -149,6 +155,31 @@ that show why it is not needed here.
   when the question is "does this exist anywhere", and remember that the filesystem is not
   the repository: `TestEveryPathTheKubernetesReadmeDrawsIsInTheRepository` asks git,
   because an `os.Stat` would have passed the whole time.
+- **`ADMIN_CORS_ORIGINS` has no wildcard, and must not grow one.** It permits *other
+  pages reading the support inbox*. Origins match whole (a prefix match accepts
+  `ops.example.com.evil.test`), `Vary: Origin` goes on every response that could have
+  carried the header, CORS wraps authentication rather than the reverse (a preflight
+  carries no `Authorization`), and every route needs an `OPTIONS` twin because Go's mux
+  matches on method. All six were forced red in `internal/admin`.
+- **The UI's dev server must not proxy the API.** A proxy makes development same-origin
+  and production cross-origin, which is the difference that hides a CORS mistake until it
+  ships. `VITE_API_BASE` points at the real API instead.
+- **nginx does not inherit `add_header` into a location that sets one of its own.** The
+  UI's `Content-Security-Policy` was declared once at server level and was absent from
+  `GET /` — the only response that matters. The headers are an `include` in every
+  location; check with `curl -I` on each path, never by reading the config.
+- **`config.js` is written at container start-up, under `/tmp`.** Baking the API base in
+  at build time means a rebuilt image per environment, and writing it into the web root
+  fails as a non-root user and again under a read-only root filesystem.
+- **Two contracts now live in two languages.** `NEXT_STATES` in
+  `admin-ui/src/api/types.ts` mirrors `allowedTransitions` in `internal/ticket/admin.go`,
+  and the no-markup rule is React's default rather than a hand-written renderer.
+  `internal/deployment/frontend_test.go` reads the TypeScript from Go for both, because
+  nothing re-derives a translation.
+- **`kubectl exec ... | grep -q` is broken under `pipefail`** when the exec's own exit
+  code is non-zero — which is exactly what a successful "this must fail" assertion
+  produces. `verify.sh` has `exec_in_pod` for this; it cost a red assertion against a pod
+  that was demonstrably correct.
 - **A check that cannot be seen to fail is a claim, not a check.** `k8s/README.md` keeps an
   inventory of which harness assertions have actually been observed red. Three separate
   detectors in this repository have been silently blind — a `CREATE EXTENSION` check whose
@@ -286,11 +317,13 @@ No multi-tenancy, no MCP. No Gemini — three providers, and `CHAT_PROVIDER=gemi
 startup by name. Authentication exists only for `/admin`: the chat endpoints are open, and
 an operator login is not customer identity.
 
-**The operations surface exists (`internal/admin`) and is opt-in.** With `ADMIN_TOKENS`
-unset its routes are never registered — `/admin` is a 404, not a guarded 401. Never change
-that to "register the routes and reject at the guard": a guard can be misconfigured and an
-absent route cannot. It is the one surface that displays customer text on purpose, which
-is why reading a conversation writes an audit row and why refused actions do too.
+**The operations surface is two applications.** `internal/admin` serves
+`/api/admin/v1/*` and no page; `admin-ui/` is a React/TypeScript bundle on its own image
+and its own origin. With `ADMIN_TOKENS` unset the API's routes are never registered — a
+404, not a guarded 401. Never change that to "register the routes and reject at the
+guard": a guard can be misconfigured and an absent route cannot. It is the one surface
+that displays customer text on purpose, which is why reading a conversation writes an
+audit row and why refused actions do too.
 
 **Knowledge editing and publication are deliberately not built.** They change the corpus,
 which is the fixture that makes every retrieval number in this pair comparable. Do not

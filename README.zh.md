@@ -36,6 +36,7 @@ SSE 流式输出、按会话计的 token 预算、Prometheus 指标和 OpenTelem
 | 被放弃的流其实早已计费；而本该抓到它的测试之所以能通过，是因为它测的是 stub | [成本与失败](docs/reliability.md#an-abandoned-stream-has-usually-already-been-billed) |
 | 一个被拒绝的操作没有留下任何痕迹——审计记下了所有成功的动作，没记下任何被拒的 | [运营后台](docs/operations.md#reading-is-an-action) |
 | 关掉标签页的客户被记成了数据库故障，而那份记录的全部职责就是区分这两件事 | [运营后台](docs/operations.md#the-turn-record-is-not-the-chat-memory) |
+| 一个安全响应头写在配置里却没出现在响应上——nginx 不会把 add_header 继承进自己也设了 add_header 的 location | [运营后台](docs/operations.md#what-the-container-found-which-a-laptop-would-not-have) |
 | 客户原话没进 span，但模型编造的工具名进了 —— span 名同样是聚合维度 | [可观测性](docs/observability.md#attributes-are-not-the-only-way-into-a-backend) |
 | 页面把模型的 markdown 当字面星号显示，只有真实浏览器发现了 | [演示界面](docs/demo-ui.md#it-renders-the-models-markdown-in-a-deliberately-small-subset) |
 | 同一会话开两个标签页会交错，第二个请求的检索段落被静默丢弃 | [成本与失败](docs/reliability.md#one-turn-at-a-time-per-conversation) |
@@ -241,7 +242,7 @@ reply      关于你的两个问题：
 | [对话 provider](docs/providers.md) | Anthropic、OpenAI 和 xAI —— 以及为什么 xAI 是一个 provider 而不是改个 base URL 的把戏 |
 | [可观测性](docs/observability.md) | OTLP 上的 GenAI span，以及靠 grep 后端来证明客户原话不在里面 |
 | [演示界面](docs/demo-ui.md) | 一个玻璃盒子而不是聊天挂件，以及为什么分数条要做归一化 |
-| [运营后台](docs/operations.md) | 为什么不配置就没有 `/admin`，以及为什么"读一个会话"本身是一个要被审计的动作 |
+| [运营后台](docs/operations.md) | 跨源的两个应用：为什么不配置就没有这套 API、CORS 白名单到底放行了什么，以及为什么"读一个会话"本身是一个要被审计的动作 |
 
 ---
 
@@ -270,12 +271,16 @@ reply      关于你的两个问题：
 - **运营后台没有知识编辑。** 会话、工单、审计都做了；编辑和发布 FAQ 没做，因为那会改动
   语料——而语料是让这对仓库所有检索数字可比的唯一基准。要做对需要版本化索引和原子切换，
   做一半比不做更糟。
-- **后台页面在真实浏览器里跑过了，而且跑出两个缺陷。** 它把工单号原样显示成
-  `**TKT-4700**`；重开工单时旧的结论还留在行上，于是一张工单可以既是 `IN_PROGRESS`
-  又声称已经有结论。两个都已修复。仍未验证的是"宽度"：一个操作员、一个会话、一个浏览器，
-  没有宽到让表格需要横向滚动的场景。
+- **运营后台是一个独立应用**（`admin-ui/`：React、TypeScript、Vite、Ant Design），
+  独立镜像、独立源，跨 CORS 调用 `/api/admin/v1/*`。Go 服务不再提供任何页面。这让白名单
+  成为一个真正的控制，同时也把两份契约放进了两种语言——工单状态机，以及"不把字符串变成
+  标记"的规则——由 Go 测试直接读 TypeScript 来比对，因为没有任何东西会重新推导出一份翻译。
+- **它在真实浏览器里跨两个源跑过了**，而浏览器是唯一执行 CORS 的东西，所以那次运行同时也是
+  对白名单的检查。此前在被替换的页面上用同样方式找到的两个缺陷已修复并保持修复：模型的
+  markdown 现在被渲染而不是显示成星号，结论输入框不再从行里预填。仍未验证：一个浏览器、
+  同一时刻一个操作员，没有宽到让表格需要横向滚动的场景。
 
-刻意不做：多租户、MCP。认证现在存在，但**只针对 `/admin`**——聊天端点仍然没有认证，
+刻意不做：多租户、MCP。认证现在存在，但**只针对运营 API**——聊天端点仍然没有认证，
 上线一个操作员登录并不等于这个服务有了客户身份体系。
 
 ---
