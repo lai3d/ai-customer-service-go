@@ -138,6 +138,28 @@ Retrieval carries no duration on the card. The honest per-stage timing is on the
 `embed query` and `pgvector similarity search` are separate spans — and a number invented
 in the browser would be worse than a link to the real one.
 
+## An error the customer could not see
+
+The log scrolled when a user message was appended and as answer chunks arrived. It did not
+scroll when an **error** was appended — and all three error paths (`!res.ok`, the `error`
+event, the `catch`) appended directly.
+
+The consequence needs a long message to see, which is why it survived: send 4,001 characters
+against the 4,000-character limit, and the customer's own text fills the log while the
+server's perfectly correct *"Message too long"* renders below the fold. Measured in Chrome:
+the error bubble's bottom at 728px, the log's at 690px. **38 pixels out of sight**, and the
+customer sees their words and no reason. A failure arriving after a long partial answer does
+the same.
+
+Every error now goes through one `showError` helper that appends and scrolls.
+`TestEveryErrorBubbleGoesThroughTheHelperThatScrolls` is structural — it fails if any branch
+appends an error any other way, and if the helper stops scrolling — because what found this
+needs a browser and what keeps it fixed does not.
+
+**Found in the .NET implementation of this system**, which shares this page's shape, and
+reproduced here before it was fixed. Third defect this page has given up to a browser, after
+the literal markdown asterisks and the errors that were dispatched on the wrong field.
+
 ---
 
 [← Back to the README](../README.md)

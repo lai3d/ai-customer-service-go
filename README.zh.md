@@ -40,6 +40,7 @@ SSE 流式输出、按会话计的 token 预算、Prometheus 指标和 OpenTelem
 | 重新载入语料会静默地劣化检索：被删除的行仍留在 HNSW 索引里，而近似扫描会把候选名额花在它们身上 | [检索](docs/retrieval.md#reloading-the-corpus-used-to-degrade-the-index) |
 | 答案评测拿到 100%，而这个数字毫无意义——直到同一套 harness 在没有语料的情况下跑出 42.9% | [评测](docs/evaluation.md#the-numbers) |
 | 工单被开出来、去重、限量、审计——然后没有任何人被告知它存在 | [人工闭环](docs/handoff.md#outbound-a-webhook-and-the-decision-it-does-not-make-for-you) |
+| 服务端的拒绝信息渲染在可视区域下方 38 像素处，于是客户只看到自己那条长消息、看不到任何理由 | [演示界面](docs/demo-ui.md#an-error-the-customer-could-not-see) |
 | 客户原话没进 span，但模型编造的工具名进了 —— span 名同样是聚合维度 | [可观测性](docs/observability.md#attributes-are-not-the-only-way-into-a-backend) |
 | 页面把模型的 markdown 当字面星号显示，只有真实浏览器发现了 | [演示界面](docs/demo-ui.md#it-renders-the-models-markdown-in-a-deliberately-small-subset) |
 | 同一会话开两个标签页会交错，第二个请求的检索段落被静默丢弃 | [成本与失败](docs/reliability.md#one-turn-at-a-time-per-conversation) |

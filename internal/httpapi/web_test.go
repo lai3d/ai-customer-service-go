@@ -172,3 +172,35 @@ func TestTheErrorFrameIsNamedAndCarriesAProblem(t *testing.T) {
 			"switch on the wrong field and appear to work")
 	}
 }
+
+// Every error bubble must go through showError, which scrolls the log.
+//
+// The page scrolled when a user message was appended and as answer chunks arrived, and not
+// when an error was appended -- so a refused message filled the log with the customer's own
+// text and rendered the explanation 38px below the visible area, measured in Chrome with a
+// 4,001-character message against the 4,000 limit. The customer saw their words and no
+// reason.
+//
+// This is a structural check rather than a rendered one: the browser check that found it
+// needs a browser, and what keeps it fixed is that no branch appends an error any other
+// way. Found in the .NET implementation of this system, which shares this page's shape.
+func TestEveryErrorBubbleGoesThroughTheHelperThatScrolls(t *testing.T) {
+	page := demoPage(t)
+
+	if !strings.Contains(page, "function showError(") {
+		t.Fatal("showError is gone; the three error branches will drift apart again")
+	}
+	if !regexp.MustCompile(`(?s)function showError\([^)]*\)\s*\{[^}]*scrollTop\s*=\s*log\.scrollHeight`).
+		MatchString(page) {
+		t.Error("showError does not scroll the log, which is the only reason it exists")
+	}
+
+	// The defect, stated as a pattern: an error class appended anywhere but in the helper.
+	direct := regexp.MustCompile(`log\.append\(el\('div',\s*'msg err'`)
+	for _, loc := range direct.FindAllStringIndex(page, -1) {
+		line := 1 + strings.Count(page[:loc[0]], "\n")
+		if !strings.Contains(page[max(0, loc[0]-260):loc[0]], "function showError(") {
+			t.Errorf("line %d appends an error bubble outside showError, so it will not scroll", line)
+		}
+	}
+}

@@ -43,6 +43,7 @@ recorded too.
 | Reloading the corpus degraded retrieval silently: deleted rows stay in an HNSW index, and an approximate scan spends its candidates on them | [Retrieval](docs/retrieval.md#reloading-the-corpus-used-to-degrade-the-index) |
 | The answer eval scored 100%, which meant nothing until the same harness was run without the corpus and scored 42.9% | [Evaluation](docs/evaluation.md#the-numbers) |
 | A ticket was raised, deduplicated, capped and audited — and nobody was told it existed | [Handoff](docs/handoff.md#outbound-a-webhook-and-the-decision-it-does-not-make-for-you) |
+| The server's refusal rendered 38 pixels below the fold, so a customer saw their own long message and no reason | [The demo UI](docs/demo-ui.md#an-error-the-customer-could-not-see) |
 | The customer's words were not in the spans, but a model-invented tool name was — a span name is an aggregated dimension too | [Observability](docs/observability.md#attributes-are-not-the-only-way-into-a-backend) |
 | The page showed the model's markdown as literal asterisks, and only a real browser noticed | [The demo UI](docs/demo-ui.md#it-renders-the-models-markdown-in-a-deliberately-small-subset) |
 | Two browser tabs on one conversation interleaved, and the second request lost its retrieved passages silently | [Cost and failure](docs/reliability.md#one-turn-at-a-time-per-conversation) |

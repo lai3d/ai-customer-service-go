@@ -109,6 +109,21 @@ let conversationId = null;
 // requests they always did.
 let sessionToken = null;
 
+// Every error bubble goes through here, and the scroll is the whole reason it exists.
+//
+// The log scrolled when a user message was appended and as answer chunks arrived, and not
+// when an error was appended -- so a message the server refuses fills the log with the
+// customer's own text and renders the explanation just below the visible area. Measured at
+// 38px below the fold with a 4,001-character message against the 4,000 limit: the customer
+// sees their words and no reason.
+//
+// Found in the .NET implementation of this system, which shares this page's shape, and
+// reproduced here before it was fixed.
+function showError(text) {
+  log.append(el('div', 'msg err', text));
+  log.scrollTop = log.scrollHeight;
+}
+
 async function ensureSession() {
   if (sessionToken) return;
   const res = await fetch('/api/v1/session', {method: 'POST'});
@@ -266,7 +281,7 @@ form.addEventListener('submit', async (e) => {
     if (!res.ok) {
       const problem = await res.json().catch(() => ({title: 'Request failed'}));
       bubble.remove();
-      log.append(el('div', 'msg err', `${problem.title}: ${problem.detail || ''}`));
+      showError(`${problem.title}: ${problem.detail || ''}`);
       return;
     }
 
@@ -308,14 +323,14 @@ form.addEventListener('submit', async (e) => {
         else if (name === 'usage') renderUsage(payload.usage);
         else if (name === 'error') {
           const detail = payload.detail ? `：${payload.detail}` : '';
-          log.append(el('div', 'msg err', `${payload.title || 'Error'}${detail}`));
+          showError(`${payload.title || 'Error'}${detail}`);
         }
       }
     }
     if (!answer) bubble.remove();
   } catch (err) {
     bubble.remove();
-    log.append(el('div', 'msg err', 'The connection failed: ' + err.message));
+    showError('The connection failed: ' + err.message);
   } finally {
     send.disabled = false;
     input.focus();
