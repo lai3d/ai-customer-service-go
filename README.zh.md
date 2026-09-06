@@ -301,19 +301,30 @@ reply      关于你的两个问题：
 ```
 ├── Dockerfile            # 4 个阶段；模型烤进镜像，运行时不下载任何东西
 ├── k8s/                  # 清单 + 一个在 kind 上验证它们的脚本
-├── docker-compose.yml    # Postgres、Jaeger、应用 —— 端口避开 Java 那套栈
+├── docker-compose.yml    # Postgres、Jaeger、应用、运营界面 —— 端口避开 Java 那套栈
+├── admin-ui/             # 运营界面：React 18 + TypeScript + Vite，Ant Design；独立镜像
+│                         # （非特权 nginx）、独立源，跨域调用 /api/admin/v1/*
 ├── cmd/server/           # 装配、健康检查、优雅关闭
 ├── corpus/faq.json       # 与 Java 实现的字节级一致
+├── docs/                 # 每个决定一篇文档，证据写在里面
 ├── internal/
+│   ├── admin/            # 运营面：会话、工单、知识库、审计
 │   ├── benchmark/        # 带 build tag；它测的是一台机器，不是一个行为
 │   ├── chat/             # 一轮对话，按顺序：记忆、检索、工具循环
 │   ├── config/           # 每个可调项，理由就写在旁边
 │   ├── cost/             # 会话预算与价格
+│   ├── deployment/       # 只有测试：Compose 文件、前端和两份 README 说的都在仓库里
+│   ├── eval/             # 回答是不是仍然正确
+│   ├── handoff/          # 转人工，以及从人工转回来
 │   ├── httpapi/          # 校验、SSE、problem+json、内嵌的演示页面
+│   ├── identity/         # 对聊天端点而言客户是谁，以及由此设的界限
 │   ├── llm/              # provider 边界：Anthropic、OpenAI、xAI
 │   ├── obs/              # 指标与链路
-│   ├── rag/              # 语料、ONNX 嵌入器、pgvector、检索器
+│   ├── rag/              # 语料、ONNX 嵌入器、pgvector、检索器、知识版本
+│   ├── retention/        # 删除客户数据：按计划删旧的，按请求删指定的
 │   ├── store/            # 连接池与 schema
+│   ├── testsupport/      # 启动测试所依赖的真实组件
+│   ├── ticket/           # 支持工单：AI 创建，人来处理
 │   └── tools/            # 订单查询、工单创建
 └── scripts/fetch-deps.sh # 进程内模型的真实代价
 ```

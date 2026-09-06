@@ -321,19 +321,30 @@ login does not make this a service with customer identity.
 ```
 ├── Dockerfile            # 4 stages; the model baked in, no runtime downloads
 ├── k8s/                  # manifests + a kind harness that verifies them
-├── docker-compose.yml    # Postgres, Jaeger, the app -- ports avoid the Java stack's
+├── docker-compose.yml    # Postgres, Jaeger, the app, the operations UI -- ports avoid the Java stack's
+├── admin-ui/             # the operations UI: React 18 + TypeScript + Vite, Ant Design; its own
+│                         # image (nginx, unprivileged), its own origin, CORS to /api/admin/v1/*
 ├── cmd/server/           # wiring, health, graceful shutdown
 ├── corpus/faq.json       # byte-identical to the Java implementation's
+├── docs/                 # one document per decision, each with its evidence
 ├── internal/
+│   ├── admin/            # the operations surface: conversations, tickets, knowledge, audit
 │   ├── benchmark/        # build-tagged; measures a machine, not a behaviour
 │   ├── chat/             # a turn, in order: memory, retrieval, the tool loop
 │   ├── config/           # every tunable, with the reasoning next to it
 │   ├── cost/             # conversation budget and prices
+│   ├── deployment/       # tests only: the Compose files, the front end and the READMEs say what is in the repository
+│   ├── eval/             # whether the answers are still right
+│   ├── handoff/          # the loop back to a human, and back from them
 │   ├── httpapi/          # validation, SSE, problem+json, the embedded demo page
+│   ├── identity/         # who a customer is to the chat endpoint, and what that bounds
 │   ├── llm/              # the provider boundary: Anthropic, OpenAI, xAI
 │   ├── obs/              # metrics and traces
-│   ├── rag/              # corpus, ONNX embedder, pgvector, retriever
+│   ├── rag/              # corpus, ONNX embedder, pgvector, retriever, knowledge versions
+│   ├── retention/        # deletes customer data: on a schedule, and on request
 │   ├── store/            # pool and schema
+│   ├── testsupport/      # starts the real dependencies tests run against
+│   ├── ticket/           # support tickets: the AI creates them, people work them
 │   └── tools/            # order lookup, support tickets
 └── scripts/fetch-deps.sh # the honest cost of an in-process model
 ```
