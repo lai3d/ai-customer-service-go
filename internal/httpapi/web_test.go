@@ -195,6 +195,16 @@ func TestEveryErrorBubbleGoesThroughTheHelperThatScrolls(t *testing.T) {
 		t.Error("showError does not scroll the log, which is the only reason it exists")
 	}
 
+	// And the helper is actually used. Without this the test passes if every error branch
+	// is deleted -- a page that never reports a failure satisfies "no branch appends an
+	// error outside the helper" perfectly. Borrowed from the .NET implementation, which
+	// adopted this test and noticed the hole while doing so.
+	uses := strings.Count(page, "showError(") - strings.Count(page, "function showError(")
+	if uses < 3 {
+		t.Errorf("showError is called %d times; the three error paths (!res.ok, the error "+
+			"event, the catch) should each use it", uses)
+	}
+
 	// The defect, stated as a pattern: an error class appended anywhere but in the helper.
 	direct := regexp.MustCompile(`log\.append\(el\('div',\s*'msg err'`)
 	for _, loc := range direct.FindAllStringIndex(page, -1) {
