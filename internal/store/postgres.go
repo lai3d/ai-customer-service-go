@@ -50,6 +50,58 @@ CREATE TABLE IF NOT EXISTS faq_document (
 CREATE INDEX IF NOT EXISTS faq_document_embedding_idx
     ON faq_document USING hnsw (embedding vector_cosine_ops);
 
+-- Which published version a document belongs to.
+--
+-- ADD COLUMN IF NOT EXISTS rather than a new table, and that is the whole migration: the
+-- bundled corpus already in a running database keeps its rows and its embeddings, and gets
+-- adopted as the first version by stamping this column. Re-embedding it would change the
+-- vectors that every retrieval number in this pair of repositories was measured against.
+ALTER TABLE faq_document ADD COLUMN IF NOT EXISTS corpus_version TEXT;
+CREATE INDEX IF NOT EXISTS faq_document_version_idx ON faq_document (corpus_version);
+
+-- The versions themselves, and which one live retrieval reads.
+--
+-- A version is immutable once built: its documents are written, then it is activated, and
+-- it is never edited in place. Editing in place is what makes a half-published corpus
+-- reachable by a customer mid-write.
+CREATE TABLE IF NOT EXISTS corpus_version (
+    version     TEXT        NOT NULL PRIMARY KEY,
+    source      TEXT        NOT NULL,     -- 'bundled' or 'published'
+    documents   INT         NOT NULL DEFAULT 0,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_by  TEXT        NOT NULL DEFAULT 'system',
+    note        TEXT
+);
+
+-- Exactly one row, ever. The primary key on a constant is the constraint: "the active
+-- version" is a thing there is one of, and a table that can hold two of them is a table
+-- that eventually does.
+CREATE TABLE IF NOT EXISTS corpus_active (
+    only_one    BOOLEAN     NOT NULL PRIMARY KEY DEFAULT true CHECK (only_one),
+    version     TEXT        NOT NULL REFERENCES corpus_version (version),
+    activated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    activated_by TEXT       NOT NULL DEFAULT 'system',
+    -- Bumped on every switch. An operator publishing from a stale page loses the race
+    -- instead of overwriting whoever won it.
+    revision    INT         NOT NULL DEFAULT 1
+);
+
+-- What operators edit. Drafts, not the live corpus: nothing here is retrievable until a
+-- publication turns it into a corpus_version.
+CREATE TABLE IF NOT EXISTS knowledge_entry (
+    entry_id    TEXT        NOT NULL,
+    language    TEXT        NOT NULL,
+    category    TEXT        NOT NULL,
+    question    TEXT        NOT NULL,
+    answer      TEXT        NOT NULL,
+    -- Soft delete: a published version still references what it was built from, and an
+    -- entry removed from the drafts must not disappear from the version that shipped it.
+    deleted     BOOLEAN     NOT NULL DEFAULT false,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by  TEXT        NOT NULL,
+    PRIMARY KEY (entry_id, language)
+);
+
 -- ---------------------------------------------------------------------------------
 -- Operational records. Everything above serves a customer turn; everything below
 -- serves the people who have to answer for it afterwards.
@@ -240,7 +292,39 @@ func Open(ctx context.Context, url string, maxConns int32, dimensions int) (*pgx
 	}
 	cfg.MaxConns = maxConns
 	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-		return pgxvec.RegisterTypes(ctx, conn)
+		if err := pgxvec.RegisterTypes(ctx, conn); err != nil {
+			return err
+		}
+		// A guard against the version filter starving the HNSW scan, and it is **argued
+		// rather than evidenced here** -- which is the honest label, and the same one the
+		// stream-close fix in internal/llm carries.
+		//
+		// The shape: retrieval filters on the active corpus version, and that filter is
+		// applied after the scan has chosen its candidates, so candidates spent on retired
+		// documents are candidates not spent on live ones. The Java implementation of this
+		// system measured exactly that -- 40 candidates, 26 dead, a top-8 of 1 -- and
+		// closed it with this setting.
+		//
+		// It could not be reproduced in this stack. Measured here: 4,000 rows at 5%
+		// selectivity walked 181 candidates to return a full 8 (EXPLAIN ANALYZE, `Rows
+		// Removed by Filter: 173`), and twenty published versions with retention down to
+		// two returned 8 with *no* rows removed by the filter at all. The churn test in
+		// internal/rag passes with this line and without it, so it does not justify it and
+		// does not pretend to.
+		//
+		// Kept anyway, because the measured cost is nothing -- the extra work happens only
+		// when a scan has to resume, and a single-version search never exhausts its first
+		// candidates, so the retrieval numbers are unchanged -- and the failure it guards
+		// against is silent. strict_order rather than relaxed_order because this service
+		// shows retrieval scores to operators and ranks by them; an order that is
+		// approximately right is a number that is approximately meaningless.
+		//
+		// Set here rather than in postgresql.conf so it travels with the application: a
+		// database somebody else administers is still correct. See docs/knowledge.md.
+		if _, err := conn.Exec(ctx, "SET hnsw.iterative_scan = strict_order"); err != nil {
+			return fmt.Errorf("set hnsw.iterative_scan: %w", err)
+		}
+		return nil
 	}
 
 	if err := applySchema(ctx, cfg.ConnConfig, dimensions); err != nil {

@@ -98,8 +98,11 @@
       "id": "international-duties",
       "question": "If you ship to me overseas, is the import duty included in what I paid?",
       "language": "en",
-      "mustContainAny": [["not included", "are not", "not in", "excluded", "separately"]],
-      "why": "Duties are not included. A wrong answer here costs the customer money at the door."
+      "mustContainAny": [["not included", "are not", "not in", "excluded", "separately",
+                          "responsibility", "payable", "customs", "on delivery", "extra"]],
+      "mustNotContain": ["duties are included", "no additional", "nothing further to pay",
+                         "all taxes included"],
+      "why": "Duties are not included. A wrong answer here costs the customer money at the door. The first version of this case listed five phrasings for 'not included' and flaked -- it passed alone and failed in the same full run that scored 34/35, because the model had said the same true thing a sixth way. The negative is the assertion that names the defect; the positive list is wide and is the weaker half."
     },
     {
       "id": "address-change-window",
@@ -217,16 +220,15 @@
       "id": "ungrounded-loyalty",
       "question": "How many points does my loyalty account earn per dollar?",
       "language": "en",
-      "grounded": true,
-      "mustNotContain": ["points per dollar", "1 point", "2 points"],
-      "why": "There is no loyalty scheme in the corpus."
+      "mustNotContain": ["points per dollar", "1 point", "2 points", "earn points"],
+      "why": "There is no loyalty scheme in the corpus. `grounded` was dropped from this case after it flaked: the mustNotContain names the fabrication, which is the assertion that measures the defect, while the phrase list measures how the model happened to word its uncertainty."
     },
     {
       "id": "ungrounded-warranty",
       "question": "What is the warranty period on electronics?",
       "language": "en",
-      "grounded": true,
-      "mustNotContain": ["one year warranty", "two year warranty", "12 month warranty"],
+      "mustNotContain": ["one year warranty", "two year warranty", "12 month warranty",
+                         "warranty period is", "covered for"],
       "why": "No warranty terms exist. A number here is fabricated."
     },
     {

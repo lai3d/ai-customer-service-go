@@ -70,7 +70,10 @@ var uncertainty = []string{
 	"i don't have", "i do not have", "not something i can", "no information",
 	"cannot confirm", "can't confirm", "not covered", "don't know", "do not know",
 	"unable to", "not able to", "human agent", "contact support", "our team",
+	"nothing about", "no details", "not in", "does not cover", "doesn't cover",
+	"can't tell you", "cannot tell you", "no mention", "not mentioned",
 	"没有相关", "查不到", "无法确认", "不清楚", "没有这方面", "人工客服", "联系客服", "不便",
+	"没有提到", "未涉及", "没有说明", "无法告诉",
 }
 
 func TestAnswerQuality(t *testing.T) {
@@ -134,8 +137,22 @@ func TestAnswerQuality(t *testing.T) {
 	// system's grounding, and every number it produces is worthless.
 	if control {
 		t.Log("EVAL_WITHOUT_RETRIEVAL: the corpus is not ingested; this run is the control")
-	} else if _, err := rag.Ingest(ctx, filepath.Join(root, "corpus", "faq.json"), embedder, vectors); err != nil {
-		t.Fatal(err)
+	} else {
+		if _, err := rag.Ingest(ctx, filepath.Join(root, "corpus", "faq.json"), embedder, vectors); err != nil {
+			t.Fatal(err)
+		}
+		// Adopt the corpus as a managed version, because that is what production does and
+		// the versioned read path is a different query -- it filters on the active version.
+		// Running this eval against the unversioned fallback would measure the path no
+		// deployment uses and report it as the score.
+		if _, err := vectors.AdoptBundled(ctx, corpus.Version); err != nil {
+			t.Fatal(err)
+		}
+		active, _, err := vectors.Active(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("retrieval reads corpus version %s", active)
 	}
 
 	tickets := &testsupport.FakeTickets{}

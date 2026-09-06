@@ -44,6 +44,7 @@ recorded too.
 | The answer eval scored 100%, which meant nothing until the same harness was run without the corpus and scored 42.9% | [Evaluation](docs/evaluation.md#the-numbers) |
 | A ticket was raised, deduplicated, capped and audited — and nobody was told it existed | [Handoff](docs/handoff.md#outbound-a-webhook-and-the-decision-it-does-not-make-for-you) |
 | The server's refusal rendered 38 pixels below the fold, so a customer saw their own long message and no reason | [The demo UI](docs/demo-ui.md#an-error-the-customer-could-not-see) |
+| A setting was kept that three measurements here could not justify, and labelled as argued rather than evidenced | [Knowledge](docs/knowledge.md#hnswiterative_scan-argued-not-evidenced-here) |
 | The customer's words were not in the spans, but a model-invented tool name was — a span name is an aggregated dimension too | [Observability](docs/observability.md#attributes-are-not-the-only-way-into-a-backend) |
 | The page showed the model's markdown as literal asterisks, and only a real browser noticed | [The demo UI](docs/demo-ui.md#it-renders-the-models-markdown-in-a-deliberately-small-subset) |
 | Two browser tabs on one conversation interleaved, and the second request lost its retrieved passages silently | [Cost and failure](docs/reliability.md#one-turn-at-a-time-per-conversation) |
@@ -256,6 +257,7 @@ out. See [Retrieval](docs/retrieval.md#retrieval-quality).
 | [Observability](docs/observability.md) | GenAI spans over OTLP, and grepping the backend to prove the customer's words are not in it |
 | [The demo UI](docs/demo-ui.md) | A glass box rather than a chat widget, and why the score bars are normalised |
 | [The operations surface](docs/operations.md) | Two applications across an origin: why the API does not exist unless you configure it, what the CORS allowlist actually permits, and why reading a conversation is an audited action |
+| [Knowledge that can be edited](docs/knowledge.md) | Corpus versions, an atomic switch, and why the bundled corpus is adopted rather than rebuilt |
 | [The loop back to a human](docs/handoff.md) | Telling somebody a ticket exists, and getting a person's reply back to the customer who asked |
 | [Measuring the answers](docs/evaluation.md) | 35 cases against the real model, and the control run that makes the score mean something |
 | [Deleting customer data](docs/retention.md) | Expiry by age and erasure on request — and the harder half, which is what survives an erasure and why |

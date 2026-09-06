@@ -220,6 +220,13 @@ that show why it is not needed here.
   parameter*, which reads exactly like "this version does not have it" -- and that wrong
   conclusion was published here before a peer corrected it. Run any vector operation, or
   `LOAD 'vector'`, before asking.
+- **The bundled corpus is adopted as the first version, never re-embedded.** Its vectors
+  are what every retrieval number in this pair was measured against. `AdoptBundled` stamps
+  `corpus_version` on the rows already there and is a no-op once a version is active; a
+  second adoption would stamp published documents with the bundled name.
+- **Retrieval reads one active version, and `corpus_version IS NULL` is the deploy path.**
+  A database mid-rollout, or a test that ingests without versioning, keeps working instead
+  of answering nothing. Do not tighten that predicate without a plan for both.
 - **Clear `faq_document` with `TRUNCATE`, never `DELETE`.** An HNSW scan collects its
   candidates from the graph and only then drops the dead ones, so rows deleted by previous
   ingestions crowd out the live ones and a `LIMIT 8` search quietly returns fewer than

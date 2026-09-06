@@ -133,6 +133,36 @@ func run() error {
 		}
 	}
 
+	// Adopt the bundled corpus as the first managed version, without re-embedding it.
+	//
+	// Idempotent, and it runs every start-up: on a database that already has an active
+	// version it does nothing, so a service that has published edits does not get its
+	// corpus stamped back to the bundled one on the next restart.
+	//
+	// Not re-embedding is the load-bearing part. corpus/faq.json is byte-identical to the
+	// Java implementation's, and its vectors are what every retrieval number in this pair
+	// was measured against; recomputing them would move the measurement while claiming to
+	// preserve it.
+	corpus, err := rag.LoadCorpus(cfg.RAG.CorpusPath)
+	if err != nil {
+		return err
+	}
+	if adopted, err := vectors.AdoptBundled(startupCtx, corpus.Version); err != nil {
+		return fmt.Errorf("adopt the bundled corpus: %w", err)
+	} else if adopted {
+		slog.Info("adopted the bundled corpus as the first managed version",
+			"version", corpus.Version)
+	}
+	if active, _, err := vectors.Active(startupCtx); err == nil {
+		slog.Info("retrieval reads one corpus version", "active", active)
+	} else if errors.Is(err, rag.ErrNoActiveVersion) {
+		// Reachable with IngestOnStartup off against an empty database, and the warning is
+		// the only thing that tells anyone why every answer is ungrounded.
+		slog.Warn("no active corpus version: retrieval will fall back to unversioned documents")
+	} else {
+		return err
+	}
+
 	client, err := llm.New(cfg.Chat)
 	if err != nil {
 		return err

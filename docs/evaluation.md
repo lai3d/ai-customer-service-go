@@ -15,10 +15,21 @@ make eval-control   # the same cases with no corpus: the negative control
 
 | | Cases passed | Cost | Duration |
 | --- | --- | --- | --- |
-| **`claude-opus-5`, corpus ingested** | **35/35 (100%)** | $0.52 | 2m08s |
+| **`claude-opus-5`, corpus ingested** | **34–35/35 across six runs** | ~$0.52 | ~2m10s |
 | the same run with **no corpus** | **15/35 (42.9%)** | $0.46 | 3m02s |
 
-74,463 input and 6,016 output tokens for the graded run, measured 2026-09-06.
+About 74,600 input and 6,100 output tokens per graded run, measured 2026-09-06.
+
+**A range, not a number, and the first version of this document had it wrong.** It said
+35/35 (100%) on the strength of one run. Six runs later the score has been 35 four times and
+34 twice, with two *different* cases failing once each — and both passed when re-run alone.
+That is the variance this document already listed as something it could not see, observed
+rather than hypothesised, and the honest thing is a range with the reason attached rather
+than the best sample presented as a property.
+
+Retrieval reads the active corpus version, as production does — an earlier run of this
+suite went through the unversioned fallback path and would have measured a query no
+deployment uses.
 
 **The second row is why the first one means anything.** A suite that scores 100% has told
 you nothing until the same harness has been shown to produce a bad number — otherwise it
@@ -66,9 +77,10 @@ Worth stating, because a green suite invites the opposite conclusion:
   and the feedback loop that would collect it is not built (item 7).
 - **Anything about a determined attacker.** The injection case is the cheapest possible
   probe and passing it proves nothing beyond the obvious being handled.
-- **Variance.** Each case runs once. A case that passes 70% of the time and passed today
-  looks identical to one that always passes. Running the suite three times and comparing
-  would cost three times as much and has not been done.
+- **Per-case variance, still.** Each case runs once per suite. Six suite runs have now
+  shown the aggregate moving between 34 and 35, which bounds the variance loosely; what is
+  still unmeasured is any individual case's pass rate. A case that passes 70% of the time
+  and passed today still looks identical to one that always passes.
 - **The other providers.** Measured on `claude-opus-5` only. `gpt-5` and `grok-4.6` are
   verified to work; their scores here are unknown.
 
@@ -90,6 +102,18 @@ The other check to distrust first is `grounded`, which matches a list of uncerta
 phrasings in both languages. That is phrase-matching, and phrase-matching is what went wrong
 above. Where a case can be written with a `mustNotContain` on the specific invention
 instead, it is; `grounded` is the fallback for when it cannot.
+
+**Both flakes were that check, or its shape.** `international-duties` listed five ways of
+saying "not included" and the model found a sixth; `ungrounded-loyalty` carried `grounded`
+alongside a `mustNotContain` that already named the fabrication. Neither answer was wrong.
+The fix in both cases was to lean on the negative — the assertion that names the defect —
+and to widen or drop the positive. Two cases lost `grounded` entirely for that reason, and
+the phrase list gained the wordings the model actually used.
+
+The general lesson is the one this repository keeps relearning in a new place: **an
+assertion has to name the defect, not a surface that usually accompanies it.** A positive
+phrase list is a surface. It is also sometimes the only thing available, which is why
+`grounded` still exists.
 
 ## What it costs, and why it is not in CI
 

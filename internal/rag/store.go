@@ -88,8 +88,24 @@ type SearchOptions struct {
 	TopK      int
 	Threshold float64
 	Language  string
+	// Version searches a specific corpus version instead of the active one. Empty means
+	// the active one, which is what every customer-facing search uses; naming a version is
+	// how an operator previews a draft before activating it.
+	Version string
 }
 
+// Search reads the active corpus version only.
+//
+// The version predicate is a *post-filter* on an HNSW scan: the index walks the graph,
+// collects candidates, and only then discards the ones from other versions. With several
+// versions retained, candidates spent on retired documents are candidates not spent on live
+// ones, and a LIMIT 8 search starts returning fewer than eight. That is why
+// `hnsw.iterative_scan` is set on every pooled connection -- see internal/store, and
+// docs/knowledge.md for the measurement.
+//
+// `corpus_version IS NULL` is deliberate and is what makes this change safe to deploy: a
+// database whose corpus has not been adopted yet -- during a rollout, or in a test that
+// ingests without versioning -- keeps working exactly as before.
 func (s *Store) Search(ctx context.Context, query []float32, opts SearchOptions) ([]Passage, error) {
 	const sql = `
 		SELECT id, entry_id, language, category, question, answer, content,
@@ -97,11 +113,17 @@ func (s *Store) Search(ctx context.Context, query []float32, opts SearchOptions)
 		FROM faq_document
 		WHERE ($2 = '' OR language = $2)
 		  AND 1 - (embedding <=> $1) >= $3
+		  AND (corpus_version IS NULL
+		       OR corpus_version = coalesce($5, (SELECT version FROM corpus_active WHERE only_one)))
 		ORDER BY embedding <=> $1
 		LIMIT $4`
 
+	var version any
+	if opts.Version != "" {
+		version = opts.Version
+	}
 	rows, err := s.pool.Query(ctx, sql,
-		pgvector.NewVector(query), opts.Language, opts.Threshold, opts.TopK)
+		pgvector.NewVector(query), opts.Language, opts.Threshold, opts.TopK, version)
 	if err != nil {
 		return nil, fmt.Errorf("vector search: %w", err)
 	}

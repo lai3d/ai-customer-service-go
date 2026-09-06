@@ -41,6 +41,7 @@ SSE 流式输出、按会话计的 token 预算、Prometheus 指标和 OpenTelem
 | 答案评测拿到 100%，而这个数字毫无意义——直到同一套 harness 在没有语料的情况下跑出 42.9% | [评测](docs/evaluation.md#the-numbers) |
 | 工单被开出来、去重、限量、审计——然后没有任何人被告知它存在 | [人工闭环](docs/handoff.md#outbound-a-webhook-and-the-decision-it-does-not-make-for-you) |
 | 服务端的拒绝信息渲染在可视区域下方 38 像素处，于是客户只看到自己那条长消息、看不到任何理由 | [演示界面](docs/demo-ui.md#an-error-the-customer-could-not-see) |
+| 一个本仓库三次测量都无法证明其必要性的配置被保留了下来，并标注为"基于论证而非证据" | [知识库](docs/knowledge.md#hnswiterative_scan-argued-not-evidenced-here) |
 | 客户原话没进 span，但模型编造的工具名进了 —— span 名同样是聚合维度 | [可观测性](docs/observability.md#attributes-are-not-the-only-way-into-a-backend) |
 | 页面把模型的 markdown 当字面星号显示，只有真实浏览器发现了 | [演示界面](docs/demo-ui.md#it-renders-the-models-markdown-in-a-deliberately-small-subset) |
 | 同一会话开两个标签页会交错，第二个请求的检索段落被静默丢弃 | [成本与失败](docs/reliability.md#one-turn-at-a-time-per-conversation) |
@@ -247,6 +248,7 @@ reply      关于你的两个问题：
 | [可观测性](docs/observability.md) | OTLP 上的 GenAI span，以及靠 grep 后端来证明客户原话不在里面 |
 | [演示界面](docs/demo-ui.md) | 一个玻璃盒子而不是聊天挂件，以及为什么分数条要做归一化 |
 | [运营后台](docs/operations.md) | 跨源的两个应用：为什么不配置就没有这套 API、CORS 白名单到底放行了什么，以及为什么"读一个会话"本身是一个要被审计的动作 |
+| [可编辑的知识库](docs/knowledge.md) | 语料版本、原子切换，以及为什么内置语料是被"采纳"而不是被重建（英文） |
 | [回到人的闭环](docs/handoff.md) | 让人知道有工单，以及把人的回复送回给提问的客户（英文） |
 | [度量答案质量](docs/evaluation.md) | 35 个用例打真实模型，以及那次让分数变得有意义的对照实验（英文） |
 | [删除客户数据](docs/retention.md) | 按时限过期与按请求擦除——以及更难的那一半：擦除之后什么必须留下，为什么（英文） |

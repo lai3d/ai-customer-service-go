@@ -32,7 +32,7 @@ What is missing is almost entirely product, not scaffolding.
 | # | Item | Blocks | Scope | Status | Estimate |
 | --- | --- | --- | --- | --- | --- |
 | 1 | [Identity, session ownership, rate limiting, global budget](#1-anyone-can-read-anyone-elses-conversation) | launch | both | **done** 2026-09-06 | 3–4 h |
-| 2 | [Knowledge as a knowledge base, not a fixture](#2-the-corpus-is-a-test-fixture) | launch | both | not started | 4–6 h |
+| 2 | [Knowledge as a knowledge base, not a fixture](#2-the-corpus-is-a-test-fixture) | launch | both | **core done** 2026-09-06, editor next | 4–6 h |
 | 3 | [The loop back to a human](#3-a-ticket-is-a-row-and-nothing-else-happens) | launch | both | **done** 2026-09-06 | 3–5 h |
 | 4 | [Real tools instead of the mock](#4-the-tools-are-fiction) | week 1 | both | not started | 2–3 h |
 | 5 | [Retention and deletion of customer data](#5-there-is-no-way-to-delete-a-customer) | week 1 | both | **done** 2026-09-06 | 2–3 h |
@@ -182,11 +182,28 @@ about how close that was; this tells you the margin, and it is why the Java side
 so no candidates were being spent at all).
 
 A setting with no case that needs it is the kind of configuration this repository does not
-add. **It becomes required with this item**, because versioning is another post-filter over
-a much larger table, and it should be set on every pooled connection when the versioning
-lands — not before, and not without a test that is red without it. The Java side has the
-case today: with every entry's text changed each publication and the index forced, twenty
-publications gave 26 dead of 40 candidates and a top-8 of 1.
+add. The Java side has the case: with every entry's text changed each publication and the
+index forced, twenty publications gave 26 dead of 40 candidates and a top-8 of 1.
+
+**Core done, 2026-09-06** — [the reasoning](knowledge.md). Versions are built, activated
+under an expected-revision check, rolled back and retained; retrieval reads the one active
+version; and the bundled corpus is adopted as the first version **without re-embedding**, so
+`corpus/faq.json` stays byte-identical and the pair stays comparable. The numbers confirm it:
+20/20 and 4/4 retrieval unchanged, and 34–35/35 on the answer eval — measured through the
+versioned read path, after a first attempt measured the unversioned fallback that no
+deployment uses.
+
+`hnsw.iterative_scan = strict_order` is set, and **argued rather than evidenced here**: three
+measurements in this stack failed to reproduce the starvation the Java side sees, including
+twenty published versions with retention and autovacuum off. It is kept because the cost is
+nothing and the failure is silent, and the test written to justify it now says in its own
+comment that it does not. Why the two stacks differ is written down as an open question
+rather than a conclusion.
+
+**Still to do:** the editing surface. `knowledge_entry` exists; the operations UI has no
+editor, and publication is a store method rather than a button. Ordinary CRUD on a tested
+core — and the injection question above lands with it, because that is the moment retrieved
+text becomes attacker-influenced.
 
 ### 3. A ticket is a row, and nothing else happens
 
