@@ -63,3 +63,8 @@ data:
   # Zero disables the whole-service daily ceiling. Set it before this takes real traffic:
   # the per-conversation budget cannot bound spend, because conversation ids are free.
   DAILY_TOKEN_BUDGET: "0"
+
+  # Zero keeps customer conversations for ever. Set it before this takes real traffic:
+  # "we never deleted anything" is a position discovered rather than chosen.
+  RETENTION_DAYS: "0"
+  RETENTION_SWEEP_INTERVAL: "1h"

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/lai3d/ai-customer-service-go/internal/retention"
 	"github.com/lai3d/ai-customer-service-go/internal/ticket"
 )
 
@@ -16,10 +17,13 @@ type Server struct {
 	tickets   *ticket.Store
 	operators Operators
 	cors      CORS
+	erasure   *retention.Store
 }
 
-func NewServer(store *Store, tickets *ticket.Store, operators Operators, cors CORS) *Server {
-	return &Server{store: store, tickets: tickets, operators: operators, cors: cors}
+func NewServer(store *Store, tickets *ticket.Store, operators Operators, cors CORS,
+	erasure *retention.Store) *Server {
+	return &Server{store: store, tickets: tickets, operators: operators, cors: cors,
+		erasure: erasure}
 }
 
 // Routes mounts the operations surface.
@@ -45,6 +49,7 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/admin/v1/tickets", read(s.ticketList))
 	mux.Handle("GET /api/admin/v1/tickets/{number}", read(s.ticketDetail))
 	mux.Handle("PATCH /api/admin/v1/tickets/{number}", write(s.ticketUpdate))
+	mux.Handle("DELETE /api/admin/v1/conversations/{id}", write(s.erase))
 	mux.Handle("GET /api/admin/v1/audit", read(s.audit))
 	mux.Handle("GET /api/admin/v1/whoami", read(s.whoami))
 
@@ -213,6 +218,29 @@ func (s *Server) ticketUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.record(r, "update ticket", "ticket/"+number, "ok", patch.State+" "+patch.Note)
 	writeJSON(w, updated)
+}
+
+// erase deletes what a customer said, on request.
+//
+// It is the most destructive thing this API can do and there is no undo, so three things
+// are true of it deliberately: it is operator-only, it writes an audit entry naming what
+// it removed *before* returning, and the entry is written even when the erasure found
+// nothing -- "somebody asked us to erase a conversation that did not exist" is exactly the
+// kind of thing an investigation later wants to know happened.
+//
+// There is no button for it in the operations UI. A one-click irreversible erase needs a
+// confirmation design that has not been thought about yet, and shipping the button first
+// is how that thinking gets skipped.
+func (s *Server) erase(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	report, err := s.erasure.EraseConversation(r.Context(), id)
+	if err != nil {
+		s.record(r, "erase conversation", "conversation/"+id, "failed", err.Error())
+		fail(w, r, "erase", err)
+		return
+	}
+	s.record(r, "erase conversation", "conversation/"+id, "ok", report.String())
+	writeJSON(w, report)
 }
 
 func (s *Server) audit(w http.ResponseWriter, r *http.Request) {

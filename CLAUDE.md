@@ -191,6 +191,11 @@ that show why it is not needed here.
   eight results say nothing about how close the scan came to running out, and the number of
   rejected rows is the margin. Two separate sessions reached wrong conclusions here by
   reading the result count — one because the planner had quietly chosen a sequential scan.
+- **An erasure must never touch `admin_audit`, and must write to it.** An audit row the
+  subject of the audit can erase is not an audit row. `internal/retention` deletes
+  conversations and *redacts* tickets — a deleted `OPEN` ticket erases an obligation along
+  with the words that asked for it — and the entry it writes names what it removed, because
+  "somebody erased something" records that it happened and not what.
 - **A pgvector GUC does not exist until the extension's library is loaded in that session.**
   `SHOW hnsw.iterative_scan` in a fresh psql session fails with *unrecognized configuration
   parameter*, which reads exactly like "this version does not have it" -- and that wrong

@@ -21,6 +21,7 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/llm"
 	"github.com/lai3d/ai-customer-service-go/internal/obs"
 	"github.com/lai3d/ai-customer-service-go/internal/rag"
+	"github.com/lai3d/ai-customer-service-go/internal/retention"
 	"github.com/lai3d/ai-customer-service-go/internal/store"
 	"github.com/lai3d/ai-customer-service-go/internal/ticket"
 	"github.com/lai3d/ai-customer-service-go/internal/tools"
@@ -196,7 +197,7 @@ func run() error {
 	}
 	if operators.Enabled() {
 		admin.NewServer(admin.NewStore(pool), tickets, operators,
-			admin.ParseCORS(cfg.Admin.CORSOrigins)).Routes(mux)
+			admin.ParseCORS(cfg.Admin.CORSOrigins), retention.NewStore(pool)).Routes(mux)
 		slog.Info("operations API mounted at /api/admin/v1; the UI is admin-ui/, served separately",
 			"operators", operators.Names(), "cors_origins", cfg.Admin.CORSOrigins)
 	} else {
@@ -232,6 +233,20 @@ func run() error {
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       120 * time.Second,
+	}
+
+	// Deleting what is too old to keep.
+	//
+	// Off by default, and it says so, because "we never deleted anything" is not a
+	// position anyone means to hold -- it is one they discover when somebody asks.
+	if cfg.Retention.Window > 0 {
+		slog.Info("retention sweeper started",
+			"window", cfg.Retention.Window, "interval", cfg.Retention.SweepInterval)
+		go retention.NewSweeper(retention.NewStore(pool),
+			cfg.Retention.Window, cfg.Retention.SweepInterval).Run(ctx)
+	} else {
+		slog.Warn("RETENTION_DAYS is unset: conversations and their text are kept for ever. " +
+			"Erasure on request is available to operators; expiry by age is not running.")
 	}
 
 	serverErr := make(chan error, 1)

@@ -164,3 +164,78 @@ func requireGit(t *testing.T, root string) {
 		t.Skip("not a git checkout: this test cannot tell tracked from merely present")
 	}
 }
+
+// A link's *fragment* rots the same way its path does, and more quietly: renaming a
+// heading breaks every link into it and nothing anywhere complains.
+//
+// This was written after exactly that happened. The path check above was green while
+// `docs/production-readiness.md` pointed at
+// `#15-...-stays-in-flight-for-ever` and the heading said `in_flight` -- a hyphen where an
+// underscore belonged, from writing the anchor by hand instead of deriving it. The check
+// existed as a script this session kept running by hand, which is a check that works until
+// somebody forgets, and somebody did.
+func TestEveryHeadingLinkPointsAtAHeadingThatExists(t *testing.T) {
+	root := repoRoot(t)
+	requireGit(t, root)
+
+	out, err := exec.Command("git", "-C", root, "ls-files", "*.md").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := strings.Fields(string(out))
+
+	// GitHub's slug: lowercase, punctuation dropped, spaces to hyphens. Underscores are
+	// word characters and survive, which is the case that broke.
+	slug := func(heading string) string {
+		s := strings.ToLower(strings.TrimSpace(heading))
+		s = regexp.MustCompile(`[^\w\s-]`).ReplaceAllString(s, "")
+		return strings.Trim(regexp.MustCompile(`\s+`).ReplaceAllString(s, "-"), "-")
+	}
+	headings := map[string]map[string]bool{}
+	for _, f := range files {
+		raw, err := os.ReadFile(filepath.Join(root, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		set := map[string]bool{}
+		for _, line := range strings.Split(string(raw), "\n") {
+			if m := regexp.MustCompile(`^#{1,6}\s+(.*)$`).FindStringSubmatch(line); m != nil {
+				set[slug(m[1])] = true
+			}
+		}
+		headings[f] = set
+	}
+
+	link := regexp.MustCompile(`\]\(([^)]*)#([^)\s]+)\)`)
+	checked := 0
+	for _, f := range files {
+		raw, err := os.ReadFile(filepath.Join(root, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range link.FindAllStringSubmatch(string(raw), -1) {
+			target, fragment := m[1], m[2]
+			if strings.HasPrefix(target, "http") {
+				continue
+			}
+			file := f
+			if target != "" {
+				file = filepath.Clean(filepath.Join(filepath.Dir(f), target))
+			}
+			set, known := headings[file]
+			if !known {
+				// A link into a file outside the repository; the path test owns that.
+				continue
+			}
+			checked++
+			if !set[fragment] {
+				t.Errorf("%s links to %s#%s, and %s has no such heading",
+					f, target, fragment, file)
+			}
+		}
+	}
+	if checked < 10 {
+		t.Errorf("only %d heading links were checked; the pattern has stopped matching", checked)
+	}
+	t.Logf("%d heading links checked", checked)
+}

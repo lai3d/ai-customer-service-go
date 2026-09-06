@@ -19,13 +19,14 @@ type Config struct {
 	HTTPAddr        string
 	ShutdownTimeout time.Duration
 
-	Postgres Postgres
-	Chat     Chat
-	RAG      RAG
-	Cost     Cost
-	Obs      Obs
-	Admin    Admin
-	Auth     Auth
+	Postgres  Postgres
+	Chat      Chat
+	RAG       RAG
+	Cost      Cost
+	Obs       Obs
+	Admin     Admin
+	Auth      Auth
+	Retention Retention
 }
 
 type Postgres struct {
@@ -169,6 +170,17 @@ type Auth struct {
 	DailyTokenBudget int64
 }
 
+// Retention is how long customer data is kept, and how often the sweeper looks.
+type Retention struct {
+	// Window is the age past which a conversation's turns and memory are deleted. Zero
+	// keeps them for ever, which is a choice rather than a default -- the server says so
+	// at start-up, because "we never deleted anything" is not a position anyone means to
+	// hold, it is one they discover.
+	Window time.Duration
+	// SweepInterval is how often the sweeper runs.
+	SweepInterval time.Duration
+}
+
 type Obs struct {
 	OTLPEndpoint  string
 	OTLPEnabled   bool
@@ -244,6 +256,10 @@ func Load() (Config, error) {
 			TurnsPerMinute:       envInt("TURNS_PER_MINUTE", 20),
 			SessionsPerHourPerIP: envInt("SESSIONS_PER_HOUR_PER_IP", 60),
 			DailyTokenBudget:     int64(envInt("DAILY_TOKEN_BUDGET", 0)),
+		},
+		Retention: Retention{
+			Window:        time.Duration(envInt("RETENTION_DAYS", 0)) * 24 * time.Hour,
+			SweepInterval: envDuration("RETENTION_SWEEP_INTERVAL", time.Hour),
 		},
 		Obs: Obs{
 			OTLPEndpoint:        env("OTLP_TRACING_ENDPOINT", "http://localhost:4318"),

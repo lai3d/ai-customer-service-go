@@ -35,7 +35,7 @@ What is missing is almost entirely product, not scaffolding.
 | 2 | [Knowledge as a knowledge base, not a fixture](#2-the-corpus-is-a-test-fixture) | launch | both | not started | 4–6 h |
 | 3 | [The loop back to a human](#3-a-ticket-is-a-row-and-nothing-else-happens) | launch | both | not started | 3–5 h |
 | 4 | [Real tools instead of the mock](#4-the-tools-are-fiction) | week 1 | both | not started | 2–3 h |
-| 5 | [Retention and deletion of customer data](#5-there-is-no-way-to-delete-a-customer) | week 1 | both | not started | 2–3 h |
+| 5 | [Retention and deletion of customer data](#5-there-is-no-way-to-delete-a-customer) | week 1 | both | **done** 2026-09-06 | 2–3 h |
 | 6 | [An answer-quality regression set](#6-nothing-tells-you-a-prompt-change-made-it-worse) | week 1 | both | not started | 3–4 h |
 | 7 | [Feedback from customers and operators](#7-nothing-comes-back) | week 2 | both | not started | 2–3 h |
 | 8 | [Alerting and an SLO](#8-there-are-metrics-and-nothing-watches-them) | week 2 | Go | not started | 2 h |
@@ -45,7 +45,7 @@ What is missing is almost entirely product, not scaffolding.
 | 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | not started | 4–6 h |
 | 13 | [The deployment is a demo deployment](#13-the-manifests-stop-where-a-real-cluster-starts) | scale | Go | not started | 2–3 h |
 | 14 | [Abuse and content safety](#14-the-system-prompt-is-the-whole-of-the-safety-story) | scale | both | not started | 2–3 h |
-| 15 | [A turn a dead process left behind stays in_flight for ever](#15-a-turn-a-dead-process-left-behind-stays-in-flight-for-ever) | week 2 | Go | not started | 1 h |
+| 15 | [A turn a dead process left behind stays in_flight for ever](#15-a-turn-a-dead-process-left-behind-stays-in_flight-for-ever) | week 2 | Go | not started | 1 h |
 
 Estimates are Claude session hours: the work, not the calendar. Things only you can do —
 registering with providers, deciding a retention period with whoever owns that decision,
@@ -225,19 +225,29 @@ against.
 
 ### 5. There is no way to delete a customer
 
-There is no `DELETE` against customer data anywhere in `internal/` — only test cleanup and
-the corpus replacement. Customer text sits in `chat_memory` and `turn` in plaintext,
-forever, and the audit trail is append-only by design.
+**Done, 2026-09-06.** `internal/retention`, and [the reasoning](retention.md).
 
-A deletion request today is a hand-written SQL statement by whoever has the password.
+Expiry by age (`RETENTION_DAYS`, swept on a schedule, off by default with a start-up
+warning) and erasure on request (`DELETE /api/admin/v1/conversations/{id}`, operator only,
+audited with a report of what it removed).
 
-**Done looks like:** a retention period that expires `chat_memory` and `turn` payloads on
-a schedule; a deletion path keyed by subject that covers both, and that says explicitly
-what it does *not* delete, because the audit trail must survive — an audit row that can be
-erased by the person being audited is not one. Deleting a subject's audit *content* while
-keeping the fact of the action is usually the resolution.
+The interesting half was what survives. `admin_audit` is untouched — an audit row the
+subject of the audit can erase is not an audit row, and it costs nothing to hold that line
+because the trail holds names, ids and outcomes rather than customer text. Tickets are
+redacted rather than deleted, because deleting an `OPEN` one erases the fact that somebody
+is owed a refund along with the words that asked for it; the ticket keeps its number,
+state and history, and the summary, order number and event details become `[erased]`.
 
-**You must decide:** the retention period, and who signs off on the deletion policy.
+Verified live: a viewer refused with `403` and the refusal audited, an operator's erasure
+emptying `chat_memory` and `turn` while `TKT-4702` survived as `OPEN` with its history
+intact, and a sixty-day-old turn planted into a running service swept on the next tick.
+
+**Still your decision:** the retention period itself, and who signs off on the policy.
+`RETENTION_DAYS=0` is a choice the service now says out loud rather than one it hides.
+
+**Not built:** export ("give me my data" is the other half of most regulations),
+encryption at rest, and erasure by subject over the API — `EraseSubject` exists in the
+store, but the operations surface has no way to name an anonymous subject yet.
 
 ### 6. Nothing tells you a prompt change made it worse
 

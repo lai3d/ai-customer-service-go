@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lai3d/ai-customer-service-go/internal/admin"
+	"github.com/lai3d/ai-customer-service-go/internal/retention"
 	"github.com/lai3d/ai-customer-service-go/internal/testsupport"
 	"github.com/lai3d/ai-customer-service-go/internal/ticket"
 )
@@ -47,7 +48,8 @@ func serve(t *testing.T) (*httptest.Server, *ticket.Store) {
 	}
 	tickets := ticket.NewStore(pool)
 	mux := http.NewServeMux()
-	admin.NewServer(admin.NewStore(pool), tickets, ops, corsFor(t)).Routes(mux)
+	admin.NewServer(admin.NewStore(pool), tickets, ops, corsFor(t),
+		retention.NewStore(pool)).Routes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server, tickets
@@ -367,7 +369,8 @@ func TestTheBrowserIsToldWhichOriginMayReadTheseResponses(t *testing.T) {
 		for _, spec := range []string{"*", "https://a.test,*", " * "} {
 			c := admin.ParseCORS(spec)
 			mux := http.NewServeMux()
-			admin.NewServer(admin.NewStore(pool), ticket.NewStore(pool), mustOps(t), c).Routes(mux)
+			admin.NewServer(admin.NewStore(pool), ticket.NewStore(pool), mustOps(t), c,
+				retention.NewStore(pool)).Routes(mux)
 			s := httptest.NewServer(mux)
 			req, _ := http.NewRequest("GET", s.URL+"/api/admin/v1/whoami", nil)
 			req.Header.Set("Authorization", "Bearer "+operatorToken)
@@ -405,7 +408,7 @@ func TestTheBrowserIsToldWhichOriginMayReadTheseResponses(t *testing.T) {
 func TestWithNoOriginsConfiguredThereIsNoCORS(t *testing.T) {
 	mux := http.NewServeMux()
 	admin.NewServer(admin.NewStore(pool), ticket.NewStore(pool), mustOps(t),
-		admin.ParseCORS("")).Routes(mux)
+		admin.ParseCORS(""), retention.NewStore(pool)).Routes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
@@ -512,5 +515,59 @@ func TestTheAuditTrailReportsItsTotalSeparatelyFromThePage(t *testing.T) {
 	if first.Entries[0].Object == second.Entries[0].Object &&
 		first.Entries[0].At == second.Entries[0].At {
 		t.Error("offset changed nothing; the second page repeats the first")
+	}
+}
+
+// Erasure is the most destructive thing this API can do, and there is no undo. Three
+// things have to be true of it, and only one of them is about deleting anything.
+func TestErasingAConversationIsOperatorOnlyAndAudited(t *testing.T) {
+	server, _ := serve(t)
+	ctx := context.Background()
+	const id = "erase-through-the-api"
+
+	if _, err := pool.Exec(ctx, `INSERT INTO chat_memory (conversation_id, role, content)
+		VALUES ($1,'user','my card number is 4111 1111 1111 1111')`, id); err != nil {
+		t.Fatal(err)
+	}
+
+	// A viewer must not be able to erase, and the refusal is itself audited.
+	resp := do(t, server, "DELETE", "/api/admin/v1/conversations/"+id, viewerToken, "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("a viewer got %d erasing a conversation, want 403", resp.StatusCode)
+	}
+	var n int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM chat_memory WHERE conversation_id = $1`, id).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n == 0 {
+		t.Fatal("a viewer's refused request erased the conversation anyway")
+	}
+
+	resp = do(t, server, "DELETE", "/api/admin/v1/conversations/"+id, operatorToken, "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("an operator got %d erasing a conversation", resp.StatusCode)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM chat_memory WHERE conversation_id = $1`, id).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("%d messages survived an operator's erasure", n)
+	}
+
+	// The audit entry has to say what was removed. "Somebody erased something" records
+	// that it happened and not what, which is the failure the trail exists to prevent.
+	var detail string
+	if err := pool.QueryRow(ctx, `
+		SELECT coalesce(detail,'') FROM admin_audit
+		WHERE action = 'erase conversation' AND object = $1 AND outcome = 'ok'
+		ORDER BY id DESC LIMIT 1`, "conversation/"+id).Scan(&detail); err != nil {
+		t.Fatalf("the erasure left no audit entry: %v", err)
+	}
+	if !strings.Contains(detail, "memory=") {
+		t.Errorf("the audit entry does not say what was removed: %q", detail)
 	}
 }
