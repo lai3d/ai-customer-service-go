@@ -36,7 +36,7 @@ What is missing is almost entirely product, not scaffolding.
 | 3 | [The loop back to a human](#3-a-ticket-is-a-row-and-nothing-else-happens) | launch | both | not started | 3–5 h |
 | 4 | [Real tools instead of the mock](#4-the-tools-are-fiction) | week 1 | both | not started | 2–3 h |
 | 5 | [Retention and deletion of customer data](#5-there-is-no-way-to-delete-a-customer) | week 1 | both | **done** 2026-09-06 | 2–3 h |
-| 6 | [An answer-quality regression set](#6-nothing-tells-you-a-prompt-change-made-it-worse) | week 1 | both | not started | 3–4 h |
+| 6 | [An answer-quality regression set](#6-nothing-tells-you-a-prompt-change-made-it-worse) | week 1 | both | **done** 2026-09-06 | 3–4 h |
 | 7 | [Feedback from customers and operators](#7-nothing-comes-back) | week 2 | both | not started | 2–3 h |
 | 8 | [Alerting and an SLO](#8-there-are-metrics-and-nothing-watches-them) | week 2 | Go | not started | 2 h |
 | 9 | [A schema migration path](#9-the-first-change-to-a-live-schema-is-manual) | week 2 | Go | not started | 1–2 h |
@@ -251,18 +251,30 @@ store, but the operations surface has no way to name an anonymous subject yet.
 
 ### 6. Nothing tells you a prompt change made it worse
 
-Retrieval is measured. Answers are not. There is no set of real questions with expected
-properties, no scoring, and therefore no way to know that a prompt edit, a model upgrade
-or a corpus change made the product worse. For something customers talk to, this is the
-measurement that decides whether it is usable, and it is the one that is missing.
+**Done, 2026-09-06.** `make eval`, and [the reasoning](evaluation.md).
 
-**Done looks like:** thirty to a hundred real questions with what a good answer must and
-must not contain (grounding: it says it does not know when the corpus does not cover it;
-tool use: it looks up the order rather than inventing a date; language: it answers in the
-language asked); a runner that scores them; and a number in CI that a prompt change has to
-not regress. The existing retrieval eval is the model for how to write it.
+35 cases against the real model: **35/35, $0.52, 2m08s** on `claude-opus-5`. Facts from the
+corpus in both languages, tool use and escalation, five questions the corpus does not cover,
+and a multi-intent case. Every check is mechanical — no model grading another model — and
+numbers carry the most weight, because a wrong number is a hallucination and a wrong tone is
+an opinion.
 
-**Costs money to run:** each pass calls the real model. Budget it deliberately.
+**The number that makes the first one mean something is the control: 15/35 (42.9%) with the
+corpus left out** (`make eval-control`). A suite that scores 100% has said nothing until the
+same harness is shown to produce a bad number; a 57-point collapse is what "grounded in this
+corpus" looks like as a measurement.
+
+It is opt-in rather than in CI, for the same reason `make bench` is: $0.52 a run is cheap
+for a person about to change a prompt and expensive for a job that fires on every push. The
+runner refuses to start if the corpus version has moved.
+
+**The first run scored 34/35, and the failure was the assertion rather than the answer** —
+a grounding case banned any mention of a time of day, and the model correctly quoted the
+support hours while saying it knew nothing about a shop. Recorded in the doc, because the
+eval's own cases are not exempt from the mistake this repository keeps making.
+
+**Not measured:** whether the answer is any *good*, tone, variance (each case runs once),
+and the other two providers.
 
 ### 7. Nothing comes back
 

@@ -191,6 +191,15 @@ that show why it is not needed here.
   eight results say nothing about how close the scan came to running out, and the number of
   rejected rows is the margin. Two separate sessions reached wrong conclusions here by
   reading the result count — one because the planner had quietly chosen a sequential scan.
+- **A score is not a measurement until the harness has been seen to produce a bad one.**
+  `make eval` scores 35/35; `make eval-control` runs the same cases with no corpus and
+  scores 15/35. Without the second number the first says only that a large model sounds
+  plausible. Keep the control working when adding cases.
+- **Never `git checkout <file>` to undo a temporary edit.** It discards *everything*
+  uncommitted in that file, not the perturbation you just made. It ate uncommitted work
+  three times in one session -- twice during red-tests, and once silently enough that a
+  README row was missing from a commit and only found two commits later. Copy the file to
+  the scratchpad first and copy it back.
 - **An erasure must never touch `admin_audit`, and must write to it.** An audit row the
   subject of the audit can erase is not an audit row. `internal/retention` deletes
   conversations and *redacts* tickets — a deleted `OPEN` ticket erases an obligation along
@@ -290,6 +299,7 @@ not edit the number.** The tests that carry measurements are:
 | Both native libraries are concurrency-safe | `TestONNXEmbedderIsConcurrencySafe` (run with `-race`) |
 | The ticket cap holds under concurrency | `TestTheCapHoldsUnderConcurrentCalls` |
 | Throughput, latency and OS threads | `make bench` |
+| Answer quality: 35/35, and 15/35 with no corpus | `make eval` and `make eval-control` |
 
 `app.rag.similarity-threshold` is **0**, and that is a measurement, not an omission:
 relevant, off-topic and degenerate inputs all score in an overlapping band. If you change

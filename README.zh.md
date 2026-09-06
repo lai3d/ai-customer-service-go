@@ -38,6 +38,7 @@ SSE 流式输出、按会话计的 token 预算、Prometheus 指标和 OpenTelem
 | 关掉标签页的客户被记成了数据库故障，而那份记录的全部职责就是区分这两件事 | [运营后台](docs/operations.md#the-turn-record-is-not-the-chat-memory) |
 | 一个安全响应头写在配置里却没出现在响应上——nginx 不会把 add_header 继承进自己也设了 add_header 的 location | [运营后台](docs/operations.md#what-the-container-found-which-a-laptop-would-not-have) |
 | 重新载入语料会静默地劣化检索：被删除的行仍留在 HNSW 索引里，而近似扫描会把候选名额花在它们身上 | [检索](docs/retrieval.md#reloading-the-corpus-used-to-degrade-the-index) |
+| 答案评测拿到 100%，而这个数字毫无意义——直到同一套 harness 在没有语料的情况下跑出 42.9% | [评测](docs/evaluation.md#the-numbers) |
 | 客户原话没进 span，但模型编造的工具名进了 —— span 名同样是聚合维度 | [可观测性](docs/observability.md#attributes-are-not-the-only-way-into-a-backend) |
 | 页面把模型的 markdown 当字面星号显示，只有真实浏览器发现了 | [演示界面](docs/demo-ui.md#it-renders-the-models-markdown-in-a-deliberately-small-subset) |
 | 同一会话开两个标签页会交错，第二个请求的检索段落被静默丢弃 | [成本与失败](docs/reliability.md#one-turn-at-a-time-per-conversation) |
@@ -244,6 +245,7 @@ reply      关于你的两个问题：
 | [可观测性](docs/observability.md) | OTLP 上的 GenAI span，以及靠 grep 后端来证明客户原话不在里面 |
 | [演示界面](docs/demo-ui.md) | 一个玻璃盒子而不是聊天挂件，以及为什么分数条要做归一化 |
 | [运营后台](docs/operations.md) | 跨源的两个应用：为什么不配置就没有这套 API、CORS 白名单到底放行了什么，以及为什么"读一个会话"本身是一个要被审计的动作 |
+| [度量答案质量](docs/evaluation.md) | 35 个用例打真实模型，以及那次让分数变得有意义的对照实验（英文） |
 | [删除客户数据](docs/retention.md) | 按时限过期与按请求擦除——以及更难的那一半：擦除之后什么必须留下，为什么（英文） |
 | [真跑一个产品还缺什么](docs/production-readiness.md) | 从"能跑的系统"到"产品"之间的距离，逐条列出：身份、能被人编辑的知识、回到人的闭环，以及另外十一项（英文） |
 

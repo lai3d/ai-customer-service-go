@@ -5,7 +5,7 @@
 GO ?= go
 BIN := bin/server
 
-.PHONY: deps build run test test-race bench lint fmt clean
+.PHONY: deps build run test test-race bench eval eval-control lint fmt clean
 
 deps:
 	./scripts/fetch-deps.sh
@@ -28,6 +28,19 @@ test-race:
 # behaviour. See docs/benchmark.md.
 # Two processes, deliberately: the only OS-thread count Go exposes never decreases, so
 # a second variant in the same process inherits the first one's threads.
+# The answer-quality regression set. Calls the real model, so it costs real money --
+# roughly $1-2 a run at Opus 5 prices for 35 cases -- and is opt-in for that reason.
+# Needs the provider's key in the environment and Docker for the database.
+# See docs/evaluation.md for the last measured score and for what it cannot see.
+eval:
+	$(GO) test -tags=eval -count=1 -v -timeout 30m -run TestAnswerQuality ./internal/eval/
+
+# The negative control: the same cases with no corpus ingested. A score of 100% means
+# nothing unless the same harness can be shown to produce a bad one, and this is how.
+# Expected to score badly and to exit 0; the number is the result.
+eval-control:
+	EVAL_WITHOUT_RETRIEVAL=1 $(GO) test -tags=eval -count=1 -v -timeout 30m -run TestAnswerQuality ./internal/eval/
+
 bench:
 	BENCH_EMBEDDER=onnx $(GO) test -tags=benchmark -v -count=1 -timeout 20m -run TestConcurrencyUnderLoad ./internal/benchmark/
 	BENCH_EMBEDDER=bounded $(GO) test -tags=benchmark -v -count=1 -timeout 20m -run TestConcurrencyUnderLoad ./internal/benchmark/
