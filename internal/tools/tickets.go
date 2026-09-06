@@ -23,10 +23,24 @@ import (
 // guarantee behind it did. See internal/ticket.
 type SupportTickets struct {
 	tickets ticket.Creator
+	// announce tells whoever answers tickets that one exists. Optional: a nil Announcer
+	// leaves the ticket in the database and nobody informed, which is the behaviour this
+	// had before the handoff existed and is still what a demo wants.
+	announce Announcer
 }
 
-func NewSupportTickets(tickets ticket.Creator) *SupportTickets {
-	return &SupportTickets{tickets: tickets}
+// Announcer is the part of internal/handoff this package needs. An interface so the tool
+// does not depend on the transport, and so a test can watch what would have been sent.
+type Announcer interface {
+	Announce(ctx context.Context, ticketNumber, conversationID, category string)
+}
+
+func NewSupportTickets(tickets ticket.Creator, announce ...Announcer) *SupportTickets {
+	t := &SupportTickets{tickets: tickets}
+	if len(announce) > 0 {
+		t.announce = announce[0]
+	}
+	return t
 }
 
 func (t *SupportTickets) Definition() Definition {
@@ -122,6 +136,12 @@ func (t *SupportTickets) Invoke(ctx context.Context, conversationID string, argu
 	default:
 		slog.Info("created support ticket", "conversation_id", conversationID,
 			"ticket", created.Number, "category", created.Category)
+		if t.announce != nil {
+			// Only on a genuinely new ticket. Announcing a deduplicated one would page
+			// somebody for a customer asking the same thing twice, and the fastest way to
+			// make a notification channel ignored is to make it noisy.
+			t.announce.Announce(ctx, created.Number, conversationID, created.Category)
+		}
 		return Result{
 			Content: mustJSON(ticketResult{Created: true, Ticket: &created}),
 			Outcome: string(outcome),

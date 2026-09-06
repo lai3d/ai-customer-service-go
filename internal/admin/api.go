@@ -3,11 +3,13 @@ package admin
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/lai3d/ai-customer-service-go/internal/handoff"
 	"github.com/lai3d/ai-customer-service-go/internal/retention"
 	"github.com/lai3d/ai-customer-service-go/internal/ticket"
 )
@@ -18,12 +20,13 @@ type Server struct {
 	operators Operators
 	cors      CORS
 	erasure   *retention.Store
+	handoff   *handoff.Store
 }
 
 func NewServer(store *Store, tickets *ticket.Store, operators Operators, cors CORS,
-	erasure *retention.Store) *Server {
+	erasure *retention.Store, replies *handoff.Store) *Server {
 	return &Server{store: store, tickets: tickets, operators: operators, cors: cors,
-		erasure: erasure}
+		erasure: erasure, handoff: replies}
 }
 
 // Routes mounts the operations surface.
@@ -49,6 +52,7 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/admin/v1/tickets", read(s.ticketList))
 	mux.Handle("GET /api/admin/v1/tickets/{number}", read(s.ticketDetail))
 	mux.Handle("PATCH /api/admin/v1/tickets/{number}", write(s.ticketUpdate))
+	mux.Handle("POST /api/admin/v1/tickets/{number}/reply", write(s.reply))
 	mux.Handle("DELETE /api/admin/v1/conversations/{id}", write(s.erase))
 	mux.Handle("GET /api/admin/v1/audit", read(s.audit))
 	mux.Handle("GET /api/admin/v1/whoami", read(s.whoami))
@@ -59,7 +63,8 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	for _, p := range []string{
 		"/api/admin/v1/overview", "/api/admin/v1/conversations",
 		"/api/admin/v1/conversations/{id}", "/api/admin/v1/tickets",
-		"/api/admin/v1/tickets/{number}", "/api/admin/v1/audit",
+		"/api/admin/v1/tickets/{number}", "/api/admin/v1/tickets/{number}/reply",
+		"/api/admin/v1/audit",
 		"/api/admin/v1/whoami",
 	} {
 		mux.Handle("OPTIONS "+p, s.cors.Wrap(http.NotFoundHandler()))
@@ -218,6 +223,43 @@ func (s *Server) ticketUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.record(r, "update ticket", "ticket/"+number, "ok", patch.State+" "+patch.Note)
 	writeJSON(w, updated)
+}
+
+// reply is the half of a handoff that nobody builds.
+//
+// A ticket that a human answers and a customer never hears about is the same ticket that
+// was never answered, from the only point of view that matters. The reply goes into the
+// customer's conversation, which is also what stops the model contradicting it on the next
+// turn -- the history it composes from now contains the human's answer.
+func (s *Server) reply(w http.ResponseWriter, r *http.Request) {
+	operator, _ := FromContext(r.Context())
+	number := r.PathValue("number")
+
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+		http.Error(w, "the request body is not valid JSON", http.StatusBadRequest)
+		return
+	}
+
+	switch err := s.handoff.Reply(r.Context(), number, operator.Name, body.Text); {
+	case errors.Is(err, handoff.ErrNoSuchTicket):
+		s.record(r, "reply to ticket", "ticket/"+number, "not_found", "")
+		http.Error(w, "no such ticket", http.StatusNotFound)
+		return
+	case errors.Is(err, handoff.ErrEmptyReply):
+		s.record(r, "reply to ticket", "ticket/"+number, "rejected", err.Error())
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	case err != nil:
+		fail(w, r, "reply", err)
+		return
+	}
+	// The text is not in the audit detail. The trail records that a reply was sent and by
+	// whom; what was said is in the ticket history, which an erasure can redact.
+	s.record(r, "reply to ticket", "ticket/"+number, "ok", fmt.Sprintf("%d characters", len(body.Text)))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // erase deletes what a customer said, on request.

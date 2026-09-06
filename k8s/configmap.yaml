@@ -68,3 +68,9 @@ data:
   # "we never deleted anything" is a position discovered rather than chosen.
   RETENTION_DAYS: "0"
   RETENTION_SWEEP_INTERVAL: "1h"
+
+  # Where a raised ticket is announced. Empty means nobody is told about it.
+  # The URL is not a secret in the sense an API key is, but a chat webhook URL is a
+  # capability to post into that room -- put it in the Secret if yours is one.
+  HANDOFF_WEBHOOK_URL: ""
+  HANDOFF_TIMEOUT: "5s"

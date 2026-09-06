@@ -42,7 +42,7 @@ func serveWithSessions(t *testing.T) (*httptest.Server, *answering) {
 	}, &httpapi.Identity{
 		Sessions:      identity.NewSessions(pool, time.Hour),
 		Conversations: identity.NewConversations(pool),
-	}).Routes(mux)
+	}, nil).Routes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server, turner
@@ -201,7 +201,7 @@ func serveWithLimits(t *testing.T, limits *identity.Limits) (*httptest.Server, *
 		Sessions:      identity.NewSessions(pool, time.Hour),
 		Conversations: identity.NewConversations(pool),
 		Limits:        limits,
-	}).Routes(mux)
+	}, nil).Routes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server, turner

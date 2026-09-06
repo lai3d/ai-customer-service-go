@@ -200,6 +200,16 @@ that show why it is not needed here.
   three times in one session -- twice during red-tests, and once silently enough that a
   README row was missing from a commit and only found two commits later. Copy the file to
   the scratchpad first and copy it back.
+- **An operator's reply goes into `chat_memory`, not only onto the ticket.** The model's
+  next turn composes from that history; without it the assistant tells the customer to wait
+  for a human who has already answered, in the same conversation where the answer is
+  sitting. Attribute it in the text (`alex (support): …`) -- there is one assistant role and
+  the customer cannot see a column.
+- **The handoff webhook carries no customer text, and its failures are rows.** It is a
+  destination outside this service's control. A notification fails silently by nature, so
+  `handoff_delivery` records every outcome and the overview shows the undelivered count;
+  and delivery never fails the reply, because the customer's answer must not depend on a
+  chat room being up.
 - **An erasure must never touch `admin_audit`, and must write to it.** An audit row the
   subject of the audit can erase is not an audit row. `internal/retention` deletes
   conversations and *redacts* tickets — a deleted `OPEN` ticket erases an obligation along

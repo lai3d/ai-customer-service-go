@@ -33,7 +33,7 @@ What is missing is almost entirely product, not scaffolding.
 | --- | --- | --- | --- | --- | --- |
 | 1 | [Identity, session ownership, rate limiting, global budget](#1-anyone-can-read-anyone-elses-conversation) | launch | both | **done** 2026-09-06 | 3–4 h |
 | 2 | [Knowledge as a knowledge base, not a fixture](#2-the-corpus-is-a-test-fixture) | launch | both | not started | 4–6 h |
-| 3 | [The loop back to a human](#3-a-ticket-is-a-row-and-nothing-else-happens) | launch | both | not started | 3–5 h |
+| 3 | [The loop back to a human](#3-a-ticket-is-a-row-and-nothing-else-happens) | launch | both | **done** 2026-09-06 | 3–5 h |
 | 4 | [Real tools instead of the mock](#4-the-tools-are-fiction) | week 1 | both | not started | 2–3 h |
 | 5 | [Retention and deletion of customer data](#5-there-is-no-way-to-delete-a-customer) | week 1 | both | **done** 2026-09-06 | 2–3 h |
 | 6 | [An answer-quality regression set](#6-nothing-tells-you-a-prompt-change-made-it-worse) | week 1 | both | **done** 2026-09-06 | 3–4 h |
@@ -198,13 +198,29 @@ it.
 This is the line between an assistant that escalates and a chat box that files tickets
 into a drawer.
 
-**Done looks like:** tickets land somewhere humans already are (your existing ticketing
-system, or a channel); assignment notifies; a reply from the operator reaches the customer
-through whatever channel they arrived on; and the conversation shows that it happened, so
-the model does not tell the customer to wait for something that already came.
+**Done, 2026-09-06.** `internal/handoff`, and [the reasoning](handoff.md).
 
-**You must decide:** which system is the destination. That choice changes most of the
-work, and it is not a technical decision.
+Outbound: `HANDOFF_WEBHOOK_URL` is told when a ticket is raised and when an operator
+replies, asynchronously, with one retry and every outcome recorded in `handoff_delivery` —
+because a notification's failure mode is silence, and the operations overview shows the
+undelivered count in red. The body carries the ticket number, the conversation id and what
+happened, and **no customer text**: a webhook is outside this service's control, and whoever
+receives it can open the operations UI where reading is audited.
+
+Inbound: an operator replies in the ticket dialog, and the text goes into the customer's
+conversation as well as the ticket's history — attributed in its own words, `alex (support):
+…`, because the customer cannot see a database column. `GET /api/v1/conversations/{id}`
+(session-scoped) is where they read it.
+
+Writing it into the conversation is the part that matters. Live, after an operator said a
+refund had been released manually, the next turn answered *"你这边不用再做任何操作。alex
+已经手动放行了这笔退款"* — without it, the assistant would have told the customer to wait for
+a human who had already answered.
+
+**Still your decision:** which system the webhook points at. That was the part this could
+not decide, so it built the half that does not depend on it. Nothing pushes to the customer
+either — no email, no wake-up for a closed tab — which is the same decision seen from the
+other end.
 
 ---
 

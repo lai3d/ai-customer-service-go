@@ -25,6 +25,10 @@ export interface Overview {
    *  from a cheap week, which is the whole reason the server counts these. */
   unpricedTurns: number
   tickets: Record<string, number>
+  /** Ticket notifications that never reached their destination in the window. A
+   *  notification fails silently by nature, so this is the number that makes "nobody told
+   *  us" visible rather than deniable. */
+  undeliveredHandoffs: number
 }
 
 export interface ConversationSummary {

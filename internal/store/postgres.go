@@ -192,6 +192,22 @@ CREATE TABLE IF NOT EXISTS turn_tool_call (
 
 -- Who did what through the admin surface. Operators cannot edit this table through
 -- any endpoint; there is deliberately no update or delete path to it.
+-- Whether the people who answer tickets were actually told.
+--
+-- The failure mode of a notification is silence, and silence is indistinguishable from
+-- "nothing happened" -- nobody chases a message they do not know was sent. This row is
+-- what makes "we were never told about that ticket" an answerable question.
+CREATE TABLE IF NOT EXISTS handoff_delivery (
+    id            BIGSERIAL   PRIMARY KEY,
+    at            TIMESTAMPTZ NOT NULL,
+    type          TEXT        NOT NULL,
+    ticket_number TEXT        NOT NULL,
+    status        INT         NOT NULL DEFAULT 0,
+    failure       TEXT
+);
+CREATE INDEX IF NOT EXISTS handoff_delivery_failed_idx
+    ON handoff_delivery (at DESC) WHERE failure IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS admin_audit (
     id      BIGSERIAL   PRIMARY KEY,
     at      TIMESTAMPTZ NOT NULL DEFAULT now(),

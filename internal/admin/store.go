@@ -24,6 +24,10 @@ type Overview struct {
 	CostUSD       float64        `json:"costUsd"`
 	UnpricedTurns int            `json:"unpricedTurns"`
 	Tickets       map[string]int `json:"tickets"`
+	// UndeliveredHandoffs is the count of ticket notifications that never arrived in the
+	// window. A notification's failure mode is silence, so this is the number that makes
+	// "nobody told us about that ticket" visible rather than deniable.
+	UndeliveredHandoffs int `json:"undeliveredHandoffs"`
 }
 
 func (s *Store) Overview(ctx context.Context, window time.Duration) (Overview, error) {
@@ -72,7 +76,19 @@ func (s *Store) Overview(ctx context.Context, window time.Duration) (Overview, e
 		}
 		o.Tickets[state] = n
 	}
-	return o, tickets.Err()
+	if err := tickets.Err(); err != nil {
+		return o, err
+	}
+
+	// Notifications that never arrived. A separate query on purpose: it is not a property
+	// of the traffic, and folding it into the turn counts would make a failure to notify
+	// look like one.
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM handoff_delivery
+		WHERE failure IS NOT NULL AND at >= $1`, since).Scan(&o.UndeliveredHandoffs); err != nil {
+		return o, err
+	}
+	return o, nil
 }
 
 type ConversationSummary struct {

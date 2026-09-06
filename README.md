@@ -42,6 +42,7 @@ recorded too.
 | A security header was in the config file and not on the response, because nginx does not inherit one into a location that sets its own | [Operations](docs/operations.md#what-the-container-found-which-a-laptop-would-not-have) |
 | Reloading the corpus degraded retrieval silently: deleted rows stay in an HNSW index, and an approximate scan spends its candidates on them | [Retrieval](docs/retrieval.md#reloading-the-corpus-used-to-degrade-the-index) |
 | The answer eval scored 100%, which meant nothing until the same harness was run without the corpus and scored 42.9% | [Evaluation](docs/evaluation.md#the-numbers) |
+| A ticket was raised, deduplicated, capped and audited — and nobody was told it existed | [Handoff](docs/handoff.md#outbound-a-webhook-and-the-decision-it-does-not-make-for-you) |
 | The customer's words were not in the spans, but a model-invented tool name was — a span name is an aggregated dimension too | [Observability](docs/observability.md#attributes-are-not-the-only-way-into-a-backend) |
 | The page showed the model's markdown as literal asterisks, and only a real browser noticed | [The demo UI](docs/demo-ui.md#it-renders-the-models-markdown-in-a-deliberately-small-subset) |
 | Two browser tabs on one conversation interleaved, and the second request lost its retrieved passages silently | [Cost and failure](docs/reliability.md#one-turn-at-a-time-per-conversation) |
@@ -254,6 +255,7 @@ out. See [Retrieval](docs/retrieval.md#retrieval-quality).
 | [Observability](docs/observability.md) | GenAI spans over OTLP, and grepping the backend to prove the customer's words are not in it |
 | [The demo UI](docs/demo-ui.md) | A glass box rather than a chat widget, and why the score bars are normalised |
 | [The operations surface](docs/operations.md) | Two applications across an origin: why the API does not exist unless you configure it, what the CORS allowlist actually permits, and why reading a conversation is an audited action |
+| [The loop back to a human](docs/handoff.md) | Telling somebody a ticket exists, and getting a person's reply back to the customer who asked |
 | [Measuring the answers](docs/evaluation.md) | 35 cases against the real model, and the control run that makes the score mean something |
 | [Deleting customer data](docs/retention.md) | Expiry by age and erasure on request — and the harder half, which is what survives an erasure and why |
 | [What is missing before this runs a real product](docs/production-readiness.md) | The distance between a working system and a product, itemised: identity, knowledge that people can edit, the loop back to a human, and eleven more |

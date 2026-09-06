@@ -27,6 +27,7 @@ type Config struct {
 	Admin     Admin
 	Auth      Auth
 	Retention Retention
+	Handoff   Handoff
 }
 
 type Postgres struct {
@@ -181,6 +182,13 @@ type Retention struct {
 	SweepInterval time.Duration
 }
 
+// Handoff is where a raised ticket is announced. Empty means nowhere, and the server says
+// so at start-up: a ticket nobody is told about is a ticket nobody works.
+type Handoff struct {
+	WebhookURL string
+	Timeout    time.Duration
+}
+
 type Obs struct {
 	OTLPEndpoint  string
 	OTLPEnabled   bool
@@ -260,6 +268,10 @@ func Load() (Config, error) {
 		Retention: Retention{
 			Window:        time.Duration(envInt("RETENTION_DAYS", 0)) * 24 * time.Hour,
 			SweepInterval: envDuration("RETENTION_SWEEP_INTERVAL", time.Hour),
+		},
+		Handoff: Handoff{
+			WebhookURL: os.Getenv("HANDOFF_WEBHOOK_URL"),
+			Timeout:    envDuration("HANDOFF_TIMEOUT", 5*time.Second),
 		},
 		Obs: Obs{
 			OTLPEndpoint:        env("OTLP_TRACING_ENDPOINT", "http://localhost:4318"),

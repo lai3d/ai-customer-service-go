@@ -92,6 +92,8 @@ function TicketDialog(props: {
   const { data, error, loading, reload } = useLoad(() => api.ticket(props.number), [props.number])
   const [problem, setProblem] = useState('')
   const [saving, setSaving] = useState(false)
+  const [reply, setReply] = useState('')
+  const [replying, setReplying] = useState(false)
   const [form] = Form.useForm()
 
   const ticket = data?.ticket
@@ -161,6 +163,44 @@ function TicketDialog(props: {
               <Descriptions.Item label="order">{ticket.orderNumber}</Descriptions.Item>
             )}
           </Descriptions>
+
+          {props.canWrite && (
+            <>
+              {/* The reply is a separate action from the state change on purpose. They
+                  have different audiences -- one goes to the customer, the other to the
+                  next operator -- and a single Save that did both would send a message
+                  whenever somebody claimed a ticket. */}
+              <Form.Item label="Reply to the customer" style={{ marginBottom: 8 }}>
+                <Input.TextArea
+                  rows={2}
+                  value={reply}
+                  onChange={(e) => setReply(e.target.value)}
+                  placeholder="This goes into the customer's conversation, signed with your name."
+                />
+              </Form.Item>
+              <Button
+                style={{ marginBottom: 16 }}
+                loading={replying}
+                disabled={!reply.trim()}
+                onClick={async () => {
+                  if (!ticket) return
+                  setReplying(true)
+                  setProblem('')
+                  try {
+                    await api.replyToTicket(ticket.ticketNumber, reply.trim())
+                    setReply('')
+                    void reload()
+                  } catch (err) {
+                    setProblem(err instanceof ApiError ? err.message : String(err))
+                  } finally {
+                    setReplying(false)
+                  }
+                }}
+              >
+                Send to the customer
+              </Button>
+            </>
+          )}
 
           {props.canWrite && (
             <Form

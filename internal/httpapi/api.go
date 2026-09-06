@@ -62,11 +62,12 @@ type Server struct {
 	chat Turner
 	cfg  config.Chat
 	// identity is nil when AUTH_MODE=off. See internal/httpapi/identity.go.
-	identity *Identity
+	identity    *Identity
+	transcripts Transcripts
 }
 
-func NewServer(service Turner, cfg config.Chat, ident *Identity) *Server {
-	return &Server{chat: service, cfg: cfg, identity: ident}
+func NewServer(service Turner, cfg config.Chat, ident *Identity, transcripts Transcripts) *Server {
+	return &Server{chat: service, cfg: cfg, identity: ident, transcripts: transcripts}
 }
 
 func (s *Server) Routes(mux *http.ServeMux) {
@@ -75,6 +76,7 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	// Registered in both modes so that a client running against AUTH_MODE=off gets a
 	// problem document saying sessions are disabled, rather than a 404 it has to guess at.
 	mux.HandleFunc("POST /api/v1/session", s.handleSession)
+	mux.HandleFunc("GET /api/v1/conversations/{id}", s.handleTranscript)
 }
 
 // validate rejects what should never reach a model call. Both limits cost nothing to

@@ -16,6 +16,7 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/chat"
 	"github.com/lai3d/ai-customer-service-go/internal/config"
 	"github.com/lai3d/ai-customer-service-go/internal/cost"
+	"github.com/lai3d/ai-customer-service-go/internal/handoff"
 	"github.com/lai3d/ai-customer-service-go/internal/httpapi"
 	"github.com/lai3d/ai-customer-service-go/internal/identity"
 	"github.com/lai3d/ai-customer-service-go/internal/llm"
@@ -139,6 +140,20 @@ func run() error {
 
 	tickets := ticket.NewStore(pool)
 
+	// The loop back to a human, and back from them.
+	//
+	// The webhook is optional and its absence is a working no-op, but an absent
+	// destination means a raised ticket tells nobody: it is the difference between an
+	// assistant that escalates and one that files into a drawer, and it says so.
+	notifier := handoff.NewNotifier(pool, cfg.Handoff.WebhookURL, cfg.Handoff.Timeout)
+	handoffs := handoff.NewStore(pool, chat.NewMemory(pool, 40), notifier)
+	if notifier.Enabled() {
+		slog.Info("handoff notifications enabled", "timeout", cfg.Handoff.Timeout)
+	} else {
+		slog.Warn("HANDOFF_WEBHOOK_URL is unset: a raised ticket notifies nobody. " +
+			"Operators still see tickets in the operations UI, and nothing tells them to look.")
+	}
+
 	service := chat.NewService(
 		chat.NewMemory(pool, cfg.Chat.MaxHistoryMessages),
 		rag.NewRetriever(embedder, vectors, cfg.RAG.TopK, cfg.RAG.SimilarityThreshold),
@@ -148,7 +163,7 @@ func run() error {
 		chat.NewRecorder(pool),
 		cfg.Chat.MaxTokens,
 		tools.NewOrderLookup(),
-		tools.NewSupportTickets(tickets),
+		tools.NewSupportTickets(tickets, handoffs),
 	)
 
 	// Who may talk to the chat endpoints, and whose conversation is whose.
@@ -184,7 +199,7 @@ func run() error {
 	}
 
 	mux := http.NewServeMux()
-	httpapi.NewServer(service, cfg.Chat, ident).Routes(mux)
+	httpapi.NewServer(service, cfg.Chat, ident, handoffs).Routes(mux)
 
 	// The operations surface, or nothing at all.
 	//
@@ -197,7 +212,7 @@ func run() error {
 	}
 	if operators.Enabled() {
 		admin.NewServer(admin.NewStore(pool), tickets, operators,
-			admin.ParseCORS(cfg.Admin.CORSOrigins), retention.NewStore(pool)).Routes(mux)
+			admin.ParseCORS(cfg.Admin.CORSOrigins), retention.NewStore(pool), handoffs).Routes(mux)
 		slog.Info("operations API mounted at /api/admin/v1; the UI is admin-ui/, served separately",
 			"operators", operators.Names(), "cors_origins", cfg.Admin.CORSOrigins)
 	} else {

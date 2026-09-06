@@ -100,6 +100,11 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(patch),
     }),
+  replyToTicket: (number: string, text: string) =>
+    request<null>(`/tickets/${encodeURIComponent(number)}/reply`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }),
   audit: (params: { limit: number; offset: number }) =>
     request<{ total: number; entries: AuditEntry[] | null }>(
       `/audit?limit=${params.limit}&offset=${params.offset}`),

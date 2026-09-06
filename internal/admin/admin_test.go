@@ -15,6 +15,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lai3d/ai-customer-service-go/internal/admin"
+	"github.com/lai3d/ai-customer-service-go/internal/chat"
+	"github.com/lai3d/ai-customer-service-go/internal/handoff"
 	"github.com/lai3d/ai-customer-service-go/internal/retention"
 	"github.com/lai3d/ai-customer-service-go/internal/testsupport"
 	"github.com/lai3d/ai-customer-service-go/internal/ticket"
@@ -49,7 +51,7 @@ func serve(t *testing.T) (*httptest.Server, *ticket.Store) {
 	tickets := ticket.NewStore(pool)
 	mux := http.NewServeMux()
 	admin.NewServer(admin.NewStore(pool), tickets, ops, corsFor(t),
-		retention.NewStore(pool)).Routes(mux)
+		retention.NewStore(pool), handoffFor(pool)).Routes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server, tickets
@@ -370,7 +372,7 @@ func TestTheBrowserIsToldWhichOriginMayReadTheseResponses(t *testing.T) {
 			c := admin.ParseCORS(spec)
 			mux := http.NewServeMux()
 			admin.NewServer(admin.NewStore(pool), ticket.NewStore(pool), mustOps(t), c,
-				retention.NewStore(pool)).Routes(mux)
+				retention.NewStore(pool), handoffFor(pool)).Routes(mux)
 			s := httptest.NewServer(mux)
 			req, _ := http.NewRequest("GET", s.URL+"/api/admin/v1/whoami", nil)
 			req.Header.Set("Authorization", "Bearer "+operatorToken)
@@ -408,7 +410,7 @@ func TestTheBrowserIsToldWhichOriginMayReadTheseResponses(t *testing.T) {
 func TestWithNoOriginsConfiguredThereIsNoCORS(t *testing.T) {
 	mux := http.NewServeMux()
 	admin.NewServer(admin.NewStore(pool), ticket.NewStore(pool), mustOps(t),
-		admin.ParseCORS(""), retention.NewStore(pool)).Routes(mux)
+		admin.ParseCORS(""), retention.NewStore(pool), handoffFor(pool)).Routes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
@@ -570,4 +572,10 @@ func TestErasingAConversationIsOperatorOnlyAndAudited(t *testing.T) {
 	if !strings.Contains(detail, "memory=") {
 		t.Errorf("the audit entry does not say what was removed: %q", detail)
 	}
+}
+
+// handoffFor builds a reply path with no webhook: the notification is a working no-op and
+// these tests are about what reaches the customer, not about what reaches a chat room.
+func handoffFor(pool *pgxpool.Pool) *handoff.Store {
+	return handoff.NewStore(pool, chat.NewMemory(pool, 40), handoff.NewNotifier(pool, "", 0))
 }

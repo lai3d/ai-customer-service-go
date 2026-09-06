@@ -68,6 +68,24 @@ export function OverviewPage() {
         />
       )}
 
+      {data && data.undeliveredHandoffs > 0 && (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginTop: 12 }}
+          message={`${data.undeliveredHandoffs} ticket notification(s) never reached their destination. Somebody may be waiting for a message that was never delivered.`}
+        />
+      )}
+
+      {data && data.undeliveredHandoffs > 0 && (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginTop: 12 }}
+          message={`${data.undeliveredHandoffs} ticket notification(s) never reached their destination. Somebody may be waiting for a message that was never sent.`}
+        />
+      )}
+
       <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
         <Col xs={24} lg={12}>
           <Card size="small" title="Turn outcomes" loading={loading}>

@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lai3d/ai-customer-service-go/internal/chat"
+	"github.com/lai3d/ai-customer-service-go/internal/handoff"
 	"github.com/lai3d/ai-customer-service-go/internal/identity"
 )
 
@@ -22,6 +23,12 @@ type Identity struct {
 	Sessions      *identity.Sessions
 	Conversations *identity.Conversations
 	Limits        *identity.Limits
+}
+
+// Transcripts lets a customer read their own conversation, which is how a human's reply
+// reaches them. Optional: nil means the endpoint is not registered.
+type Transcripts interface {
+	Transcript(ctx context.Context, conversationID string) ([]handoff.Message, error)
 }
 
 // resolve returns the subject for a request, or the problem to send.
@@ -221,5 +228,46 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if err := json.NewEncoder(w).Encode(sessionReply{Token: token, ExpiresAt: expires}); err != nil {
 		slog.Error("could not write the session response", "error", err)
+	}
+}
+
+// handleTranscript returns the customer's own conversation.
+//
+// This is the last step of the handoff and the reason the operator's reply is written into
+// chat_memory rather than only onto the ticket: without somewhere for the customer to read
+// it, a human's answer is a row in a database that the person who asked will never see.
+//
+// It is session-scoped like everything else. With AUTH_MODE=off there is no subject to
+// scope it to, so the endpoint does not exist -- a transcript endpoint that anyone could
+// read by guessing a conversation id would be the confidentiality hole this service just
+// closed, reopened for convenience.
+func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
+	if s.identity == nil || s.transcripts == nil {
+		writeProblem(w, &problem{Title: "Transcripts are not enabled", Status: http.StatusNotFound,
+			Detail: "This service is running without sessions."})
+		return
+	}
+	subject, p := s.resolve(r)
+	if p != nil {
+		writeProblem(w, p)
+		return
+	}
+	id := r.PathValue("id")
+	if _, p := s.conversationFor(r.Context(), id, subject); p != nil {
+		writeProblem(w, p)
+		return
+	}
+	messages, err := s.transcripts.Transcript(r.Context(), id)
+	if err != nil {
+		writeProblem(w, &problem{Title: "Could not read the conversation",
+			Status: http.StatusServiceUnavailable, Detail: "Retrying shortly is worthwhile."})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(w).Encode(map[string]any{
+		"conversationId": id, "messages": messages,
+	}); err != nil {
+		slog.Error("could not write the transcript", "error", err)
 	}
 }
