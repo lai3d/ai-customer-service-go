@@ -150,8 +150,15 @@ func TestOpeningTwiceKeepsTheDataAndTheLedger(t *testing.T) {
 	if rows != 1 {
 		t.Errorf("the row from the first start is gone: %d rows", rows)
 	}
-	if recorded != 1 {
-		t.Errorf("%d ledger rows after two starts", recorded)
+	// Against the embedded set rather than a number written here: a literal would have to
+	// be edited by whoever adds the next migration, and a test that fails for the right
+	// reason at the wrong moment is a test people learn to edit without reading.
+	embedded, err := store.ReadMigrations(store.Migrations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recorded != len(embedded) {
+		t.Errorf("%d ledger rows after two starts, for %d migrations", recorded, len(embedded))
 	}
 }
 

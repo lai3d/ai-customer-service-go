@@ -42,7 +42,7 @@ What is missing is almost entirely product, not scaffolding.
 | 9 | [A schema migration path](#9-the-first-change-to-a-live-schema-is-manual) | week 2 | Go | **done** 2026-09-07 | 1–2 h |
 | 10 | [The admin list pages lie past one page](#10-the-admin-lists-lie-past-the-first-page) | week 2 | Go | **done** 2026-09-06 | 0.5 h |
 | 11 | [Provider failover](#11-three-providers-are-supported-and-one-runs) | scale | both | **done** 2026-09-07 | 1–2 h |
-| 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | queued behind 9; design from the Java side | 4–6 h |
+| 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | **in progress** 2026-09-07: the tenant and its keys | 4–6 h |
 | 13 | [The deployment is a demo deployment](#13-the-manifests-stop-where-a-real-cluster-starts) | scale | Go | **manifests done** 2026-09-07; secrets and digest pinning remain | 2–3 h (0.5 h left) |
 | 14 | [Abuse and content safety](#14-the-system-prompt-is-the-whole-of-the-safety-story) | scale | both | **partly done** 2026-09-07 | 2–3 h (moderation not built, deliberately) |
 | 15 | [A turn a dead process left behind stays in_flight for ever](#15-a-turn-a-dead-process-left-behind-stays-in_flight-for-ever) | week 2 | Go | **done** 2026-09-07 | 1 h |
@@ -647,6 +647,31 @@ PR #50, not yet merged).
 | The corpus | `corpus_active` becomes **one row per tenant**, `tenant_id` as the primary key, replacing the primary key on a constant. `Activate` keeps its expected-version check on the tenant's row, so the shape survives with the key changed. Version ids stay globally unique; retention becomes "newest N **per tenant**", because today's global N would retire a neighbour's. |
 | The bundled corpus | Belongs to the **`default` tenant** and is not a template. `corpus/faq.json` stays byte-identical, bootstrap adopts it as that tenant's first version without re-embedding, and the parity fixtures run as the default tenant. A new tenant starts with nothing and gets grounded refusals. |
 | The migration | Create `default`; add the columns **with a default of `default`**; backfill; then **drop the column defaults**, so a row without a tenant becomes a bug rather than a silent orphan. |
+
+**Started 2026-09-07, first stage done: the tenant itself.** Migration `0002_tenants.sql`
+adds `tenant` and `tenant_api_key` and touches nothing else, and `internal/tenant` resolves
+a presented key to a tenant id, issues one and revokes it. Nothing is wired to it yet, on
+purpose — the `tenant_id` columns land with the code that filters on them, one area at a
+time, because a column nothing filters on is a column that looks like isolation and is not.
+
+Four things are already decided by this stage, each with a perturbation that was seen red:
+
+- **Every way a key can fail is the same failure.** A key that does not parse, an unknown
+  `key_id`, the right `key_id` with the wrong secret, a revoked key and a disabled tenant
+  are all `ErrNoSuchKey`. A caller that can tell them apart has an oracle for which
+  `key_id`s exist.
+- **The secret is never stored**, and the test looks in the row rather than reading the
+  `INSERT`. Only a 12-character `key_id` is in the clear, so the lookup is an index hit and
+  the comparison is constant-time against one candidate rather than a scan.
+- **SHA-256 rather than a stretched hash**, argued: the input is a 32-byte secret this
+  service generated, not a password somebody chose, so there is nothing for stretching to
+  buy — and this is on the path of every request.
+- **`Create` is `ON CONFLICT DO NOTHING`.** As an upsert, creating `default` again would
+  rename it and hand the caller a tenant that already has data and keys.
+
+`default` is a real row inserted by the migration rather than a value the code substitutes
+when it finds none: "no tenant" as a value is precisely the state a forgotten predicate
+produces, and it would be indistinguishable from correct.
 
 Two things this settles that were open here. `corpus_active`'s primary key on a constant —
 flagged above as the shape that does not survive tenancy — becomes a primary key on
