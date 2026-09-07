@@ -216,7 +216,7 @@ func explain(outcome Outcome) string {
 	return explanations[OutcomeUnavailable]
 }
 
-func (t *OrderLookup) Invoke(ctx context.Context, _ string, arguments json.RawMessage) (Result, error) {
+func (t *OrderLookup) Invoke(ctx context.Context, _, _ string, arguments json.RawMessage) (Result, error) {
 	var args orderLookupArgs
 	if err := json.Unmarshal(arguments, &args); err != nil {
 		// The model produced arguments that do not fit the schema. Telling it so is

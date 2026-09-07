@@ -54,8 +54,8 @@ func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 //
 // Upsert rather than insert: somebody changing their mind is not a second opinion, and a
 // table with both would count one person twice.
-func (s *Store) Record(ctx context.Context, turnID string, source Source, verdict Verdict,
-	note, actor string) error {
+func (s *Store) Record(ctx context.Context, tenantID, turnID string, source Source,
+	verdict Verdict, note, actor string) error {
 
 	switch verdict {
 	case VerdictHelpful, VerdictWrong, VerdictUnclear:
@@ -67,6 +67,18 @@ func (s *Store) Record(ctx context.Context, turnID string, source Source, verdic
 	}
 	if strings.TrimSpace(actor) == "" {
 		return errors.New("feedback needs an author")
+	}
+
+	// The turn is checked against the tenant before the insert, so an operator cannot judge
+	// another tenant's answer by knowing its turn id. The foreign key would let them.
+	var owned bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM turn WHERE id = $1 AND tenant_id = $2)`,
+		turnID, tenantID).Scan(&owned); err != nil {
+		return err
+	}
+	if !owned {
+		return ErrNoSuchTurn
 	}
 
 	_, err := s.pool.Exec(ctx, `
@@ -100,10 +112,11 @@ func (s *Store) Record(ctx context.Context, turnID string, source Source, verdic
 // ErrNoSuchTurn rather than an empty string, so a caller cannot mistake "no such turn" for
 // "a turn in no conversation" and pass an empty id into an ownership check that would then
 // be comparing nothing to nothing.
-func (s *Store) ConversationOf(ctx context.Context, turnID string) (string, error) {
+func (s *Store) ConversationOf(ctx context.Context, tenantID, turnID string) (string, error) {
 	var conversationID string
 	err := s.pool.QueryRow(ctx,
-		`SELECT conversation_id FROM turn WHERE id = $1`, turnID).Scan(&conversationID)
+		`SELECT conversation_id FROM turn WHERE id = $1 AND tenant_id = $2`,
+		turnID, tenantID).Scan(&conversationID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNoSuchTurn
 	}
@@ -135,7 +148,10 @@ type Item struct {
 // Queue returns feedback that says something went wrong and has not been dealt with.
 //
 // `helpful` is recorded and not queued: it is worth counting and is not work.
-func (s *Store) Queue(ctx context.Context, includeHandled bool, limit int) ([]Item, error) {
+// The tenant comes from the join on `turn` rather than from a column on turn_feedback: a
+// feedback row is reachable only through a turn, and a second copy of the tenant on the
+// child row is a value that can disagree with its parent with nothing to say which is right.
+func (s *Store) Queue(ctx context.Context, tenantID string, includeHandled bool, limit int) ([]Item, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
@@ -148,11 +164,11 @@ func (s *Store) Queue(ctx context.Context, includeHandled bool, limit int) ([]It
 		FROM turn_feedback f
 		JOIN turn t ON t.id = f.turn_id
 		LEFT JOIN turn_passage p ON p.turn_id = f.turn_id
-		WHERE f.verdict <> 'helpful' AND ($1 OR f.handled_at IS NULL)
+		WHERE t.tenant_id = $3 AND f.verdict <> 'helpful' AND ($1 OR f.handled_at IS NULL)
 		GROUP BY f.turn_id, t.conversation_id, f.source, f.verdict, f.note, f.actor, f.at,
 		         t.question, t.reply, t.model, t.outcome, f.handled_at
 		ORDER BY f.at DESC
-		LIMIT $2`, includeHandled, limit)
+		LIMIT $2`, includeHandled, limit, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -175,10 +191,12 @@ func (s *Store) Queue(ctx context.Context, includeHandled bool, limit int) ([]It
 // Handle marks one item dealt with — an eval case written, a knowledge entry edited, or a
 // decision that nothing was wrong. Which of those it was goes in the audit trail, not here:
 // this table records that the queue moved, and the trail records why.
-func (s *Store) Handle(ctx context.Context, turnID string, source Source, actor string) error {
+func (s *Store) Handle(ctx context.Context, tenantID, turnID string, source Source, actor string) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE turn_feedback SET handled_at = now(), handled_by = $3
-		WHERE turn_id = $1 AND source = $2 AND handled_at IS NULL`, turnID, source, actor)
+		WHERE turn_id = $1 AND source = $2 AND handled_at IS NULL
+		  AND EXISTS (SELECT 1 FROM turn WHERE id = $1 AND tenant_id = $4)`,
+		turnID, source, actor, tenantID)
 	if err != nil {
 		return err
 	}
@@ -196,7 +214,7 @@ type Counts struct {
 	Unhandled int `json:"unhandled"`
 }
 
-func (s *Store) Counts(ctx context.Context, window time.Duration) (Counts, error) {
+func (s *Store) Counts(ctx context.Context, tenantID string, window time.Duration) (Counts, error) {
 	var c Counts
 	err := s.pool.QueryRow(ctx, `
 		SELECT

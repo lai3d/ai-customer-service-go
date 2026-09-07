@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 	"github.com/lai3d/ai-customer-service-go/internal/tools"
 )
 
@@ -77,7 +78,7 @@ func lookupAgainst(t *testing.T, s *orderService, number string, opts ...func(*t
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := tools.NewOrderLookup(source).Invoke(context.Background(), "c1",
+	result, err := tools.NewOrderLookup(source).Invoke(context.Background(), tenant.Default, "c1",
 		args(t, map[string]string{"orderNumber": number}))
 	// The whole contract in one line: nothing the order service does is an exception.
 	// An exception's message is what a customer ends up reading.
@@ -464,7 +465,7 @@ func TestACredentialInTheURLDoesNotReachTheLog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := tools.NewOrderLookup(source).Invoke(context.Background(), "c1",
+	result, err := tools.NewOrderLookup(source).Invoke(context.Background(), tenant.Default, "c1",
 		args(t, map[string]string{"orderNumber": "ORD-77001"}))
 	if err != nil {
 		t.Fatalf("an unreachable order service returned an error: %v", err)

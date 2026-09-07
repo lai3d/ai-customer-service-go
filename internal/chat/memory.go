@@ -31,13 +31,13 @@ func NewMemory(pool *pgxpool.Pool, window int) *Memory {
 	return &Memory{pool: pool, window: window}
 }
 
-func (m *Memory) Append(ctx context.Context, conversationID string, role llm.Role, content string) error {
+func (m *Memory) Append(ctx context.Context, tenantID, conversationID string, role llm.Role, content string) error {
 	if content == "" {
 		return nil
 	}
 	_, err := m.pool.Exec(ctx,
-		`INSERT INTO chat_memory (conversation_id, role, content) VALUES ($1, $2, $3)`,
-		conversationID, string(role), content)
+		`INSERT INTO chat_memory (tenant_id, conversation_id, role, content) VALUES ($4, $1, $2, $3)`,
+		conversationID, string(role), content, tenantID)
 	if err != nil {
 		return fmt.Errorf("append to conversation memory: %w", err)
 	}
@@ -48,15 +48,18 @@ func (m *Memory) Append(ctx context.Context, conversationID string, role llm.Rol
 //
 // Every message is re-sent and re-billed on every turn, so the window is a cost and
 // latency lever rather than a memory setting.
-func (m *Memory) History(ctx context.Context, conversationID string) ([]llm.Message, error) {
+// The tenant is in the predicate as well as the conversation id, so a history read can
+// never compose a prompt from another tenant's words -- the failure that would be invisible
+// in the answer and permanent in the record.
+func (m *Memory) History(ctx context.Context, tenantID, conversationID string) ([]llm.Message, error) {
 	rows, err := m.pool.Query(ctx, `
 		SELECT role, content FROM (
 			SELECT id, role, content FROM chat_memory
-			WHERE conversation_id = $1
+			WHERE conversation_id = $1 AND tenant_id = $3
 			ORDER BY id DESC
 			LIMIT $2
 		) recent
-		ORDER BY id ASC`, conversationID, m.window)
+		ORDER BY id ASC`, conversationID, m.window, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("read conversation memory: %w", err)
 	}

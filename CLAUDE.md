@@ -232,6 +232,20 @@ that show why it is not needed here.
   `handoff_delivery` records every outcome and the overview shows the undelivered count;
   and delivery never fails the reply, because the customer's answer must not depend on a
   chat room being up.
+- **A child of `turn` carries no tenant column, and that is the rule.** `turn_passage`,
+  `turn_tool_call` and `turn_feedback` are reachable only through a turn, which has one; a
+  copy on the child is a second value that can disagree with its parent with nothing to say
+  which is right. The queries join. The same reasoning keeps ticket *numbers* and corpus
+  *version names* globally unique: both are quoted outside this service, and a name that
+  means two things depending on the reader has to be qualified everywhere.
+- **Every operations read is scoped to the operator's tenant**, one operator per tenant —
+  `ADMIN_TOKENS` is `name:token[:role[:tenant]]` and an omitted tenant is `default`.
+  Operator *names* stay globally unique because the name is the audit actor.
+  `TestAnOperatorSeesOnlyTheirOwnTenant` hands each operator the other's conversation id and
+  ticket number, which is the case that actually happens.
+- **A tool takes the tenant as a parameter**, next to the conversation id and for the same
+  reason: a call site that forgets it does not compile. That is the Spring AI ToolContext
+  lesson applied a second time.
 - **An erasure must never touch `admin_audit`, and must write to it.** An audit row the
   subject of the audit can erase is not an audit row. `internal/retention` deletes
   conversations and *redacts* tickets — a deleted `OPEN` ticket erases an obligation along

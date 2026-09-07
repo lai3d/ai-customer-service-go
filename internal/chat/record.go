@@ -31,7 +31,12 @@ func NewRecorder(pool *pgxpool.Pool) *Recorder { return &Recorder{pool: pool} }
 const OutcomeInFlight = "in_flight"
 
 type TurnRecord struct {
-	ID             string
+	ID string
+	// TenantID is on the record rather than looked up from the conversation, because the
+	// record is written before anything else and is what the operations surface filters
+	// on. A turn whose tenant had to be joined from elsewhere is a turn that is
+	// unattributable if that elsewhere is ever deleted.
+	TenantID       string
 	ConversationID string
 	StartedAt      time.Time
 	Question       string
@@ -56,9 +61,9 @@ type TurnRecord struct {
 // and the alternative is discovering the gap in a month from a bill.
 func (r *Recorder) Begin(ctx context.Context, t TurnRecord) error {
 	_, err := r.pool.Exec(ctx, `
-		INSERT INTO turn (id, conversation_id, started_at, outcome, question)
-		VALUES ($1, $2, $3, $4, $5)`,
-		t.ID, t.ConversationID, t.StartedAt, OutcomeInFlight, t.Question)
+		INSERT INTO turn (id, tenant_id, conversation_id, started_at, outcome, question)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		t.ID, t.TenantID, t.ConversationID, t.StartedAt, OutcomeInFlight, t.Question)
 	if err != nil {
 		return fmt.Errorf("record the start of a turn: %w", err)
 	}

@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -34,12 +35,13 @@ type Overview struct {
 	OpenFeedback int `json:"openFeedback"`
 }
 
-func (s *Store) Overview(ctx context.Context, window time.Duration) (Overview, error) {
+func (s *Store) Overview(ctx context.Context, tenantID string, window time.Duration) (Overview, error) {
 	since := time.Now().Add(-window)
 	o := Overview{Since: since, TurnsByOutcome: map[string]int{}, Tickets: map[string]int{}}
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT outcome, count(*) FROM turn WHERE started_at >= $1 GROUP BY outcome`, since)
+		`SELECT outcome, count(*) FROM turn
+		 WHERE started_at >= $1 AND tenant_id = $2 GROUP BY outcome`, since, tenantID)
 	if err != nil {
 		return o, err
 	}
@@ -114,6 +116,10 @@ type ConversationSummary struct {
 }
 
 type ConversationFilter struct {
+	// TenantID is whose conversations these are. Required: this is the one surface that
+	// shows customer text on purpose, so a filter that could be left empty would be a
+	// filter somebody eventually leaves empty.
+	TenantID      string
 	Outcome       string
 	Search        string
 	Limit, Offset int
@@ -123,15 +129,22 @@ func (s *Store) Conversations(ctx context.Context, f ConversationFilter) ([]Conv
 	if f.Limit <= 0 || f.Limit > 200 {
 		f.Limit = 50
 	}
+	if f.TenantID == "" {
+		return nil, 0, errors.New("refusing to list conversations for no tenant")
+	}
+	// The tenant is on the outer query *and* on the outcome subquery. One without the
+	// other is the shape that lists this tenant's conversations and filters them by
+	// whether some *other* tenant had a turn with that outcome.
 	const where = `
-		WHERE ($1 = '' OR t.conversation_id IN
-		         (SELECT conversation_id FROM turn WHERE outcome = $1))
+		WHERE t.tenant_id = $5
+		  AND ($1 = '' OR t.conversation_id IN
+		         (SELECT conversation_id FROM turn WHERE outcome = $1 AND tenant_id = $5))
 		  AND ($2 = '' OR t.conversation_id ILIKE '%' || $2 || '%')`
 
 	var total int
 	if err := s.pool.QueryRow(ctx,
 		`SELECT count(DISTINCT t.conversation_id) FROM turn t`+where,
-		f.Outcome, f.Search).Scan(&total); err != nil {
+		f.Outcome, f.Search, f.Limit, f.Offset, f.TenantID).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
@@ -139,11 +152,12 @@ func (s *Store) Conversations(ctx context.Context, f ConversationFilter) ([]Conv
 		SELECT t.conversation_id, count(*), min(t.started_at), max(t.started_at),
 		       array_agg(DISTINCT t.outcome),
 		       coalesce(sum(t.input_tokens),0), coalesce(sum(t.output_tokens),0),
-		       (SELECT count(*) FROM support_ticket s WHERE s.conversation_id = t.conversation_id)
+		       (SELECT count(*) FROM support_ticket s
+		        WHERE s.conversation_id = t.conversation_id AND s.tenant_id = $5)
 		FROM turn t`+where+`
 		GROUP BY t.conversation_id
 		ORDER BY max(t.started_at) DESC
-		LIMIT $3 OFFSET $4`, f.Outcome, f.Search, f.Limit, f.Offset)
+		LIMIT $3 OFFSET $4`, f.Outcome, f.Search, f.Limit, f.Offset, f.TenantID)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -192,12 +206,17 @@ type Turn struct {
 }
 
 // Conversation returns every recorded turn, with the evidence for each.
-func (s *Store) Conversation(ctx context.Context, id string) ([]Turn, error) {
+//
+// This is the request that reads a customer's words, so it is the one that matters most:
+// another tenant's conversation id here would return the conversation. It comes back empty
+// instead, which the handler turns into the same 404 as an id that does not exist.
+func (s *Store) Conversation(ctx context.Context, tenantID, id string) ([]Turn, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, started_at, ended_at, outcome, question, coalesce(reply,''),
 		       coalesce(model,''), model_calls, input_tokens, output_tokens, cost_usd,
 		       coalesce(trace_id,''), coalesce(detail,'')
-		FROM turn WHERE conversation_id = $1 ORDER BY started_at`, id)
+		FROM turn WHERE conversation_id = $1 AND tenant_id = $2 ORDER BY started_at`,
+		id, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -266,12 +285,15 @@ func (s *Store) Conversation(ctx context.Context, id string) ([]Turn, error) {
 }
 
 type AuditEntry struct {
-	At      time.Time `json:"at"`
-	Actor   string    `json:"actor"`
-	Action  string    `json:"action"`
-	Object  string    `json:"object"`
-	Outcome string    `json:"outcome"`
-	Detail  string    `json:"detail,omitempty"`
+	At time.Time `json:"at"`
+	// TenantID is whose data the action was against. The actor's name stays globally
+	// unique -- it is the answer to "who" -- and this is the answer to "whose".
+	TenantID string `json:"tenantId"`
+	Actor    string `json:"actor"`
+	Action   string `json:"action"`
+	Object   string `json:"object"`
+	Outcome  string `json:"outcome"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 // Audit records an operator action. It is called for reads of customer content as well
@@ -281,9 +303,9 @@ type AuditEntry struct {
 // There is deliberately no update or delete path to this table anywhere in the codebase.
 func (s *Store) Audit(ctx context.Context, e AuditEntry) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO admin_audit (actor, action, object, outcome, detail)
-		 VALUES ($1,$2,$3,$4,NULLIF($5,''))`,
-		e.Actor, e.Action, e.Object, e.Outcome, e.Detail)
+		`INSERT INTO admin_audit (tenant_id, actor, action, object, outcome, detail)
+		 VALUES ($6,$1,$2,$3,$4,NULLIF($5,''))`,
+		e.Actor, e.Action, e.Object, e.Outcome, e.Detail, e.TenantID)
 	return err
 }
 
@@ -292,7 +314,10 @@ func (s *Store) Audit(ctx context.Context, e AuditEntry) error {
 // The total is returned rather than left for the caller to infer from the page, because a
 // page that says how big it is and a table that says how much there is are different
 // numbers -- and a reader who cannot tell them apart concludes there is nothing more.
-func (s *Store) AuditTrail(ctx context.Context, limit, offset int) ([]AuditEntry, int, error) {
+// The trail is scoped to the reader's tenant. An operator seeing another tenant's audit
+// rows would learn their operators' names, what they looked at and when -- which is a
+// smaller leak than the conversations themselves and the same kind of leak.
+func (s *Store) AuditTrail(ctx context.Context, tenantID string, limit, offset int) ([]AuditEntry, int, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
@@ -300,12 +325,14 @@ func (s *Store) AuditTrail(ctx context.Context, limit, offset int) ([]AuditEntry
 		offset = 0
 	}
 	var total int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM admin_audit`).Scan(&total); err != nil {
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM admin_audit WHERE tenant_id = $1`, tenantID).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT at, actor, action, object, outcome, coalesce(detail,'')
-		FROM admin_audit ORDER BY id DESC LIMIT $1 OFFSET $2`, limit, offset)
+		SELECT at, tenant_id, actor, action, object, outcome, coalesce(detail,'')
+		FROM admin_audit WHERE tenant_id = $3
+		ORDER BY id DESC LIMIT $1 OFFSET $2`, limit, offset, tenantID)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -313,7 +340,8 @@ func (s *Store) AuditTrail(ctx context.Context, limit, offset int) ([]AuditEntry
 	var out []AuditEntry
 	for rows.Next() {
 		var e AuditEntry
-		if err := rows.Scan(&e.At, &e.Actor, &e.Action, &e.Object, &e.Outcome, &e.Detail); err != nil {
+		if err := rows.Scan(&e.At, &e.TenantID, &e.Actor, &e.Action, &e.Object, &e.Outcome,
+			&e.Detail); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, e)

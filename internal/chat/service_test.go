@@ -223,7 +223,7 @@ func TestRetrievedPassagesNeverEnterMemory(t *testing.T) {
 	}
 
 	// ...and did not reach memory.
-	history, err := f.memory.History(ctx, "c1")
+	history, err := f.memory.History(ctx, tenant.Default, "c1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,12 +417,12 @@ func TestConsecutiveUserMessagesAreMergedWhenHistoryIsRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, text := range []string{"first", "second"} {
-		if err := memory.Append(ctx, "merge", llm.RoleUser, text); err != nil {
+		if err := memory.Append(ctx, tenant.Default, "merge", llm.RoleUser, text); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	history, err := memory.History(ctx, "merge")
+	history, err := memory.History(ctx, tenant.Default, "merge")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -596,7 +596,7 @@ func TestTextFromTwoModelCallsIsNotRunTogether(t *testing.T) {
 
 	// The break has to be in what is persisted too, or the next turn re-sends a
 	// run-together message as history.
-	history, err := f.memory.History(context.Background(), "c1")
+	history, err := f.memory.History(context.Background(), tenant.Default, "c1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -926,14 +926,14 @@ func TestATurnLeftInFlightByADeadProcessBecomesUnknown(t *testing.T) {
 	// Begin, and then nothing: the process died between Begin and Finish.
 	const id = "sweep-me"
 	if err := recorder.Begin(ctx, chat.TurnRecord{
-		ID: id, ConversationID: "sweep-conv", StartedAt: time.Now().Add(-time.Hour),
+		TenantID: tenant.Default, ID: id, ConversationID: "sweep-conv", StartedAt: time.Now().Add(-time.Hour),
 		Question: "where is my order?",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	// A turn that is merely slow must survive the same sweep.
 	if err := recorder.Begin(ctx, chat.TurnRecord{
-		ID: "still-running", ConversationID: "sweep-conv", StartedAt: time.Now(),
+		TenantID: tenant.Default, ID: "still-running", ConversationID: "sweep-conv", StartedAt: time.Now(),
 		Question: "still going",
 	}); err != nil {
 		t.Fatal(err)

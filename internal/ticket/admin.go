@@ -40,6 +40,10 @@ type Event struct {
 }
 
 type Filter struct {
+	// TenantID is whose tickets these are. It is a required field of the filter rather
+	// than an optional narrowing: an operations surface that can be pointed at another
+	// tenant's tickets by leaving a field empty is the hole this is closing.
+	TenantID       string
 	State          State
 	Assignee       string
 	ConversationID string
@@ -52,20 +56,25 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Ticket, int, error) {
 	if f.Limit <= 0 || f.Limit > 200 {
 		f.Limit = 50
 	}
+	if f.TenantID == "" {
+		return nil, 0, errors.New("refusing to list tickets for no tenant")
+	}
 	const where = `
-		WHERE ($1 = '' OR state = $1)
+		WHERE tenant_id = $6
+		  AND ($1 = '' OR state = $1)
 		  AND ($2 = '' OR assignee = $2)
 		  AND ($3 = '' OR conversation_id = $3)`
 
 	var total int
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM support_ticket`+where,
-		string(f.State), f.Assignee, f.ConversationID).Scan(&total); err != nil {
+		string(f.State), f.Assignee, f.ConversationID, f.Limit, f.Offset, f.TenantID).
+		Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	rows, err := s.pool.Query(ctx, selectColumns+` FROM support_ticket`+where+`
 		ORDER BY updated_at DESC, ticket_number DESC LIMIT $4 OFFSET $5`,
-		string(f.State), f.Assignee, f.ConversationID, f.Limit, f.Offset)
+		string(f.State), f.Assignee, f.ConversationID, f.Limit, f.Offset, f.TenantID)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -82,9 +91,13 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Ticket, int, error) {
 	return out, total, rows.Err()
 }
 
-func (s *Store) Get(ctx context.Context, number string) (Ticket, []Event, error) {
+// Get reads one ticket, and a ticket belonging to another tenant is ErrNotFound rather
+// than a ticket. Ticket numbers are sequential and quoted to customers, so they are the
+// most guessable identifier this service has -- which makes this the lookup most worth
+// scoping.
+func (s *Store) Get(ctx context.Context, tenantID, number string) (Ticket, []Event, error) {
 	t, err := scanOne(s.pool.QueryRow(ctx, selectColumns+
-		` FROM support_ticket WHERE ticket_number = $1`, number))
+		` FROM support_ticket WHERE ticket_number = $1 AND tenant_id = $2`, number, tenantID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Ticket{}, nil, ErrNotFound
 	}
@@ -128,9 +141,12 @@ type Update struct {
 	Reason     string  // required when reopening
 }
 
-func (s *Store) Update(ctx context.Context, number string, u Update) (Ticket, error) {
+func (s *Store) Update(ctx context.Context, tenantID, number string, u Update) (Ticket, error) {
 	if strings.TrimSpace(u.Actor) == "" {
 		return Ticket{}, errors.New("an update needs an actor")
+	}
+	if tenantID == "" {
+		return Ticket{}, errors.New("refusing to update a ticket for no tenant")
 	}
 
 	tx, err := s.pool.Begin(ctx)
@@ -139,8 +155,11 @@ func (s *Store) Update(ctx context.Context, number string, u Update) (Ticket, er
 	}
 	defer tx.Rollback(ctx)
 
+	// The tenant is in the lock's own predicate, so a write to another tenant's ticket is
+	// ErrNotFound before the row is locked rather than after it is read.
 	current, err := scanOne(tx.QueryRow(ctx, selectColumns+
-		` FROM support_ticket WHERE ticket_number = $1 FOR UPDATE`, number))
+		` FROM support_ticket WHERE ticket_number = $1 AND tenant_id = $2 FOR UPDATE`,
+		number, tenantID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Ticket{}, ErrNotFound
 	}
@@ -226,8 +245,10 @@ func (s *Store) Update(ctx context.Context, number string, u Update) (Ticket, er
 }
 
 // Counts backs the overview: how many tickets sit in each state.
-func (s *Store) Counts(ctx context.Context) (map[State]int, error) {
-	rows, err := s.pool.Query(ctx, `SELECT state, count(*) FROM support_ticket GROUP BY state`)
+func (s *Store) Counts(ctx context.Context, tenantID string) (map[State]int, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT state, count(*) FROM support_ticket WHERE tenant_id = $1 GROUP BY state`,
+		tenantID)
 	if err != nil {
 		return nil, err
 	}

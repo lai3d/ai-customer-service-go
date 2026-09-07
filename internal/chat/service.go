@@ -131,6 +131,7 @@ func (s *Service) Turn(ctx context.Context, tenantID, conversationID, message st
 	outcome := "failed"
 
 	record := TurnRecord{
+		TenantID:       tenantID,
 		ID:             uuid.NewString(),
 		ConversationID: conversationID,
 		StartedAt:      started,
@@ -157,7 +158,7 @@ func (s *Service) Turn(ctx context.Context, tenantID, conversationID, message st
 		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if text := reply.String(); text != "" {
-			if err := s.memory.Append(persistCtx, conversationID, llm.RoleAssistant, text); err != nil {
+			if err := s.memory.Append(persistCtx, tenantID, conversationID, llm.RoleAssistant, text); err != nil {
 				slog.Error("could not persist the assistant reply",
 					"conversation_id", conversationID, "error", err)
 			}
@@ -212,7 +213,7 @@ func (s *Service) Turn(ctx context.Context, tenantID, conversationID, message st
 		return err
 	}
 
-	if err := s.memory.Append(ctx, conversationID, llm.RoleUser, message); err != nil {
+	if err := s.memory.Append(ctx, tenantID, conversationID, llm.RoleUser, message); err != nil {
 		outcome = classify("memory_failed", err)
 		return err
 	}
@@ -228,7 +229,7 @@ func (s *Service) Turn(ctx context.Context, tenantID, conversationID, message st
 	record.Passages = passages
 	emit(Event{Type: EventRetrieval, Passages: toPassageEvents(passages)})
 
-	history, err := s.memory.History(ctx, conversationID)
+	history, err := s.memory.History(ctx, tenantID, conversationID)
 	if err != nil {
 		outcome = classify("memory_failed", err)
 		return err
@@ -317,7 +318,7 @@ func (s *Service) Turn(ctx context.Context, tenantID, conversationID, message st
 			Role: llm.RoleAssistant, Text: result.Text, ToolCalls: result.ToolCalls,
 			Native: result.Native,
 		})
-		toolResults, invoked := s.runTools(ctx, conversationID, result.ToolCalls, emit)
+		toolResults, invoked := s.runTools(ctx, tenantID, conversationID, result.ToolCalls, emit)
 		record.ToolCalls = append(record.ToolCalls, invoked...)
 		request.Messages = append(request.Messages, llm.Message{
 			Role:        llm.RoleUser,
@@ -362,7 +363,7 @@ func (s *Service) recordTurnSpend(ctx context.Context, conversationID, turnID, m
 //
 // They go back in one user message, always. Splitting them across messages is accepted
 // by the API and quietly teaches the model to stop asking for tools in parallel.
-func (s *Service) runTools(ctx context.Context, conversationID string,
+func (s *Service) runTools(ctx context.Context, tenantID, conversationID string,
 	calls []llm.ToolCall, emit func(Event)) ([]llm.ToolResult, []ToolEvent) {
 
 	results := make([]llm.ToolResult, len(calls))
@@ -409,7 +410,7 @@ func (s *Service) runTools(ctx context.Context, conversationID string,
 				return
 			}
 
-			result, err := tool.Invoke(toolCtx, conversationID, call.Arguments)
+			result, err := tool.Invoke(toolCtx, tenantID, conversationID, call.Arguments)
 			if err != nil {
 				// Tools return failures as values; anything that still errors is
 				// unexpected, and the model is told only that the tool failed.

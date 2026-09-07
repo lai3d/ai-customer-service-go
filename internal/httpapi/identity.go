@@ -36,7 +36,7 @@ type Identity struct {
 // Transcripts lets a customer read their own conversation, which is how a human's reply
 // reaches them. Optional: nil means the endpoint is not registered.
 type Transcripts interface {
-	Transcript(ctx context.Context, conversationID string) ([]handoff.Message, error)
+	Transcript(ctx context.Context, tenantID, conversationID string) ([]handoff.Message, error)
 }
 
 // resolve returns the subject for a request, or the problem to send.
@@ -317,7 +317,7 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, p)
 		return
 	}
-	messages, err := s.transcripts.Transcript(r.Context(), id)
+	messages, err := s.transcripts.Transcript(r.Context(), subject.TenantID, id)
 	if err != nil {
 		writeProblem(w, &problem{Title: "Could not read the conversation",
 			Status: http.StatusServiceUnavailable, Detail: "Retrying shortly is worthwhile."})

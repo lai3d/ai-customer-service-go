@@ -252,7 +252,7 @@ func run() error {
 	// destination means a raised ticket tells nobody: it is the difference between an
 	// assistant that escalates and one that files into a drawer, and it says so.
 	notifier := handoff.NewNotifier(pool, cfg.Handoff.WebhookURL, cfg.Handoff.Timeout).Meter(metrics)
-	handoffs := handoff.NewStore(pool, chat.NewMemory(pool, 40), notifier)
+	handoffs := handoff.NewStore(pool, notifier)
 	if notifier.Enabled() {
 		slog.Info("handoff notifications enabled", "timeout", cfg.Handoff.Timeout)
 	} else {

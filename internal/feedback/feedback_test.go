@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lai3d/ai-customer-service-go/internal/feedback"
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 	"github.com/lai3d/ai-customer-service-go/internal/testsupport"
 )
 
@@ -32,9 +33,9 @@ func turn(t *testing.T, id, question, reply string) string {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO turn (id, conversation_id, started_at, ended_at, outcome, question, reply,
+		INSERT INTO turn (id, tenant_id, conversation_id, started_at, ended_at, outcome, question, reply,
 		                  model, model_calls, input_tokens, output_tokens)
-		VALUES ($1, $1||'-conv', now(), now(), 'completed', $2, $3, 'm', 1, 10, 5)`,
+		VALUES ($1, 'default', $1||'-conv', now(), now(), 'completed', $2, $3, 'm', 1, 10, 5)`,
 		id, question, reply); err != nil {
 		t.Fatal(err)
 	}
@@ -54,16 +55,16 @@ func TestACustomerAndAnOperatorAreBothHeardAboutTheSameTurn(t *testing.T) {
 	s := feedback.NewStore(pool)
 	id := turn(t, "both-"+stamp(), "how long do I have to return?", "you have 14 days")
 
-	if err := s.Record(ctx, id, feedback.SourceCustomer, feedback.VerdictUnclear,
+	if err := s.Record(ctx, tenant.Default, id, feedback.SourceCustomer, feedback.VerdictUnclear,
 		"I still don't know the deadline", "session-abc"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Record(ctx, id, feedback.SourceOperator, feedback.VerdictWrong,
+	if err := s.Record(ctx, tenant.Default, id, feedback.SourceOperator, feedback.VerdictWrong,
 		"the window is 30 days, not 14", "alex"); err != nil {
 		t.Fatal(err)
 	}
 
-	items, err := s.Queue(ctx, false, 50)
+	items, err := s.Queue(ctx, tenant.Default, false, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,11 +79,11 @@ func TestACustomerAndAnOperatorAreBothHeardAboutTheSameTurn(t *testing.T) {
 	}
 
 	// A verdict change replaces that source's own and leaves the other alone.
-	if err := s.Record(ctx, id, feedback.SourceCustomer, feedback.VerdictHelpful,
+	if err := s.Record(ctx, tenant.Default, id, feedback.SourceCustomer, feedback.VerdictHelpful,
 		"", "session-abc"); err != nil {
 		t.Fatal(err)
 	}
-	items, err = s.Queue(ctx, false, 50)
+	items, err = s.Queue(ctx, tenant.Default, false, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,11 +106,11 @@ func TestAQueuedItemCarriesWhatIsNeededToActOnIt(t *testing.T) {
 	s := feedback.NewStore(pool)
 	id := turn(t, "rich-"+stamp(), "when does my refund arrive?", "immediately")
 
-	if err := s.Record(ctx, id, feedback.SourceOperator, feedback.VerdictWrong,
+	if err := s.Record(ctx, tenant.Default, id, feedback.SourceOperator, feedback.VerdictWrong,
 		"refunds take three business days", "alex"); err != nil {
 		t.Fatal(err)
 	}
-	items, err := s.Queue(ctx, false, 50)
+	items, err := s.Queue(ctx, tenant.Default, false, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,11 +141,11 @@ func TestHandlingRemovesAnItemAndAChangedMindPutsItBack(t *testing.T) {
 	s := feedback.NewStore(pool)
 	id := turn(t, "handle-"+stamp(), "do you ship abroad?", "no")
 
-	if err := s.Record(ctx, id, feedback.SourceOperator, feedback.VerdictWrong,
+	if err := s.Record(ctx, tenant.Default, id, feedback.SourceOperator, feedback.VerdictWrong,
 		"we ship to 34 countries", "alex"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Handle(ctx, id, feedback.SourceOperator, "alex"); err != nil {
+	if err := s.Handle(ctx, tenant.Default, id, feedback.SourceOperator, "alex"); err != nil {
 		t.Fatal(err)
 	}
 	if inQueue(t, s, id) {
@@ -152,12 +153,12 @@ func TestHandlingRemovesAnItemAndAChangedMindPutsItBack(t *testing.T) {
 	}
 	// Handling it twice is not an error worth failing a request over, but it must not
 	// silently claim to have done something.
-	if err := s.Handle(ctx, id, feedback.SourceOperator, "alex"); !errors.Is(err, feedback.ErrNoSuchTurn) {
+	if err := s.Handle(ctx, tenant.Default, id, feedback.SourceOperator, "alex"); !errors.Is(err, feedback.ErrNoSuchTurn) {
 		t.Errorf("handling an already-handled item returned %v", err)
 	}
 	// It is still visible when asked for, because "what did we decide about this" is a
 	// question somebody asks later.
-	items, err := s.Queue(ctx, true, 50)
+	items, err := s.Queue(ctx, tenant.Default, true, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +173,7 @@ func TestHandlingRemovesAnItemAndAChangedMindPutsItBack(t *testing.T) {
 	}
 
 	// And somebody changing their verdict makes it work again.
-	if err := s.Record(ctx, id, feedback.SourceOperator, feedback.VerdictWrong,
+	if err := s.Record(ctx, tenant.Default, id, feedback.SourceOperator, feedback.VerdictWrong,
 		"still wrong after the edit", "dana"); err != nil {
 		t.Fatal(err)
 	}
@@ -186,13 +187,13 @@ func TestHelpfulIsCountedAndNotQueued(t *testing.T) {
 	s := feedback.NewStore(pool)
 	id := turn(t, "good-"+stamp(), "what payment methods?", "Visa, Mastercard, PayPal")
 
-	if err := s.Record(ctx, id, feedback.SourceCustomer, feedback.VerdictHelpful, "", "session-x"); err != nil {
+	if err := s.Record(ctx, tenant.Default, id, feedback.SourceCustomer, feedback.VerdictHelpful, "", "session-x"); err != nil {
 		t.Fatal(err)
 	}
 	if inQueue(t, s, id) {
 		t.Error("a helpful verdict was queued as work")
 	}
-	counts, err := s.Counts(ctx, time.Hour)
+	counts, err := s.Counts(ctx, tenant.Default, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,19 +207,19 @@ func TestFeedbackIsValidatedAndBounded(t *testing.T) {
 	s := feedback.NewStore(pool)
 	id := turn(t, "valid-"+stamp(), "q", "a")
 
-	if err := s.Record(ctx, id, feedback.SourceCustomer, "brilliant", "", "x"); !errors.Is(err, feedback.ErrBadVerdict) {
+	if err := s.Record(ctx, tenant.Default, id, feedback.SourceCustomer, "brilliant", "", "x"); !errors.Is(err, feedback.ErrBadVerdict) {
 		t.Errorf("an invented verdict returned %v", err)
 	}
-	if err := s.Record(ctx, id, feedback.SourceCustomer, feedback.VerdictWrong,
+	if err := s.Record(ctx, tenant.Default, id, feedback.SourceCustomer, feedback.VerdictWrong,
 		strings.Repeat("x", feedback.MaxNoteLength+1), "x"); err == nil {
 		t.Error("an unbounded note was accepted")
 	}
-	if err := s.Record(ctx, id, feedback.SourceCustomer, feedback.VerdictWrong, "", "  "); err == nil {
+	if err := s.Record(ctx, tenant.Default, id, feedback.SourceCustomer, feedback.VerdictWrong, "", "  "); err == nil {
 		t.Error("feedback with no author was accepted")
 	}
 	// A turn that no longer exists -- swept by retention, say -- is a race rather than a
 	// fault, and it must not be recorded against nothing.
-	if err := s.Record(ctx, "no-such-turn", feedback.SourceCustomer, feedback.VerdictWrong,
+	if err := s.Record(ctx, tenant.Default, "no-such-turn", feedback.SourceCustomer, feedback.VerdictWrong,
 		"", "x"); !errors.Is(err, feedback.ErrNoSuchTurn) {
 		t.Errorf("feedback on a missing turn returned %v", err)
 	}
@@ -233,7 +234,7 @@ func TestATurnKnowsWhichConversationItBelongsTo(t *testing.T) {
 	s := feedback.NewStore(pool)
 	id := turn(t, "owner-"+stamp(), "who owns this?", "not saying")
 
-	got, err := s.ConversationOf(ctx, id)
+	got, err := s.ConversationOf(ctx, tenant.Default, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,14 +242,14 @@ func TestATurnKnowsWhichConversationItBelongsTo(t *testing.T) {
 		t.Errorf("the turn reports conversation %q", got)
 	}
 
-	if _, err := s.ConversationOf(ctx, "no-such-turn"); !errors.Is(err, feedback.ErrNoSuchTurn) {
+	if _, err := s.ConversationOf(ctx, tenant.Default, "no-such-turn"); !errors.Is(err, feedback.ErrNoSuchTurn) {
 		t.Errorf("a missing turn returned %v", err)
 	}
 }
 
 func inQueue(t *testing.T, s *feedback.Store, id string) bool {
 	t.Helper()
-	items, err := s.Queue(context.Background(), false, 200)
+	items, err := s.Queue(context.Background(), tenant.Default, false, 200)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,3 +262,49 @@ func inQueue(t *testing.T, s *feedback.Store, id string) bool {
 }
 
 func stamp() string { return fmt.Sprint(time.Now().UnixNano()) }
+
+// The store refuses a verdict against another tenant's turn, and refuses to hand back its
+// conversation id.
+//
+// The edge already refuses this: it resolves the turn to a conversation and checks the
+// session owns it, and removing the check here leaves those tests green -- verified. This
+// is the second lock on the same door, and it is worth having because the operator surface
+// reaches Record by a different path, and because a foreign key alone would happily let one
+// tenant judge another's answer.
+func TestAVerdictCannotBeRecordedAgainstAnotherTenantsTurn(t *testing.T) {
+	ctx := context.Background()
+	s := feedback.NewStore(pool)
+	tenants := tenant.NewStore(pool)
+	other, err := tenants.Create(ctx, fmt.Sprintf("other-%d", time.Now().UnixNano()), "Other", "platform")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := turn(t, "cross-"+stamp(), "whose turn is this?", "the default tenant's")
+
+	if err := s.Record(ctx, other.ID, id, feedback.SourceOperator, feedback.VerdictWrong,
+		"not mine to judge", "dana"); !errors.Is(err, feedback.ErrNoSuchTurn) {
+		t.Errorf("another tenant recorded a verdict on this turn: %v", err)
+	}
+	if _, err := s.ConversationOf(ctx, other.ID, id); !errors.Is(err, feedback.ErrNoSuchTurn) {
+		t.Errorf("another tenant resolved this turn to its conversation: %v", err)
+	}
+	if err := s.Handle(ctx, other.ID, id, feedback.SourceOperator, "dana"); !errors.Is(err, feedback.ErrNoSuchTurn) {
+		t.Errorf("another tenant cleared this turn's feedback: %v", err)
+	}
+
+	// The owning tenant still can, so none of the above passes by refusing everything.
+	if err := s.Record(ctx, tenant.Default, id, feedback.SourceOperator, feedback.VerdictWrong,
+		"mine", "alex"); err != nil {
+		t.Fatal(err)
+	}
+	// And the queue does not show it to the other tenant.
+	items, err := s.Queue(ctx, other.ID, false, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, i := range items {
+		if i.TurnID == id {
+			t.Error("another tenant's feedback queue contains this turn")
+		}
+	}
+}

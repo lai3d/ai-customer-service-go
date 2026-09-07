@@ -30,7 +30,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/lai3d/ai-customer-service-go/internal/llm"
 	"github.com/lai3d/ai-customer-service-go/internal/obs"
 )
 
@@ -41,18 +40,19 @@ var (
 
 // Memory is the part of chat.Memory this package needs. An interface so a reply can be
 // tested without a chat service, and so this package does not depend on that one.
-type Memory interface {
-	Append(ctx context.Context, conversationID string, role llm.Role, content string) error
-}
-
 type Store struct {
 	pool     *pgxpool.Pool
-	memory   Memory
 	notifier *Notifier
 }
 
-func NewStore(pool *pgxpool.Pool, memory Memory, notifier *Notifier) *Store {
-	return &Store{pool: pool, memory: memory, notifier: notifier}
+// The Memory seam that used to be a parameter here is gone. It was an interface, a struct
+// field and a constructor argument, and nothing ever called it: the reply is written into
+// chat_memory by the transaction below, because it has to commit with the ticket event or
+// not at all. A seam nothing uses is an affordance that says a thing is pluggable when it
+// is not, and it went on compiling for as long as it existed. Found when the tenant made
+// its signature wrong.
+func NewStore(pool *pgxpool.Pool, notifier *Notifier) *Store {
+	return &Store{pool: pool, notifier: notifier}
 }
 
 // Reply sends an operator's words to the customer.
@@ -70,10 +70,10 @@ func (s *Store) Reply(ctx context.Context, number, actor, text string) error {
 		return errors.New("a reply needs an author")
 	}
 
-	var conversationID string
+	var conversationID, tenantID string
 	err := s.pool.QueryRow(ctx,
-		`SELECT conversation_id FROM support_ticket WHERE ticket_number = $1`, number).
-		Scan(&conversationID)
+		`SELECT conversation_id, tenant_id FROM support_ticket WHERE ticket_number = $1`, number).
+		Scan(&conversationID, &tenantID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNoSuchTicket
 	}
@@ -96,9 +96,9 @@ func (s *Store) Reply(ctx context.Context, number, actor, text string) error {
 	// customer cannot see a database column, so "Alex from support" has to be in the words
 	// or the customer is told a machine answered them.
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO chat_memory (conversation_id, role, content, created_at)
-		VALUES ($1, 'assistant', $2, now())`,
-		conversationID, actor+" (support): "+text); err != nil {
+		INSERT INTO chat_memory (tenant_id, conversation_id, role, content, created_at)
+		VALUES ($3, $1, 'assistant', $2, now())`,
+		conversationID, actor+" (support): "+text, tenantID); err != nil {
 		return fmt.Errorf("deliver the reply: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
@@ -128,10 +128,10 @@ type Message struct {
 	At      time.Time `json:"at"`
 }
 
-func (s *Store) Transcript(ctx context.Context, conversationID string) ([]Message, error) {
+func (s *Store) Transcript(ctx context.Context, tenantID, conversationID string) ([]Message, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT role, content, created_at FROM chat_memory
-		WHERE conversation_id = $1 ORDER BY id`, conversationID)
+		WHERE conversation_id = $1 AND tenant_id = $2 ORDER BY id`, conversationID, tenantID)
 	if err != nil {
 		return nil, err
 	}

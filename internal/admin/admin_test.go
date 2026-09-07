@@ -12,10 +12,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lai3d/ai-customer-service-go/internal/admin"
-	"github.com/lai3d/ai-customer-service-go/internal/chat"
 	"github.com/lai3d/ai-customer-service-go/internal/feedback"
 	"github.com/lai3d/ai-customer-service-go/internal/handoff"
 	"github.com/lai3d/ai-customer-service-go/internal/knowledge"
@@ -160,7 +160,7 @@ func TestEveryEndpointRejectsAnUnknownToken(t *testing.T) {
 // Hiding a button is a user-interface decision. This is the access control.
 func TestAViewerCannotChangeATicket(t *testing.T) {
 	server, tickets := serve(t)
-	created, _, err := tickets.Create(context.Background(), ticket.CreateRequest{
+	created, _, err := tickets.Create(context.Background(), ticket.CreateRequest{TenantID: tenant.Default,
 		ConversationID: "viewer-cannot-write", Summary: "a problem", Category: "returns"})
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +179,7 @@ func TestAViewerCannotChangeATicket(t *testing.T) {
 // endpoint that defaults it away would silently reintroduce lost updates.
 func TestAStaleUpdateIsAConflictAndNotAServerError(t *testing.T) {
 	server, tickets := serve(t)
-	created, _, err := tickets.Create(context.Background(), ticket.CreateRequest{
+	created, _, err := tickets.Create(context.Background(), ticket.CreateRequest{TenantID: tenant.Default,
 		ConversationID: "stale-update", Summary: "a problem", Category: "returns"})
 	if err != nil {
 		t.Fatal(err)
@@ -205,8 +205,8 @@ func TestOpeningAConversationIsAudited(t *testing.T) {
 	server, _ := serve(t)
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO turn (id, conversation_id, started_at, outcome, question)
-		VALUES ('turn-audited', 'audited-conversation', now(), 'completed', 'where is my order?')`); err != nil {
+		INSERT INTO turn (id, tenant_id, conversation_id, started_at, outcome, question)
+		VALUES ('turn-audited', 'default', 'audited-conversation', now(), 'completed', 'where is my order?')`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -284,7 +284,7 @@ func TestWhoamiTellsThePageWhatItMayDo(t *testing.T) {
 // path returned before anything recorded it.
 func TestARefusedActionIsAudited(t *testing.T) {
 	server, tickets := serve(t)
-	created, _, err := tickets.Create(context.Background(), ticket.CreateRequest{
+	created, _, err := tickets.Create(context.Background(), ticket.CreateRequest{TenantID: tenant.Default,
 		ConversationID: "refusal-audited", Summary: "a problem", Category: "returns"})
 	if err != nil {
 		t.Fatal(err)
@@ -533,8 +533,8 @@ func TestErasingAConversationIsOperatorOnlyAndAudited(t *testing.T) {
 	ctx := context.Background()
 	const id = "erase-through-the-api"
 
-	if _, err := pool.Exec(ctx, `INSERT INTO chat_memory (conversation_id, role, content)
-		VALUES ($1,'user','my card number is 4111 1111 1111 1111')`, id); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO chat_memory (tenant_id, conversation_id, role, content)
+		VALUES ('default',$1,'user','my card number is 4111 1111 1111 1111')`, id); err != nil {
 		t.Fatal(err)
 	}
 
@@ -583,7 +583,7 @@ func TestErasingAConversationIsOperatorOnlyAndAudited(t *testing.T) {
 // handoffFor builds a reply path with no webhook: the notification is a working no-op and
 // these tests are about what reaches the customer, not about what reaches a chat room.
 func handoffFor(pool *pgxpool.Pool) *handoff.Store {
-	return handoff.NewStore(pool, chat.NewMemory(pool, 40), handoff.NewNotifier(pool, "", 0))
+	return handoff.NewStore(pool, handoff.NewNotifier(pool, "", 0))
 }
 
 // knowledgeFor builds the editing store with an embedder that returns a fixed non-zero
@@ -657,5 +657,124 @@ func TestAnOperatorBelongsToExactlyOneTenant(t *testing.T) {
 	}
 	if kim.TenantID != "acme" {
 		t.Errorf("kim belongs to %q, want acme", kim.TenantID)
+	}
+}
+
+// The isolation test for the surface that shows customer text on purpose.
+//
+// Two operators, one per tenant, against the same database. Everything one can ask for --
+// the conversation list, one conversation's turns, the tickets, one ticket, the overview
+// and the audit trail -- must be about their own tenant and nothing else.
+//
+// The other tenant's conversation id and ticket number are handed to the wrong operator
+// directly. That is the case that happens: an id from a screenshot, a support email, a
+// shared spreadsheet.
+func TestAnOperatorSeesOnlyTheirOwnTenant(t *testing.T) {
+	ctx := context.Background()
+	const acmeToken = "acme-operator-token-0123456789"
+	const globexToken = "globex-operator-token-0123456"
+
+	tenants := tenant.NewStore(pool)
+	stamp := time.Now().UnixNano()
+	acme := fmt.Sprintf("acme-%d", stamp)
+	globex := fmt.Sprintf("globex-%d", stamp)
+	for _, id := range []string{acme, globex} {
+		if _, err := tenants.Create(ctx, id, id, "platform"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ops, err := admin.ParseOperators(
+		"acmeop:" + acmeToken + ":operator:" + acme + "," +
+			"globexop:" + globexToken + ":operator:" + globex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tickets := ticket.NewStore(pool)
+	mux := http.NewServeMux()
+	admin.NewServer(admin.NewStore(pool), tickets, ops, corsFor(t),
+		retention.NewStore(pool), handoffFor(pool), knowledgeFor(pool),
+		feedback.NewStore(pool)).Routes(mux)
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	// One conversation and one ticket each.
+	made := map[string]struct{ conversation, ticketNumber string }{}
+	for _, id := range []string{acme, globex} {
+		conversation := fmt.Sprintf("conv-%s", id)
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO turn (id, tenant_id, conversation_id, started_at, outcome, question, reply)
+			VALUES ($1, $2, $3, now(), 'completed', $4, 'we can help')`,
+			"turn-"+id, id, conversation,
+			"my secret question for "+id); err != nil {
+			t.Fatal(err)
+		}
+		tk, _, err := tickets.Create(ctx, ticket.CreateRequest{
+			TenantID: id, ConversationID: conversation,
+			Summary: "summary for " + id, Category: "returns"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		made[id] = struct{ conversation, ticketNumber string }{conversation, tk.Number}
+	}
+
+	read := func(token, path string) string {
+		t.Helper()
+		resp := do(t, server, "GET", path, token, "")
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(body)
+	}
+
+	for _, c := range []struct{ token, mine, theirs string }{
+		{acmeToken, acme, globex},
+		{globexToken, globex, acme},
+	} {
+		mine, theirs := made[c.mine], made[c.theirs]
+
+		// The lists.
+		if body := read(c.token, "/api/admin/v1/conversations"); strings.Contains(body, theirs.conversation) {
+			t.Errorf("%s's conversation list contains %s", c.mine, theirs.conversation)
+		}
+		if body := read(c.token, "/api/admin/v1/tickets"); strings.Contains(body, theirs.ticketNumber) {
+			t.Errorf("%s's ticket list contains %s", c.mine, theirs.ticketNumber)
+		}
+
+		// The direct reads, with the other tenant's id handed over.
+		if got := do(t, server, "GET",
+			"/api/admin/v1/conversations/"+theirs.conversation, c.token, "").StatusCode; got != http.StatusNotFound {
+			t.Errorf("%s reading %s's conversation got %d, want 404", c.mine, c.theirs, got)
+		}
+		if got := do(t, server, "GET",
+			"/api/admin/v1/tickets/"+theirs.ticketNumber, c.token, "").StatusCode; got != http.StatusNotFound {
+			t.Errorf("%s reading %s's ticket got %d, want 404", c.mine, c.theirs, got)
+		}
+
+		// And their own still works, so none of the above passes by refusing everything.
+		if body := read(c.token, "/api/admin/v1/conversations/"+mine.conversation); !strings.Contains(body, "my secret question for "+c.mine) {
+			t.Errorf("%s cannot read its own conversation: %s", c.mine, body)
+		}
+		if got := do(t, server, "GET",
+			"/api/admin/v1/tickets/"+mine.ticketNumber, c.token, "").StatusCode; got != http.StatusOK {
+			t.Errorf("%s cannot read its own ticket: %d", c.mine, got)
+		}
+	}
+
+	// A write to another tenant's ticket is refused before the row is locked.
+	body := fmt.Sprintf(`{"expectedVersion":1,"assignee":"acmeop"}`)
+	if got := do(t, server, "PATCH",
+		"/api/admin/v1/tickets/"+made[globex].ticketNumber, acmeToken, body).StatusCode; got != http.StatusNotFound {
+		t.Errorf("acme patching globex's ticket got %d, want 404", got)
+	}
+
+	// The audit trail is scoped too: reading a conversation writes a row, and each
+	// operator sees only their own.
+	if body := read(acmeToken, "/api/admin/v1/audit"); strings.Contains(body, "globexop") {
+		t.Error("acme's audit trail contains globex's operator")
+	}
+	if body := read(globexToken, "/api/admin/v1/audit"); strings.Contains(body, "acmeop") {
+		t.Error("globex's audit trail contains acme's operator")
 	}
 }

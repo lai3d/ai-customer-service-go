@@ -82,7 +82,7 @@ type ticketResult struct {
 	Refusal string         `json:"refusal,omitempty"`
 }
 
-func (t *SupportTickets) Invoke(ctx context.Context, conversationID string, arguments json.RawMessage) (Result, error) {
+func (t *SupportTickets) Invoke(ctx context.Context, tenantID, conversationID string, arguments json.RawMessage) (Result, error) {
 	var args ticketArgs
 	if err := json.Unmarshal(arguments, &args); err != nil {
 		return Result{
@@ -99,6 +99,7 @@ func (t *SupportTickets) Invoke(ctx context.Context, conversationID string, argu
 	}
 
 	created, outcome, err := t.tickets.Create(ctx, ticket.CreateRequest{
+		TenantID:       tenantID,
 		ConversationID: conversationID,
 		Summary:        args.Summary,
 		Category:       args.Category,

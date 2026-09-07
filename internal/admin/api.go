@@ -104,7 +104,12 @@ func (s *Server) Routes(mux *http.ServeMux) {
 // refused records an authenticated operator being turned away.
 func (s *Server) refused(r *http.Request, operator Operator) {
 	if err := s.store.Audit(r.Context(), AuditEntry{
-		Actor: operator.Name, Action: "refused " + r.Method, Object: r.URL.Path,
+		// The tenant is here for the same reason the actor is. This path does not go
+		// through `record`, which is how it was the one audit write that lost its tenant
+		// and became a foreign-key error and a log line -- the exact failure an audit
+		// trail exists to prevent. Caught by TestARefusedActionIsAudited.
+		TenantID: operator.TenantID,
+		Actor:    operator.Name, Action: "refused " + r.Method, Object: r.URL.Path,
 		Outcome: "forbidden", Detail: "role " + string(operator.Role),
 	}); err != nil {
 		slog.Error("could not record a refused action",
@@ -128,7 +133,8 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 			window = time.Duration(n) * time.Hour
 		}
 	}
-	o, err := s.store.Overview(r.Context(), window)
+	operator, _ := FromContext(r.Context())
+	o, err := s.store.Overview(r.Context(), operator.TenantID, window)
 	if err != nil {
 		fail(w, r, "overview", err)
 		return
@@ -138,11 +144,13 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) conversations(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	operator, _ := FromContext(r.Context())
 	list, total, err := s.store.Conversations(r.Context(), ConversationFilter{
-		Outcome: q.Get("outcome"),
-		Search:  q.Get("q"),
-		Limit:   atoi(q.Get("limit")),
-		Offset:  atoi(q.Get("offset")),
+		TenantID: operator.TenantID,
+		Outcome:  q.Get("outcome"),
+		Search:   q.Get("q"),
+		Limit:    atoi(q.Get("limit")),
+		Offset:   atoi(q.Get("offset")),
 	})
 	if err != nil {
 		fail(w, r, "conversations", err)
@@ -155,7 +163,8 @@ func (s *Server) conversations(w http.ResponseWriter, r *http.Request) {
 // that always writes an audit entry. Reading is an action here.
 func (s *Server) conversation(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	turns, err := s.store.Conversation(r.Context(), id)
+	operator, _ := FromContext(r.Context())
+	turns, err := s.store.Conversation(r.Context(), operator.TenantID, id)
 	if err != nil {
 		fail(w, r, "conversation", err)
 		return
@@ -170,7 +179,9 @@ func (s *Server) conversation(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) ticketList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	operator, _ := FromContext(r.Context())
 	list, total, err := s.tickets.List(r.Context(), ticket.Filter{
+		TenantID:       operator.TenantID,
 		State:          ticket.State(q.Get("state")),
 		Assignee:       q.Get("assignee"),
 		ConversationID: q.Get("conversationId"),
@@ -185,7 +196,8 @@ func (s *Server) ticketList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) ticketDetail(w http.ResponseWriter, r *http.Request) {
-	t, events, err := s.tickets.Get(r.Context(), r.PathValue("number"))
+	operator, _ := FromContext(r.Context())
+	t, events, err := s.tickets.Get(r.Context(), operator.TenantID, r.PathValue("number"))
 	if errors.Is(err, ticket.ErrNotFound) {
 		http.Error(w, "no such ticket", http.StatusNotFound)
 		return
@@ -222,7 +234,7 @@ func (s *Server) ticketUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := s.tickets.Update(r.Context(), number, ticket.Update{
+	updated, err := s.tickets.Update(r.Context(), operator.TenantID, number, ticket.Update{
 		Actor:           operator.Name,
 		ExpectedVersion: patch.ExpectedVersion,
 		State:           ticket.State(patch.State),
@@ -257,7 +269,9 @@ func (s *Server) ticketUpdate(w http.ResponseWriter, r *http.Request) {
 // lookup.
 func (s *Server) feedbackQueue(w http.ResponseWriter, r *http.Request) {
 	includeHandled := r.URL.Query().Get("handled") == "true"
-	items, err := s.feedback.Queue(r.Context(), includeHandled, atoi(r.URL.Query().Get("limit")))
+	operator, _ := FromContext(r.Context())
+	items, err := s.feedback.Queue(r.Context(), operator.TenantID, includeHandled,
+		atoi(r.URL.Query().Get("limit")))
 	if err != nil {
 		fail(w, r, "feedback", err)
 		return
@@ -276,7 +290,7 @@ func (s *Server) feedbackRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	turnID := r.PathValue("id")
-	switch err := s.feedback.Record(r.Context(), turnID, feedback.SourceOperator,
+	switch err := s.feedback.Record(r.Context(), operator.TenantID, turnID, feedback.SourceOperator,
 		feedback.Verdict(body.Verdict), body.Note, operator.Name); {
 	case errors.Is(err, feedback.ErrNoSuchTurn):
 		http.Error(w, "no such turn", http.StatusNotFound)
@@ -310,7 +324,7 @@ func (s *Server) feedbackHandle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "source must be customer or operator", http.StatusUnprocessableEntity)
 		return
 	}
-	switch err := s.feedback.Handle(r.Context(), turnID, source, operator.Name); {
+	switch err := s.feedback.Handle(r.Context(), operator.TenantID, turnID, source, operator.Name); {
 	case errors.Is(err, feedback.ErrNoSuchTurn):
 		http.Error(w, "no such open feedback", http.StatusNotFound)
 		return
@@ -573,7 +587,9 @@ func (s *Server) erase(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	entries, total, err := s.store.AuditTrail(r.Context(), atoi(q.Get("limit")), atoi(q.Get("offset")))
+	operator, _ := FromContext(r.Context())
+	entries, total, err := s.store.AuditTrail(r.Context(), operator.TenantID,
+		atoi(q.Get("limit")), atoi(q.Get("offset")))
 	if err != nil {
 		fail(w, r, "audit", err)
 		return
@@ -586,7 +602,7 @@ func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 func (s *Server) record(r *http.Request, action, object, outcome, detail string) {
 	operator, _ := FromContext(r.Context())
 	if err := s.store.Audit(r.Context(), AuditEntry{
-		Actor: operator.Name, Action: action, Object: object,
+		TenantID: operator.TenantID, Actor: operator.Name, Action: action, Object: object,
 		Outcome: outcome, Detail: detail,
 	}); err != nil {
 		// Loud, because an unrecorded action is the failure this table exists to

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 	"github.com/lai3d/ai-customer-service-go/internal/testsupport"
 	"github.com/lai3d/ai-customer-service-go/internal/ticket"
 )
@@ -55,7 +56,7 @@ func TestTheCapHoldsAcrossReplicas(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, outcome, err := replicas[i%2].Create(ctx, ticket.CreateRequest{
+			_, outcome, err := replicas[i%2].Create(ctx, ticket.CreateRequest{TenantID: tenant.Default,
 				ConversationID: conversation,
 				Summary:        fmt.Sprintf("differently worded problem %d", i),
 				Category:       "returns",
@@ -94,14 +95,14 @@ func TestDeduplicationHoldsAcrossReplicas(t *testing.T) {
 	a, b := ticket.NewStore(pool), ticket.NewStore(second)
 	const summary = "Refund has not arrived"
 
-	first, outcome, err := a.Create(ctx, ticket.CreateRequest{
+	first, outcome, err := a.Create(ctx, ticket.CreateRequest{TenantID: tenant.Default,
 		ConversationID: conversation, Summary: summary, Category: "returns"})
 	if err != nil || outcome != ticket.OutcomeCreated {
 		t.Fatalf("first create: %v %v", outcome, err)
 	}
 
 	// Same request, different replica, different whitespace and case.
-	again, outcome, err := b.Create(ctx, ticket.CreateRequest{
+	again, outcome, err := b.Create(ctx, ticket.CreateRequest{TenantID: tenant.Default,
 		ConversationID: conversation, Summary: "  refund has NOT   arrived ", Category: "returns"})
 	if err != nil {
 		t.Fatal(err)
@@ -118,14 +119,14 @@ func TestDeduplicationHoldsAcrossReplicas(t *testing.T) {
 func TestTheStateMachineRefusesImpossibleMoves(t *testing.T) {
 	ctx := context.Background()
 	store := ticket.NewStore(pool)
-	created, _, err := store.Create(ctx, ticket.CreateRequest{
+	created, _, err := store.Create(ctx, ticket.CreateRequest{TenantID: tenant.Default,
 		ConversationID: newConversation(t), Summary: "a problem", Category: "returns"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// OPEN cannot jump straight to RESOLVED.
-	if _, err := store.Update(ctx, created.Number, ticket.Update{
+	if _, err := store.Update(ctx, tenant.Default, created.Number, ticket.Update{
 		Actor: "alex", ExpectedVersion: created.Version,
 		State: ticket.StateResolved, Resolution: "done",
 	}); err == nil {
@@ -136,13 +137,13 @@ func TestTheStateMachineRefusesImpossibleMoves(t *testing.T) {
 func TestResolvingNeedsAConclusionAndReopeningNeedsAReason(t *testing.T) {
 	ctx := context.Background()
 	store := ticket.NewStore(pool)
-	tk, _, err := store.Create(ctx, ticket.CreateRequest{
+	tk, _, err := store.Create(ctx, ticket.CreateRequest{TenantID: tenant.Default,
 		ConversationID: newConversation(t), Summary: "a problem", Category: "returns"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	tk, err = store.Update(ctx, tk.Number, ticket.Update{
+	tk, err = store.Update(ctx, tenant.Default, tk.Number, ticket.Update{
 		Actor: "alex", ExpectedVersion: tk.Version, State: ticket.StateInProgress})
 	if err != nil {
 		t.Fatal(err)
@@ -150,13 +151,13 @@ func TestResolvingNeedsAConclusionAndReopeningNeedsAReason(t *testing.T) {
 
 	// A RESOLVED ticket with no record of what was done is indistinguishable from an
 	// abandoned one.
-	if _, err := store.Update(ctx, tk.Number, ticket.Update{
+	if _, err := store.Update(ctx, tenant.Default, tk.Number, ticket.Update{
 		Actor: "alex", ExpectedVersion: tk.Version, State: ticket.StateResolved,
 	}); err == nil {
 		t.Error("a ticket was resolved with no conclusion")
 	}
 
-	tk, err = store.Update(ctx, tk.Number, ticket.Update{
+	tk, err = store.Update(ctx, tenant.Default, tk.Number, ticket.Update{
 		Actor: "alex", ExpectedVersion: tk.Version,
 		State: ticket.StateResolved, Resolution: "refund issued"})
 	if err != nil {
@@ -165,7 +166,7 @@ func TestResolvingNeedsAConclusionAndReopeningNeedsAReason(t *testing.T) {
 
 	// A ticket that comes back is the interesting case, and why is the only part worth
 	// keeping.
-	if _, err := store.Update(ctx, tk.Number, ticket.Update{
+	if _, err := store.Update(ctx, tenant.Default, tk.Number, ticket.Update{
 		Actor: "sam", ExpectedVersion: tk.Version, State: ticket.StateInProgress,
 	}); err == nil {
 		t.Error("a resolved ticket was reopened with no reason")
@@ -174,7 +175,7 @@ func TestResolvingNeedsAConclusionAndReopeningNeedsAReason(t *testing.T) {
 	// The page fills the resolution box from the row, so a reopen resubmits the old
 	// conclusion untouched. Whether it is sent or not, a reopened ticket must not go on
 	// claiming to be concluded.
-	tk, err = store.Update(ctx, tk.Number, ticket.Update{
+	tk, err = store.Update(ctx, tenant.Default, tk.Number, ticket.Update{
 		Actor: "sam", ExpectedVersion: tk.Version, State: ticket.StateInProgress,
 		Reason: "customer says it never arrived", Resolution: "refund issued"})
 	if err != nil {
@@ -184,7 +185,7 @@ func TestResolvingNeedsAConclusionAndReopeningNeedsAReason(t *testing.T) {
 		t.Errorf("a reopened ticket still carries its conclusion: %q", tk.Resolution)
 	}
 
-	_, events, err := store.Get(ctx, tk.Number)
+	_, events, err := store.Get(ctx, tenant.Default, tk.Number)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +208,7 @@ func TestResolvingNeedsAConclusionAndReopeningNeedsAReason(t *testing.T) {
 func TestTwoOperatorsCannotOverwriteEachOther(t *testing.T) {
 	ctx := context.Background()
 	store := ticket.NewStore(pool)
-	tk, _, err := store.Create(ctx, ticket.CreateRequest{
+	tk, _, err := store.Create(ctx, ticket.CreateRequest{TenantID: tenant.Default,
 		ConversationID: newConversation(t), Summary: "a problem", Category: "returns"})
 	if err != nil {
 		t.Fatal(err)
@@ -215,19 +216,19 @@ func TestTwoOperatorsCannotOverwriteEachOther(t *testing.T) {
 	stale := tk.Version
 
 	alex := "alex"
-	if _, err := store.Update(ctx, tk.Number, ticket.Update{
+	if _, err := store.Update(ctx, tenant.Default, tk.Number, ticket.Update{
 		Actor: "alex", ExpectedVersion: stale, Assignee: &alex}); err != nil {
 		t.Fatal(err)
 	}
 
 	sam := "sam"
-	_, err = store.Update(ctx, tk.Number, ticket.Update{
+	_, err = store.Update(ctx, tenant.Default, tk.Number, ticket.Update{
 		Actor: "sam", ExpectedVersion: stale, Assignee: &sam})
 	if !errors.Is(err, ticket.ErrConflict) {
 		t.Fatalf("the second operator got %v, want a conflict", err)
 	}
 
-	after, _, err := store.Get(ctx, tk.Number)
+	after, _, err := store.Get(ctx, tenant.Default, tk.Number)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +238,7 @@ func TestTwoOperatorsCannotOverwriteEachOther(t *testing.T) {
 }
 
 func TestUnknownTicketsAreNotFoundRatherThanEmpty(t *testing.T) {
-	_, _, err := ticket.NewStore(pool).Get(context.Background(), "TKT-does-not-exist")
+	_, _, err := ticket.NewStore(pool).Get(context.Background(), tenant.Default, "TKT-does-not-exist")
 	if !errors.Is(err, ticket.ErrNotFound) {
 		t.Errorf("got %v, want ErrNotFound", err)
 	}

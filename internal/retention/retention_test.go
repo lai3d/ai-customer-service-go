@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lai3d/ai-customer-service-go/internal/retention"
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 	"github.com/lai3d/ai-customer-service-go/internal/testsupport"
 	"github.com/lai3d/ai-customer-service-go/internal/ticket"
 )
@@ -38,15 +39,15 @@ func conversation(t *testing.T, id, subject string, age time.Duration) string {
 		{"user", "my order ORD-10045 has not arrived, my name is " + subject},
 		{"assistant", "I have raised a ticket for you"},
 	} {
-		if _, err := pool.Exec(ctx, `INSERT INTO chat_memory (conversation_id, role, content, created_at)
-			VALUES ($1,$2,$3,$4)`, id, m.role, m.content, at.Add(time.Duration(i)*time.Second)); err != nil {
+		if _, err := pool.Exec(ctx, `INSERT INTO chat_memory (tenant_id, conversation_id, role, content, created_at)
+			VALUES ('default',$1,$2,$3,$4)`, id, m.role, m.content, at.Add(time.Duration(i)*time.Second)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	turnID := id + "-turn"
 	if _, err := pool.Exec(ctx, `INSERT INTO turn
-		(id, conversation_id, started_at, ended_at, outcome, question, reply, model, model_calls, input_tokens, output_tokens)
-		VALUES ($1,$2,$3,$3,'completed','where is ORD-10045','it is coming','m',1,10,5)`,
+		(id, tenant_id, conversation_id, started_at, ended_at, outcome, question, reply, model, model_calls, input_tokens, output_tokens)
+		VALUES ($1,'default',$2,$3,$3,'completed','where is ORD-10045','it is coming','m',1,10,5)`,
 		turnID, id, at); err != nil {
 		t.Fatal(err)
 	}
@@ -63,13 +64,13 @@ func conversation(t *testing.T, id, subject string, age time.Duration) string {
 		t.Fatal(err)
 	}
 
-	tk, _, err := ticket.NewStore(pool).Create(ctx, ticket.CreateRequest{
+	tk, _, err := ticket.NewStore(pool).Create(ctx, ticket.CreateRequest{TenantID: tenant.Default,
 		ConversationID: id, Summary: "customer " + subject + " is chasing ORD-10045",
 		Category: "shipping", OrderNumber: "ORD-10045"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ticket.NewStore(pool).Update(ctx, tk.Number, ticket.Update{
+	if _, err := ticket.NewStore(pool).Update(ctx, tenant.Default, tk.Number, ticket.Update{
 		Actor: "alex", ExpectedVersion: tk.Version, State: ticket.StateInProgress,
 		Note: "called the customer on their mobile"}); err != nil {
 		t.Fatal(err)
@@ -214,8 +215,8 @@ func TestErasureLeavesTheAuditTrailAlone(t *testing.T) {
 	conversation(t, id, "subject-c", 0)
 
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO admin_audit (actor, action, object, outcome, detail)
-		 VALUES ('alex','read conversation',$1,'ok','')`, "conversation/"+id); err != nil {
+		`INSERT INTO admin_audit (tenant_id, actor, action, object, outcome, detail)
+		 VALUES ('default','alex','read conversation',$1,'ok','')`, "conversation/"+id); err != nil {
 		t.Fatal(err)
 	}
 	before := count(t, `SELECT count(*) FROM admin_audit`)

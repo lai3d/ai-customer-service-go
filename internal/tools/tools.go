@@ -25,14 +25,16 @@ type Result struct {
 
 // Tool is one callable action.
 //
-// The conversation id is a parameter rather than something fished out of an ambient
-// context map. In Spring AI it travelled through a ToolContext, which created a
-// contract with teeth: a code path that reached the model without populating it broke
-// ticket creation, and broke it only once a conversation had escalated far enough for
-// the model to try. Here a caller that forgets it does not compile.
+// The tenant and the conversation id are parameters rather than something fished out of an
+// ambient context map. In Spring AI the conversation travelled through a ToolContext, which
+// created a contract with teeth: a code path that reached the model without populating it
+// broke ticket creation, and broke it only once a conversation had escalated far enough for
+// the model to try. Here a caller that forgets either does not compile -- which is the
+// entire reason the tenant is here too, rather than read from a context value that a new
+// call site could silently omit.
 type Tool interface {
 	Definition() Definition
-	Invoke(ctx context.Context, conversationID string, arguments json.RawMessage) (Result, error)
+	Invoke(ctx context.Context, tenantID, conversationID string, arguments json.RawMessage) (Result, error)
 }
 
 // Definition is what the model reads. Descriptions are prompt, not documentation:

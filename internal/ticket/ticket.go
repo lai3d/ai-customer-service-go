@@ -63,6 +63,10 @@ type Creator interface {
 }
 
 type CreateRequest struct {
+	// TenantID is required. A ticket is a customer record and an operator reads it; one
+	// created without a tenant would be visible to whichever operations surface asked
+	// first.
+	TenantID       string
 	ConversationID string
 	Summary        string
 	Category       string
@@ -123,10 +127,10 @@ func (s *Store) Create(ctx context.Context, req CreateRequest) (Ticket, Outcome,
 
 	created, err := scanOne(tx.QueryRow(ctx, `
 		INSERT INTO support_ticket
-			(ticket_number, conversation_id, dedupe_key, category, summary, order_number)
-		VALUES ('TKT-' || nextval('support_ticket_number_seq'), $1, $2, $3, $4, NULLIF($5, ''))
+			(ticket_number, tenant_id, conversation_id, dedupe_key, category, summary, order_number)
+		VALUES ('TKT-' || nextval('support_ticket_number_seq'), $6, $1, $2, $3, $4, NULLIF($5, ''))
 		RETURNING `+columns, req.ConversationID, key, NormaliseCategory(req.Category),
-		req.Summary, req.OrderNumber))
+		req.Summary, req.OrderNumber, req.TenantID))
 	if err != nil {
 		return Ticket{}, "", err
 	}

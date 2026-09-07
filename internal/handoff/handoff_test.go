@@ -16,6 +16,7 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/chat"
 	"github.com/lai3d/ai-customer-service-go/internal/handoff"
 	"github.com/lai3d/ai-customer-service-go/internal/obs"
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 	"github.com/lai3d/ai-customer-service-go/internal/testsupport"
 	"github.com/lai3d/ai-customer-service-go/internal/ticket"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -37,7 +38,7 @@ func TestMain(m *testing.M) {
 
 func newTicket(t *testing.T, conversationID string) string {
 	t.Helper()
-	tk, _, err := ticket.NewStore(pool).Create(context.Background(), ticket.CreateRequest{
+	tk, _, err := ticket.NewStore(pool).Create(context.Background(), ticket.CreateRequest{TenantID: tenant.Default,
 		ConversationID: conversationID, Summary: "customer wants a human about ORD-10045",
 		Category: "returns", OrderNumber: "ORD-10045"})
 	if err != nil {
@@ -47,7 +48,7 @@ func newTicket(t *testing.T, conversationID string) string {
 }
 
 func store(notifier *handoff.Notifier) *handoff.Store {
-	return handoff.NewStore(pool, chat.NewMemory(pool, 40), notifier)
+	return handoff.NewStore(pool, notifier)
 }
 
 // The half nobody builds. A ticket a human answers and a customer never hears about is,
@@ -56,7 +57,7 @@ func TestAnOperatorsReplyReachesTheCustomersConversation(t *testing.T) {
 	ctx := context.Background()
 	conversation := "handoff-" + fmt.Sprint(time.Now().UnixNano())
 	memory := chat.NewMemory(pool, 40)
-	if err := memory.Append(ctx, conversation, "user", "where is my refund?"); err != nil {
+	if err := memory.Append(ctx, tenant.Default, conversation, "user", "where is my refund?"); err != nil {
 		t.Fatal(err)
 	}
 	number := newTicket(t, conversation)
@@ -66,7 +67,7 @@ func TestAnOperatorsReplyReachesTheCustomersConversation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	messages, err := s.Transcript(ctx, conversation)
+	messages, err := s.Transcript(ctx, tenant.Default, conversation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +89,7 @@ func TestAnOperatorsReplyReachesTheCustomersConversation(t *testing.T) {
 
 	// And the model must be able to see it, or the next turn tells the customer to wait
 	// for something that already arrived.
-	history, err := memory.History(ctx, conversation)
+	history, err := memory.History(ctx, tenant.Default, conversation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +122,7 @@ func TestAReplyToNothingIsRefusedRatherThanRecorded(t *testing.T) {
 		t.Errorf("an empty reply returned %v", err)
 	}
 	// Neither may leave a message in the customer's conversation.
-	messages, err := s.Transcript(ctx, conversation)
+	messages, err := s.Transcript(ctx, tenant.Default, conversation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +150,7 @@ func TestTheNotificationSaysWhatHappenedAndNotWhatWasSaid(t *testing.T) {
 
 	conversation := "notify-" + fmt.Sprint(time.Now().UnixNano())
 	memory := chat.NewMemory(pool, 40)
-	if err := memory.Append(ctx, conversation, "user",
+	if err := memory.Append(ctx, tenant.Default, conversation, "user",
 		"my card 4111 1111 1111 1111 was charged twice"); err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +222,7 @@ func TestAFailedNotificationIsRecordedRatherThanLost(t *testing.T) {
 	}
 
 	// And the reply still reached the customer.
-	messages, err := store(notifier).Transcript(ctx, conversation)
+	messages, err := store(notifier).Transcript(ctx, tenant.Default, conversation)
 	if err != nil {
 		t.Fatal(err)
 	}

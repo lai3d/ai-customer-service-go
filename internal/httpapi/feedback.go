@@ -17,8 +17,8 @@ import (
 // here is ownership and refusal, and it is worth being able to test that against a stub
 // that cannot possibly be answering from a row it also wrote.
 type Verdicts interface {
-	ConversationOf(ctx context.Context, turnID string) (string, error)
-	Record(ctx context.Context, turnID string, source feedback.Source,
+	ConversationOf(ctx context.Context, tenantID, turnID string) (string, error)
+	Record(ctx context.Context, tenantID, turnID string, source feedback.Source,
 		verdict feedback.Verdict, note, actor string) error
 }
 
@@ -78,7 +78,7 @@ func (s *Server) handleFeedback(w http.ResponseWriter, r *http.Request) {
 	// reason conversationFor gives: an id that can be probed for existence is most of
 	// what this is protecting. Turn ids are server-issued uuids and conversation ids are
 	// too, so the only way to learn one is to have been the customer who asked.
-	conversationID, err := s.verdicts.ConversationOf(r.Context(), turnID)
+	conversationID, err := s.verdicts.ConversationOf(r.Context(), subject.TenantID, turnID)
 	switch {
 	case errors.Is(err, feedback.ErrNoSuchTurn):
 		s.metrics.Refusals.WithLabelValues("not_yours").Inc()
@@ -98,7 +98,7 @@ func (s *Server) handleFeedback(w http.ResponseWriter, r *http.Request) {
 
 	// The subject id, not a name: this is the only identity a customer has, and it is
 	// already what owns the conversation. It is a column and never a metric label.
-	switch err := s.verdicts.Record(r.Context(), turnID, feedback.SourceCustomer,
+	switch err := s.verdicts.Record(r.Context(), subject.TenantID, turnID, feedback.SourceCustomer,
 		feedback.Verdict(body.Verdict), body.Note, subject.ID); {
 	case errors.Is(err, feedback.ErrBadVerdict):
 		writeProblem(w, &problem{Title: "Unknown verdict", Status: http.StatusUnprocessableEntity,

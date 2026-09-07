@@ -42,7 +42,7 @@ What is missing is almost entirely product, not scaffolding.
 | 9 | [A schema migration path](#9-the-first-change-to-a-live-schema-is-manual) | week 2 | Go | **done** 2026-09-07 | 1–2 h |
 | 10 | [The admin list pages lie past one page](#10-the-admin-lists-lie-past-the-first-page) | week 2 | Go | **done** 2026-09-06 | 0.5 h |
 | 11 | [Provider failover](#11-three-providers-are-supported-and-one-runs) | scale | both | **done** 2026-09-07 | 1–2 h |
-| 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | **in progress** 2026-09-07: tenants, keys, the chat edge, the corpus | 4–6 h |
+| 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | **done** 2026-09-07 (metrics label and per-tenant retention open) | 4–6 h |
 | 13 | [The deployment is a demo deployment](#13-the-manifests-stop-where-a-real-cluster-starts) | scale | Go | **manifests done** 2026-09-07; secrets and digest pinning remain | 2–3 h (0.5 h left) |
 | 14 | [Abuse and content safety](#14-the-system-prompt-is-the-whole-of-the-safety-story) | scale | both | **partly done** 2026-09-07 | 2–3 h (moderation not built, deliberately) |
 | 15 | [A turn a dead process left behind stays in_flight for ever](#15-a-turn-a-dead-process-left-behind-stays-in_flight-for-ever) | week 2 | Go | **done** 2026-09-07 | 1 h |
@@ -760,8 +760,41 @@ reproduce. It was the similarity threshold at 0 discarding negative scores. Meas
 on `(tenant_id, corpus_version)` and returns every matching row, with `iterative_scan` off,
 `strict_order` and `relaxed_order` alike.
 
-**Not yet:** turns, tickets, feedback, handoff and the operations surface's own queries are
-still single-tenant, and `admin_audit` has no tenant column.
+**Fourth stage done: the operational records and the operations surface.** Migration
+`0005_tenant_records.sql` puts `tenant_id` on `turn`, `chat_memory`, `support_ticket` and
+`admin_audit` — the one table that must never lose a row, so the migration only adds a
+column and backfills it.
+
+The children of `turn` (`turn_passage`, `turn_tool_call`, `turn_feedback`) deliberately do
+**not** get one. They are reachable only through a turn, which carries it, and a copy of the
+tenant on a child row is a second value that can disagree with its parent with nothing to
+say which is right. The queries join.
+
+Every read the operations surface makes is now scoped to the operator's tenant: the
+conversation list, one conversation's turns, the tickets, one ticket, the overview, the
+feedback queue and the audit trail. `TestAnOperatorSeesOnlyTheirOwnTenant` hands each
+operator the *other* tenant's conversation id and ticket number directly — the case that
+happens, from a screenshot or a support email — and asserts a 404 for each while their own
+still works. Three perturbations were seen red on it.
+
+**The tool boundary takes the tenant as a parameter**, next to the conversation id and for
+the same stated reason: a call site that forgets it does not compile. A context value would
+have let a new one omit it silently.
+
+Two things fell out of this that were not tenancy work:
+
+- **`refused()` was the one audit write that did not go through `record()`**, so it lost its
+  tenant, failed the foreign key, and became a log line instead of an audit row — the exact
+  failure that table exists to prevent. Caught by an existing test.
+- **`handoff.Store` carried a `Memory` interface, a struct field and a constructor argument
+  that nothing ever called.** The reply is written into `chat_memory` by the transaction
+  that writes the ticket event, because the two have to commit together. A seam nothing uses
+  says a thing is pluggable when it is not, and it compiled happily for as long as it
+  existed. Found when the tenant made its signature wrong.
+
+**Still open on this item:** the bounded `tenant` metric label, per-tenant retention windows,
+and the tenant-less `platform` role that creates tenants and issues keys through the
+operations API — today that is done through `internal/tenant` directly.
 
 Two things this settles that were open here. `corpus_active`'s primary key on a constant —
 flagged above as the shape that does not survive tenancy — becomes a primary key on

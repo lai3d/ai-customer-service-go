@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 	"github.com/lai3d/ai-customer-service-go/internal/testsupport"
 	"github.com/lai3d/ai-customer-service-go/internal/ticket"
 	"github.com/lai3d/ai-customer-service-go/internal/tools"
@@ -48,7 +49,7 @@ type lookupResult struct {
 func TestAMissingOrderIsAValueRatherThanAnError(t *testing.T) {
 	tool := tools.NewOrderLookup()
 
-	result, err := tool.Invoke(context.Background(), "c1",
+	result, err := tool.Invoke(context.Background(), tenant.Default, "c1",
 		args(t, map[string]string{"orderNumber": "ORD-99999"}))
 	if err != nil {
 		t.Fatalf("a missing order must not be an error: %v", err)
@@ -69,7 +70,7 @@ func TestAMissingOrderIsAValueRatherThanAnError(t *testing.T) {
 func TestOrderLookupToleratesCaseAndWhitespace(t *testing.T) {
 	tool := tools.NewOrderLookup()
 	for _, number := range []string{"ORD-10042", "ord-10042", "  ORD-10042  ", "Ord-10042\n"} {
-		result, err := tool.Invoke(context.Background(), "c1",
+		result, err := tool.Invoke(context.Background(), tenant.Default, "c1",
 			args(t, map[string]string{"orderNumber": number}))
 		if err != nil {
 			t.Fatal(err)
@@ -88,7 +89,7 @@ func TestOrderLookupToleratesCaseAndWhitespace(t *testing.T) {
 // Arguments the model got wrong should not fail the turn.
 func TestUnreadableArgumentsBecomeSomethingTheModelCanAnswerWith(t *testing.T) {
 	tool := tools.NewOrderLookup()
-	result, err := tool.Invoke(context.Background(), "c1", json.RawMessage(`{"orderNumber": 42}`))
+	result, err := tool.Invoke(context.Background(), tenant.Default, "c1", json.RawMessage(`{"orderNumber": 42}`))
 	if err != nil {
 		t.Fatalf("bad arguments must not be an error: %v", err)
 	}
@@ -112,7 +113,7 @@ type ticketResult struct {
 
 func createTicket(t *testing.T, tool *tools.SupportTickets, conversationID, summary string) tools.Result {
 	t.Helper()
-	result, err := tool.Invoke(context.Background(), conversationID, args(t, map[string]string{
+	result, err := tool.Invoke(context.Background(), tenant.Default, conversationID, args(t, map[string]string{
 		"summary": summary, "category": "returns",
 	}))
 	if err != nil {
@@ -136,7 +137,7 @@ func TestEveryStorageOutcomeReachesTheModelAsAValue(t *testing.T) {
 	}
 	for _, tc := range cases {
 		tool := tools.NewSupportTickets(&testsupport.FakeTickets{Outcome: tc.outcome})
-		result, err := tool.Invoke(context.Background(), "c1", args(t, map[string]string{
+		result, err := tool.Invoke(context.Background(), tenant.Default, "c1", args(t, map[string]string{
 			"summary": "a problem", "category": "returns",
 		}))
 		if err != nil {
@@ -156,7 +157,7 @@ func TestEveryStorageOutcomeReachesTheModelAsAValue(t *testing.T) {
 // of a customer.
 func TestAStorageFailureIsTheOnlyErrorTheToolReturns(t *testing.T) {
 	tool := tools.NewSupportTickets(&testsupport.FakeTickets{Err: errors.New("connection refused")})
-	result, err := tool.Invoke(context.Background(), "c1", args(t, map[string]string{
+	result, err := tool.Invoke(context.Background(), tenant.Default, "c1", args(t, map[string]string{
 		"summary": "a problem", "category": "returns",
 	}))
 	if err == nil {

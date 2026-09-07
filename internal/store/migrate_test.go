@@ -81,8 +81,13 @@ func TestADatabaseWithTheSchemaAndNoLedgerAdoptsTheBaseline(t *testing.T) {
 	if _, err := conn.Exec(ctx, baseline); err != nil {
 		t.Fatal(err)
 	}
+	// Deliberately without a tenant: at this point only the baseline has been applied and
+	// the column does not exist yet. That is the whole point of the test -- this is a row
+	// written by the service as it was *before* tenancy, and the migration has to carry it
+	// forward rather than reject it.
 	if _, err := conn.Exec(ctx,
-		`INSERT INTO chat_memory (conversation_id, role, content) VALUES ('c1','user','hello')`); err != nil {
+		`INSERT INTO chat_memory (conversation_id, role, content)
+		 VALUES ('c1','user','hello')`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -101,6 +106,23 @@ func TestADatabaseWithTheSchemaAndNoLedgerAdoptsTheBaseline(t *testing.T) {
 	}
 	if rows != 1 {
 		t.Errorf("the row written before the migration ran is gone: %d rows", rows)
+	}
+	// And it belongs to the default tenant now, rather than to nothing. A backfill that
+	// left the column nullable, or defaulted it and kept the default, would both look
+	// identical here until the first row that arrived without one.
+	var owner string
+	if err := conn.QueryRow(ctx,
+		`SELECT tenant_id FROM chat_memory WHERE conversation_id = 'c1'`).Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	if owner != "default" {
+		t.Errorf("a row written before tenancy now belongs to %q", owner)
+	}
+	// The column default is dropped, so a row written without a tenant is a constraint
+	// violation rather than a silent orphan on whichever tenant happened to be first.
+	if _, err := conn.Exec(ctx,
+		`INSERT INTO chat_memory (conversation_id, role, content) VALUES ('c2','user','x')`); err == nil {
+		t.Error("a row was written with no tenant; the column default was not dropped")
 	}
 	if applied := ledger(t, conn); applied[1] != "baseline" {
 		t.Errorf("version 1 is recorded as %q: %v", applied[1], applied)
@@ -130,7 +152,8 @@ func TestOpeningTwiceKeepsTheDataAndTheLedger(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO chat_memory (conversation_id, role, content) VALUES ('c1','user','hello')`); err != nil {
+		`INSERT INTO chat_memory (tenant_id, conversation_id, role, content)
+		 VALUES ('default','c1','user','hello')`); err != nil {
 		t.Fatal(err)
 	}
 	pool.Close()

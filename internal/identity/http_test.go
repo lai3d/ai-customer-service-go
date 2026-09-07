@@ -452,10 +452,10 @@ func turnIn(t *testing.T, conversationID string) string {
 	t.Helper()
 	id := uuid.NewString()
 	if _, err := pool.Exec(context.Background(), `
-		INSERT INTO turn (id, conversation_id, started_at, ended_at, outcome, question, reply,
+		INSERT INTO turn (id, tenant_id, conversation_id, started_at, ended_at, outcome, question, reply,
 		                  model, model_calls, input_tokens, output_tokens)
-		VALUES ($1, $2, now(), now(), 'completed', 'how long to return?', 'fourteen days',
-		        'test-model', 1, 10, 5)`, id, conversationID); err != nil {
+		VALUES ($1, 'default', $2, now(), now(), 'completed', 'how long to return?',
+		        'fourteen days', 'test-model', 1, 10, 5)`, id, conversationID); err != nil {
 		t.Fatal(err)
 	}
 	return id
