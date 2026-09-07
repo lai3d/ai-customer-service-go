@@ -63,6 +63,18 @@ tests:
         values: "0+0.05x480"
       - series: 'chat_handoff_notifications_total{type="ticket.created", outcome="delivered"}'
         values: "0+1x480"
+      # A public endpoint refuses somebody constantly -- a client retrying, a stale token,
+      # a session that expired mid-conversation -- and one subject sits on the wrong side
+      # of the per-minute limit. Both are the ordinary state of a healthy service, and both
+      # are here rather than absent for the same reason the failure ratios are not zero: a
+      # refusal series that does not exist makes the refusal ratio empty, and an empty
+      # expression fires nothing however wrong the threshold is.
+      - series: 'chat_edge_refusals_total{reason="rate_limited"}'
+        values: "0+1x480"
+      - series: 'chat_edge_refusals_total{reason="no_session"}'
+        values: "0+1x480"
+      - series: 'chat_rate_limited_subjects{instance="10.0.0.1:8081", job="ai-customer-service-go"}'
+        values: "1x480"
       - series: 'up{job="ai-customer-service-go", instance="10.0.0.1:8081"}'
         values: "1x480"
     promql_expr_test:
@@ -228,3 +240,81 @@ tests:
         exp_samples:
           - labels: 'ALERTS{alertname="CostBurnRate", alertstate="firing", severity="warning"}'
             value: 1
+
+  # The day's ceiling, reached. It fires on one refusal, because one refusal here means
+  # every customer is being refused until midnight UTC rather than one being unlucky.
+  - interval: 1m
+    name: the daily token budget is spent
+    input_series:
+      - series: 'chat_edge_refusals_total{reason="daily_budget"}'
+        values: "0x10 1+1x30"
+      - series: 'chat_turns_total{outcome="completed"}'
+        values: "0+10x40"
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="DailyTokenBudgetExhausted", alertstate="firing"}'
+        eval_time: 30m
+        exp_samples:
+          - labels: 'ALERTS{alertname="DailyTokenBudgetExhausted", alertstate="firing", reason="daily_budget", severity="critical"}'
+            value: 1
+
+  # A rate limiter refusing a third of everything asked of this service. The turns that do
+  # run are healthy, which is the point: every rule in the SLO group is quiet here.
+  - interval: 1m
+    name: a third of requests refused before a turn starts
+    input_series:
+      - series: 'chat_edge_refusals_total{reason="rate_limited"}'
+        values: "0+5x60"
+      - series: 'chat_turns_total{outcome="completed"}'
+        values: "0+10x60"
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="CustomersRefusedAtTheEdge", alertstate="firing"}'
+        eval_time: 40m
+        exp_samples:
+          - labels: 'ALERTS{alertname="CustomersRefusedAtTheEdge", alertstate="firing", severity="warning"}'
+            value: 1
+      - expr: 'ALERTS{alertname="TurnFailureBudgetBurningFast", alertstate="firing"}'
+        eval_time: 40m
+        exp_samples: []
+
+  # The case the denominator is written for. Everything is refused and no turn runs at all,
+  # so chat_turns_total has no series -- `refusals / turns` would be empty here and fire
+  # nothing, in exactly the situation worth waking somebody for.
+  - interval: 1m
+    name: every request refused, with no turns to divide by
+    input_series:
+      - series: 'chat_edge_refusals_total{reason="no_session"}'
+        values: "0+10x60"
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="CustomersRefusedAtTheEdge", alertstate="firing"}'
+        eval_time: 40m
+        exp_samples:
+          - labels: 'ALERTS{alertname="CustomersRefusedAtTheEdge", alertstate="firing", severity="warning"}'
+            value: 1
+
+  # Repeat offenders. The gauge is sampled per replica against the same rows, so two
+  # replicas reporting four subjects are four subjects and not eight: max(), not sum().
+  - interval: 1m
+    name: several subjects hitting the per-minute limit again and again
+    input_series:
+      - series: 'chat_rate_limited_subjects{instance="10.0.0.1:8081", job="ai-customer-service-go"}'
+        values: "4x60"
+      - series: 'chat_rate_limited_subjects{instance="10.0.0.2:8081", job="ai-customer-service-go"}'
+        values: "4x60"
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="RepeatedlyRateLimitedSubjects", alertstate="firing"}'
+        eval_time: 40m
+        exp_samples:
+          - labels: 'ALERTS{alertname="RepeatedlyRateLimitedSubjects", alertstate="firing", severity="warning"}'
+            value: 1
+
+  # Two of them is the threshold, not past it: a couple of clients that retry too fast are
+  # the ordinary state of a public endpoint.
+  - interval: 1m
+    name: two repeat offenders is not an alert
+    input_series:
+      - series: 'chat_rate_limited_subjects{instance="10.0.0.1:8081", job="ai-customer-service-go"}'
+        values: "2x60"
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="RepeatedlyRateLimitedSubjects", alertstate="firing"}'
+        eval_time: 40m
+        exp_samples: []

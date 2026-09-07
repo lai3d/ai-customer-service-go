@@ -775,6 +775,38 @@ func TestTheHandoffNotifierIsMeteredWhereItIsConstructed(t *testing.T) {
 	}
 }
 
+// chat_rate_limited_subjects is a gauge, and a gauge nothing writes to reads zero for
+// ever. Zero on this one is a statement -- nobody is being refused over and over -- so a
+// watch that was never started is an all-clear this service never measured, with an alert
+// above it that can never fire. The same silence as an unmetered notifier, one file along.
+func TestTheAbuseWatchIsStartedWhereTheLimitsAreConfigured(t *testing.T) {
+	root := repoRoot(t)
+	main := read(t, filepath.Join(root, "cmd", "server", "main.go"))
+
+	constructions := strings.Count(main, "identity.NewAbuseWatch(")
+	if constructions != 1 {
+		t.Fatalf("cmd/server/main.go builds %d abuse watches; this test reads the one",
+			constructions)
+	}
+	line := ""
+	for _, l := range strings.Split(main, "\n") {
+		if strings.Contains(l, "identity.NewAbuseWatch(") {
+			line = strings.TrimSpace(l)
+		}
+	}
+	// Constructed and never run is the same zero as never constructed, and `go` because
+	// Run does not return: without it start-up blocks in the sampler and the service
+	// never listens.
+	if !strings.Contains(line, ".Run(") || !strings.HasPrefix(line, "go ") {
+		t.Errorf("the abuse watch is built but not started in a goroutine, so "+
+			"chat_rate_limited_subjects stays at zero and "+
+			"RepeatedlyRateLimitedSubjects can never fire:\n  %s", line)
+	}
+	if !strings.Contains(line, "metrics") {
+		t.Errorf("the abuse watch is not given the registry the server scrapes:\n  %s", line)
+	}
+}
+
 // --- small helpers -------------------------------------------------------------------
 
 func hasBucket(buckets []float64, le string) bool {

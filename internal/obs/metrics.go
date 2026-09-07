@@ -23,6 +23,8 @@ type Metrics struct {
 	ToolCalls   *prometheus.CounterVec
 	Unpriced    *prometheus.CounterVec
 	Handoffs    *prometheus.CounterVec
+	Refusals    *prometheus.CounterVec
+	Offenders   prometheus.Gauge
 	Retrieval   prometheus.Histogram
 	Embedding   prometheus.Histogram
 }
@@ -83,6 +85,32 @@ func NewMetrics() *Metrics {
 			Name: "chat_handoff_notifications_total",
 			Help: "Handoff webhook deliveries, by event type and whether they arrived.",
 		}, []string{"type", "outcome"}),
+		// A refusal at the HTTP edge answers before chat.Service.Turn runs, so none of
+		// the counters above move for it: the daily budget (503) and both rate limiters
+		// (429) can be refusing every customer while chat_turns_total stays flat and
+		// every meter reads green. That was written down as the largest hole in
+		// docs/observability.md for a day before this closed it.
+		//
+		// Labelled by reason and by nothing else. The subject and the conversation id are
+		// both unbounded, and a refusal counter is exactly where an attacker would get to
+		// choose the label values -- the same hazard as a model-invented tool name,
+		// arriving through a different door.
+		Refusals: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "chat_edge_refusals_total",
+			Help: "Requests refused at the HTTP edge, before a turn began, by reason.",
+		}, []string{"reason"}),
+		// Repeat offenders, from the per-subject counts the rate limiter already keeps.
+		//
+		// A gauge with no labels on purpose: the subject id belongs in a log line, where
+		// one more value costs nothing, and never in a label, where it is unbounded. It is
+		// sampled per replica, so an alert wants max() over the instances rather than a
+		// sum -- every replica reports the same database.
+		Offenders: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "chat_rate_limited_subjects",
+			Help: "Subjects that hit their per-minute turn limit in several separate " +
+				"windows recently: one client being throttled repeatedly rather than a " +
+				"crowd being throttled once.",
+		}),
 		Retrieval: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "chat_retrieval_duration_seconds",
 			Help:    "Query embedding plus vector search.",
@@ -95,7 +123,8 @@ func NewMetrics() *Metrics {
 		}),
 	}
 	registry.MustRegister(m.Tokens, m.CostUSD, m.ModelCalls, m.Turns,
-		m.TurnSeconds, m.ToolCalls, m.Unpriced, m.Handoffs, m.Retrieval, m.Embedding)
+		m.TurnSeconds, m.ToolCalls, m.Unpriced, m.Handoffs, m.Refusals, m.Offenders,
+		m.Retrieval, m.Embedding)
 	return m
 }
 

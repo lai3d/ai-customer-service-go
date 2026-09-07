@@ -276,6 +276,17 @@ func run() error {
 			"turns_per_minute", cfg.Auth.TurnsPerMinute,
 			"sessions_per_hour_per_ip", cfg.Auth.SessionsPerHourPerIP,
 			"daily_token_budget", cfg.Auth.DailyTokenBudget)
+
+		// Who keeps being refused, from the rows the limiter already writes. Started
+		// only where the limit exists: with TURNS_PER_MINUTE unset nothing is ever
+		// refused, so a gauge sitting at zero would be reporting an all-clear it never
+		// measured.
+		if cfg.Auth.TurnsPerMinute > 0 {
+			go identity.NewAbuseWatch(limits, metrics).Run(ctx)
+		} else {
+			slog.Warn("TURNS_PER_MINUTE is 0: one subject can ask as fast as it likes, " +
+				"and chat_rate_limited_subjects stays at zero because nothing is refused.")
+		}
 	} else {
 		slog.Warn("AUTH_MODE=off: the chat endpoints are unauthenticated and a conversation " +
 			"id is the whole of the authorisation. Anyone who knows one can append to that " +
@@ -283,7 +294,7 @@ func run() error {
 	}
 
 	mux := http.NewServeMux()
-	httpapi.NewServer(service, cfg.Chat, ident, handoffs).Routes(mux)
+	httpapi.NewServer(service, cfg.Chat, metrics, ident, handoffs).Routes(mux)
 
 	// The operations surface, or nothing at all.
 	//

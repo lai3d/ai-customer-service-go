@@ -111,6 +111,8 @@ chat_turns_total{outcome="completed"}
 chat_turn_duration_seconds{model="claude-opus-5"}
 chat_tool_invocations_total{tool="lookup_order_status",outcome="found"}
 chat_handoff_notifications_total{type="ticket.created",outcome="failed"}
+chat_edge_refusals_total{reason="daily_budget"}
+chat_rate_limited_subjects
 chat_retrieval_duration_seconds
 ```
 
@@ -193,6 +195,9 @@ Prometheus, and the operator ignores them.
 | `BudgetExceededTurns` | >3 turns refused in 15 m | Customers being cut off by the per-conversation token budget |
 | `TurnsHittingTheToolRoundCap` | any, in an hour | The model still wanted a tool; the customer may have got nothing, which looks like a completed turn |
 | `HandoffNotificationsUndelivered` | any, in 15 m | A ticket was raised and the destination was never told |
+| `DailyTokenBudgetExhausted` | any, in 15 m | The day's ceiling is spent, so every turn is a 503 until midnight UTC — every customer, not one |
+| `CustomersRefusedAtTheEdge` | >20% of requests refused for 15 m | Refusals as a share of everything asked of this service, which no turn metric can see |
+| `RepeatedlyRateLimitedSubjects` | >2 subjects for 30 m | One client refused a hundred times, rather than a hundred customers refused once |
 | `CostBurnRate` | >$5/hour for 15 m | A placeholder threshold; set it from the invoice you are prepared to explain |
 
 Thresholds are starting points on the same terms as the SLO: `>$5/hour` and `>3 refused
@@ -259,22 +264,97 @@ make check-rules        # promtool, from the Prometheus image, in a container
 ```
 
 `observability/rules_test.yaml` drives each alert with synthetic series through
-Prometheus's own `promtool test rules`: **11 rules parse, and all 11 alerts fire on data
+Prometheus's own `promtool test rules`: **14 rules parse, and all 14 alerts fire on data
 that should trip them.** The assertions are written against the `ALERTS` series rather
 than with `alert_rule_test`, which compares annotations word for word and would put a
 second copy of every description in the test file.
 
 The half worth more than the firing cases is the quiet one: a *healthy* service — about
 one turn in a hundred failing, one model call in a hundred erroring, every turn inside
-16 s, $3/hour — raises nothing at all. That case is why the healthy fixture is not a
+16 s, $3/hour, a couple of refusals a minute and one subject on the wrong side of the
+per-minute limit — raises nothing at all. That case is why the healthy fixture is not a
 perfect one. With no failures in it, the failure ratios go **empty** rather than small,
 and an empty expression fires nothing however wrong the threshold is; the first version of
 this test passed happily against a `ProviderCallsFailing` rule loosened to `> -1`.
 Loosening it to `> 0.005` instead now fails, printing the alert it should not have raised.
+The refusal series in the healthy fixture are there for that reason and not for realism:
+with no refusals at all the refusal ratio is empty too, and `CustomersRefusedAtTheEdge`
+loosened to `> 0.005` was seen to fail against the fixture as it stands.
+
+**It caught a real one on its first run.** `CustomersRefusedAtTheEdge` divides refusals by
+refusals plus turns, which was chosen precisely so the expression survives every request
+being refused — and it did not: `sum()` over a metric with no series is *empty* rather than
+zero, and empty on either side of a `+` empties the whole sum, so the denominator vanished
+in exactly the total-refusal case. The rule was written, reasoned about and wrong; the
+fixture named `every request refused, with no turns to divide by` is what said so. It now
+reads `(sum(rate(chat_turns_total[15m])) or vector(0))`.
 
 It is not in CI, for the reason `make bench` is not: it needs a container image pulled on
 every run, and the Go test — which is in CI — is the half that catches the failure this
 whole file is about.
+
+### Refused before a turn ever started
+
+Every metric above this point is about a turn that ran. A refusal at the HTTP edge answers
+*before* `chat.Service.Turn` does — the daily token budget (`DAILY_TOKEN_BUDGET`, a 503),
+both rate limiters (`TURNS_PER_MINUTE` and `SESSIONS_PER_HOUR_PER_IP`, a 429), a missing
+session (401) and somebody else's conversation (404) are all decided in
+`internal/httpapi/identity.go` — so none of them moved a single series. For one day this
+was the largest hole on this page, written down here as such: **the service could have been
+refusing every customer it had while `chat_turns_total` stayed flat and every meter read
+green**, with a `slog.Warn` as the only record.
+
+```
+chat_edge_refusals_total{reason="rate_limited"|"daily_budget"|"no_session"|"not_yours"}
+```
+
+By reason, and by nothing else. The subject and the conversation id are both unbounded, and
+a refusal counter is precisely where an attacker would get to choose the label values — the
+same hazard as a model-invented tool name arriving through a different door. `turn` and
+`session` are a bounded pair and could have been a second label; they are not, because the
+two limiters are told apart by which one is configured and by the gauge below, and a
+dimension nobody groups by is cardinality without a question attached.
+
+Three alerts sit on it. `DailyTokenBudgetExhausted` fires on a single refusal, because one
+is not one unlucky customer — the budget is service-wide, so it means everybody is being
+refused until midnight UTC. `CustomersRefusedAtTheEdge` is refusals as a share of
+everything asked of this service. `RepeatedlyRateLimitedSubjects` reads
+`chat_rate_limited_subjects`, which counts *subjects* that keep hitting the per-minute
+limit rather than refusals: a hundred customers refused once and one client refused a
+hundred times produce the same number of 429s, and only one of them is abuse.
+[Safety](safety.md#a-per-subject-abuse-signal-from-counting-that-already-happens) has how
+that gauge is derived — from the rows the limiter already writes — and why the subject id
+is in a log line rather than in a label.
+
+**Read out of a running server's `/metrics`, not only out of a registry** (2026-09-07, on
+:8081 against the Compose Postgres): a request with no session, one with somebody else's
+conversation id, and two past `TURNS_PER_MINUTE=2` produced
+
+```
+chat_edge_refusals_total{reason="no_session"} 1
+chat_edge_refusals_total{reason="not_yours"} 1
+chat_edge_refusals_total{reason="rate_limited"} 2
+```
+
+and a second run with the day's ledger already over `DAILY_TOKEN_BUDGET` — one subject,
+two requests a minute against a limit of one, for three minutes — reached
+`chat_edge_refusals_total{reason="daily_budget"} 3` and moved
+`chat_rate_limited_subjects` to **1**, with the subject id in the log line the gauge
+deliberately does not carry:
+
+```
+level=WARN msg="subjects are repeatedly hitting the per-minute turn limit"
+  subjects=1 worst=[133ae23266e17fdf911b2119c5645b3d] windows_over_limit=3 lookback=1h0m0s
+```
+
+That last one is the claim no test makes: the sampler goroutine is really started in a
+real process, and the gauge really moves.
+
+The four increments were each forced red one at a time:
+`TestEveryRefusalAtTheEdgeIsCounted` drives all four refusals through the real edge against
+a real Postgres, and with any single increment removed it names the reason that stayed at
+zero. A fifth series — the same refusal counted twice under two spellings — fails it too,
+which is the mistake that would otherwise make the ratio quietly wrong.
 
 ### Applying it
 
@@ -298,14 +378,27 @@ healthy, and evaluated by nobody — the same silence as an alert that names not
 
 Named rather than left to be discovered, in the order they would hurt:
 
-- **A refusal at the HTTP edge emits no metric at all.** The daily token budget
-  (`DAILY_TOKEN_BUDGET`, a 503) and the rate limiters (`TURNS_PER_MINUTE`,
-  `SESSIONS_PER_HOUR_PER_IP`, a 429) both refuse *before* `chat.Service.Turn` runs, so no
-  turn is counted and `chat_turns_total` does not move. The service can be refusing every
-  customer it has while every meter in this document stays flat and green. There is a
-  `slog.Warn` per refusal and nothing else. **This is the largest hole in this page**, and
-  closing it is instrumentation at the edge (`internal/httpapi`) plus its own alert, not
-  another rule over the existing series.
+- **The assistant declining is not counted**, only the service refusing. Whether a reply
+  says "I don't know, shall I fetch a human" is a property of text, and classifying text
+  means a model or a phrase list. [Safety](safety.md#what-a-refusal-is-and-which-half-of-it-is-countable)
+  argues that out: the escalation tool is the observable half, it undercounts by an unknown
+  amount, and the honest fix is an offline judge over sampled turn records rather than a
+  list of phrases.
+- **The two 503s at the edge that are *faults* rather than refusals are still uncounted.**
+  A session lookup that cannot reach Postgres, and an ownership check that cannot either,
+  both answer "retrying shortly is worthwhile" and move nothing. They were left out of
+  `chat_edge_refusals_total` on purpose — a refusal is a decision this service made, and
+  mixing a database outage into the refusal ratio would make the alert above mean two
+  things — but that leaves them where every refusal was a day ago. `AppTargetDown` and the
+  turn metrics do not cover them either: the process is up and no turn is attempted.
+- **`chat_rate_limited_subjects` is sampled per replica and goes stale rather than wrong.**
+  Every replica reports the same rows, so an alert takes `max()` and not `sum()`. If the
+  query fails the sampler keeps the last reading and logs an error: writing zero would be
+  publishing an all-clear it never measured, and a stuck gauge is the lesser of those two.
+- **Two sweepers exist and nothing calls them.** `Limits.SweepWindows` and
+  `Sessions.Sweep` are written, tested and unwired, so `rate_window` and `chat_session`
+  grow for ever in a long-lived deployment. Found while building the abuse signal on top of
+  one of those tables, and left alone rather than fixed on the way past.
 - **No alert on the audit trail.** The original sketch of this item wanted one on
   `admin_audit` not growing while operators are working. There is no metric for it — the
   trail is rows, read through the operations API — and "operators are working" is not a
