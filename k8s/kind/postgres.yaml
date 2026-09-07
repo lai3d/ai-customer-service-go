@@ -69,3 +69,43 @@ spec:
       volumes:
         - name: data
           emptyDir: {}
+---
+# "Postgres accepts only the app", which is an edge k8s/networkpolicy.yaml cannot express
+# because these manifests ship no Postgres: on a real cluster the database is a managed
+# instance outside this namespace and its firewall belongs to whoever runs it. Here there
+# is a Postgres pod, so here is the policy that protects it.
+#
+# It matters more than it looks. k8s/networkpolicy.yaml's default-deny already stops
+# anything in this namespace opening a socket, but that is an *egress* rule on the client
+# side; this is the ingress rule on the server side, and the two fail differently. A pod
+# that talks its way past the first -- an unlabelled sidecar, a debug pod someone runs
+# with `kubectl run`, a future component that copies the app's egress policy -- still gets
+# nothing from the database.
+#
+# verify.sh proves it by running exactly that pod: no labels, in this namespace, told to
+# open 5432 on the Postgres Service. It has to be refused, and if the CNI does not enforce
+# NetworkPolicy at all, that assertion is the one that goes red rather than every "allow"
+# passing for free.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-ingress
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: test-fixture
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ai-customer-service-go
+              app.kubernetes.io/component: app
+      ports:
+        - protocol: TCP
+          port: 5432

@@ -43,7 +43,7 @@ What is missing is almost entirely product, not scaffolding.
 | 10 | [The admin list pages lie past one page](#10-the-admin-lists-lie-past-the-first-page) | week 2 | Go | **done** 2026-09-06 | 0.5 h |
 | 11 | [Provider failover](#11-three-providers-are-supported-and-one-runs) | scale | both | not started | 1–2 h |
 | 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | not started | 4–6 h |
-| 13 | [The deployment is a demo deployment](#13-the-manifests-stop-where-a-real-cluster-starts) | scale | Go | not started | 2–3 h |
+| 13 | [The deployment is a demo deployment](#13-the-manifests-stop-where-a-real-cluster-starts) | scale | Go | **manifests done** 2026-09-07; secrets and digest pinning remain | 2–3 h (0.5 h left) |
 | 14 | [Abuse and content safety](#14-the-system-prompt-is-the-whole-of-the-safety-story) | scale | both | not started | 2–3 h |
 | 15 | [A turn a dead process left behind stays in_flight for ever](#15-a-turn-a-dead-process-left-behind-stays-in_flight-for-ever) | week 2 | Go | not started | 1 h |
 
@@ -488,15 +488,56 @@ becomes more important here, not less.
 
 ### 13. The manifests stop where a real cluster starts
 
-`k8s/` has a Namespace, two Deployments, two Services and two ConfigMaps. It has no
-Ingress or TLS, no HorizontalPodAutoscaler, no PodDisruptionBudget, and no NetworkPolicy —
-the Java side has one of those. Images are not published to a registry. Secrets are plain
-Kubernetes Secrets, which are base64, not encryption.
+**Mostly done, 2026-09-07.** `k8s/` now also has a NetworkPolicy set, two
+PodDisruptionBudgets, a HorizontalPodAutoscaler and an Ingress with TLS, and
+[docs/deployment.md](deployment.md) documents the path from the Dockerfile to a registry
+and to a digest. `k8s/kind/verify.sh` went from twenty-six assertions to forty-five, and
+every new one was seen red before it was trusted — the table in
+[k8s/README.md](../k8s/README.md#which-assertions-have-been-seen-to-fail) says with what
+perturbation, including one that could not be made red and turned out to be checking
+nothing.
 
-**Done looks like:** the above, plus an image published with an immutable tag, and secrets
-from your cloud's manager rather than a manifest. Re-run `k8s/kind/verify.sh` after each,
-and add an assertion for each thing added — the harness exists because the Java
-repository's manifests were committed unapplied and two were wrong.
+What was built, and the reasoning that goes with each — the manifests carry the long
+version:
+
+- **NetworkPolicy.** Default-deny both directions, plus five allow rules read out of the
+  code rather than guessed. The operations UI reaches *nothing*, which is now an assertion
+  rather than a claim about a design. The harness opens sockets that must not open, from a
+  pod no rule names and from the UI pod, because a NetworkPolicy on a CNI that ignores
+  policy applies cleanly, lists cleanly, and permits everything.
+- **PodDisruptionBudget.** `maxUnavailable: 1` on both deployments — not `minAvailable: 1`,
+  which diverges from it the moment the HPA moves the replica count. Verified by evicting a
+  pod through the eviction API and requiring the second eviction to be refused.
+- **HorizontalPodAutoscaler.** CPU at 200% of requests, min 2 max 6, with a long scale-up
+  window. CPU is the wrong signal for a workload that spends its life blocked on the
+  provider, and is used anyway because the right one needs KEDA; the manifest says so at
+  the top. The Go-specific part matters: the CPU *limit* sets `GOMAXPROCS`, which sets the
+  embedding concurrency bound, so the limit already decided how much of the one CPU-bound
+  thing in the request path a pod can do — and scaling out is the only way to add more of
+  it.
+- **Ingress with TLS.** Labelled as an example throughout: `.test` hostnames, a class you
+  must change, a certificate you must create. Applied and driven on every harness run
+  against a real ingress-nginx, and asserted on *which* certificate is served — a missing
+  TLS Secret gets you the controller's fake one and a site that works.
+- **Publishing.** `.github/workflows/publish.yml` builds both images on a `v*` tag, pushes
+  to GHCR with an SBOM and a provenance attestation, and prints the digest to pin. No
+  `:latest`, and the harness asserts no manifest carries a floating reference.
+
+**Still not done**, and the reason each is honest rather than deferred:
+
+- **Secrets are still base64.** The three ways out — etcd encryption, External Secrets or
+  the CSI driver, Sealed Secrets — are documented in
+  [docs/deployment.md](deployment.md#5-secrets-which-are-still-not-solved). None of them
+  changes a manifest here, because `deployment.yaml` takes the Secret through `envFrom` and
+  does not care what wrote it. It needs a cluster and a secret manager to do, not a commit.
+- **The manifests carry a tag, not a digest.** Pinning the digest is documented and is
+  verified by nobody: `kind load` moves an image by tag, so a digest-pinned manifest would
+  make every harness run pull from a registry. The harness checks the tag is explicit and
+  does not float; that is weaker and it is where this stops.
+- **Two edges the harness cannot make red**, printed as NOTEs on every run rather than
+  counted: the cloud-metadata exception (nothing answers on 169.254.169.254 in kind, so the
+  probe is "blocked" whatever the policy says) and anything addressed to the node itself
+  (kindnet exempts host traffic, so the API server stays reachable from every pod).
 
 ### 14. The system prompt is the whole of the safety story
 
