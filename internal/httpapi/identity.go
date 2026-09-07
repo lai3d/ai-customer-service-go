@@ -43,6 +43,12 @@ func (s *Server) resolve(r *http.Request) (identity.Subject, *problem) {
 	subject, err := s.identity.Sessions.Verify(r.Context(), identity.BearerToken(r))
 	switch {
 	case errors.Is(err, identity.ErrNoSession):
+		// The literal is written here, at the call, rather than passed into a helper.
+		// internal/deployment/observability_test.go reads the values an alert may match
+		// on out of the Go source -- a literal that reaches WithLabelValues -- so a
+		// reason funnelled through a parameter would be a label value nothing could
+		// check, and `{reason="no_session"}` could then be a typo for ever.
+		s.metrics.Refusals.WithLabelValues("no_session").Inc()
 		return identity.Subject{}, &problem{
 			Title:  "No session",
 			Status: http.StatusUnauthorized,
@@ -74,6 +80,7 @@ func (s *Server) admit(r *http.Request, subject identity.Subject) *problem {
 	}
 	if err := s.identity.Limits.CheckDailyBudget(r.Context()); err != nil {
 		if errors.Is(err, identity.ErrBudgetExhausted) {
+			s.metrics.Refusals.WithLabelValues("daily_budget").Inc()
 			slog.Warn("the daily token budget is exhausted; refusing new turns")
 			return &problem{Title: "The service has reached its budget for today",
 				Status:     http.StatusServiceUnavailable,
@@ -149,6 +156,11 @@ func (s *Server) conversationFor(ctx context.Context, supplied string, subject i
 	case err == nil:
 		return supplied, nil
 	case errors.Is(err, identity.ErrNotYours), errors.Is(err, identity.ErrNoSuchConv):
+		// One counter for both, as with the response: the point of the 404 is that a
+		// caller cannot tell a conversation that is not theirs from one that does not
+		// exist, and a metric that separates them is the same information one scrape
+		// away.
+		s.metrics.Refusals.WithLabelValues("not_yours").Inc()
 		return "", notFound
 	default:
 		return "", &problem{Title: "Could not check the conversation",
@@ -169,6 +181,11 @@ func (s *Server) allow(r *http.Request, bucket, key string, limit int, window ti
 	retryAfter, err := s.identity.Limits.Allow(r.Context(), bucket, key, limit, window)
 	switch {
 	case errors.Is(err, identity.ErrTooManyRequests):
+		// One reason for both buckets. `turn` and `session` are a bounded pair and could
+		// be a second label, but the two are told apart by which limit was configured and
+		// by chat_rate_limited_subjects, and a label that is only ever read alongside
+		// another is a dimension nobody groups by.
+		s.metrics.Refusals.WithLabelValues("rate_limited").Inc()
 		return &problem{Title: "Too many requests", Status: http.StatusTooManyRequests,
 			Detail:     "This session is asking faster than this service answers. Try again shortly.",
 			RetryAfter: retryAfter}

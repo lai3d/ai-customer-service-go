@@ -19,6 +19,7 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/config"
 	"github.com/lai3d/ai-customer-service-go/internal/cost"
 	"github.com/lai3d/ai-customer-service-go/internal/llm"
+	"github.com/lai3d/ai-customer-service-go/internal/obs"
 )
 
 // ConversationIDHeader carries the id of the conversation a response belongs to, so a
@@ -61,13 +62,25 @@ type Turner interface {
 type Server struct {
 	chat Turner
 	cfg  config.Chat
+	// metrics is never nil: a refusal at this edge is invisible without it, and a nil
+	// here would be a nil pointer on the first refused request rather than at start-up.
+	metrics *obs.Metrics
 	// identity is nil when AUTH_MODE=off. See internal/httpapi/identity.go.
 	identity    *Identity
 	transcripts Transcripts
 }
 
-func NewServer(service Turner, cfg config.Chat, ident *Identity, transcripts Transcripts) *Server {
-	return &Server{chat: service, cfg: cfg, identity: ident, transcripts: transcripts}
+func NewServer(service Turner, cfg config.Chat, metrics *obs.Metrics, ident *Identity,
+	transcripts Transcripts) *Server {
+
+	if metrics == nil {
+		// Loud, at construction, rather than a nil dereference on the first customer
+		// this service refuses. Substituting a private registry instead would be worse:
+		// the counters would exist, be incremented, and be scraped by nobody.
+		panic("httpapi.NewServer needs metrics: a refusal at this edge is counted nowhere else")
+	}
+	return &Server{chat: service, cfg: cfg, metrics: metrics, identity: ident,
+		transcripts: transcripts}
 }
 
 func (s *Server) Routes(mux *http.ServeMux) {

@@ -145,10 +145,19 @@ that show why it is not needed here.
   deliberately a *healthy but imperfect* service: with no failures in the fixture the
   failure ratios go empty rather than small, and an empty expression fires nothing however
   wrong the threshold is.
-- **A refusal at the HTTP edge emits no metric.** The daily budget (503) and both rate
-  limiters (429) answer before `chat.Service.Turn` runs, so `chat_turns_total` never moves
-  and every meter stays flat while the service refuses everyone. Known, written down in
-  `docs/observability.md`, and not yet fixed.
+- **A refusal at the HTTP edge answers before `chat.Service.Turn` runs, so no turn metric
+  moves for it.** The daily budget (503), both rate limiters (429), a missing session (401)
+  and somebody else's conversation (404) are all decided in `internal/httpapi/identity.go`,
+  and for a day the service could have refused every customer it had while
+  `chat_turns_total` stayed flat and green. `chat_edge_refusals_total{reason}` closes it:
+  four reasons, **no subject and no conversation id** — a refusal counter is where an
+  attacker would choose the label values. Anything else added at that edge needs its own
+  increment, because nothing downstream will count it.
+- **The assistant declining is not detectable without a second model call, and a phrase
+  list must not stand in for one.** `docs/evaluation.md` has the three times a phrase list
+  measured wording here. The observable half is the escalation tool, it undercounts, and
+  `docs/safety.md` says by what. Moderation is decided against with an argument, not
+  forgotten.
 - **Never return early from a client `Stream` on error.** Anthropic reports the input
   count at `message_start`, so an abandoned stream has already been billed. Build the
   result from whatever accumulated and return it alongside the error. The contract is

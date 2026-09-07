@@ -219,6 +219,85 @@ spec:
               say which tickets, and the operations UI is where they can be picked up by
               hand. Check HANDOFF_WEBHOOK_URL and whatever is behind it.
 
+        # --- Refused before a turn ever started ---------------------------------------
+        #
+        # Everything above this point is a turn that ran. A refusal at the HTTP edge
+        # answers before chat.Service.Turn does, so it moves none of those series: for one
+        # day this repository could have been refusing every customer it had while every
+        # rule above stayed quiet on a flat, green chat_turns_total. These two are that
+        # blind spot, and internal/httpapi is where the counter is written.
+        #
+        # The service saying no to everybody, for the rest of the UTC day. Not a customer
+        # doing anything wrong and not something waiting fixes: DAILY_TOKEN_BUDGET is
+        # spent, every turn is a 503 until midnight UTC, and the only lever is the
+        # configured ceiling. It fires on one refusal for that reason.
+        - alert: DailyTokenBudgetExhausted
+          expr: increase(chat_edge_refusals_total{reason="daily_budget"}[15m]) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: "The day's token budget is spent; every turn is being refused"
+            description: >-
+              DAILY_TOKEN_BUDGET has been reached, so the service is answering 503 with a
+              Retry-After to the end of the UTC day. The budget is service-wide, so this is
+              every customer and not one of them. Compare chat_cost_usd_total for the day
+              against what the ceiling was set from before raising it -- and note that
+              spend is recorded after a turn, so the ceiling is crossed by whatever was
+              already in flight.
+
+        # Refusals as a share of everything this service was asked to do. The denominator
+        # is refusals plus turns rather than turns alone, so it does not go empty in the
+        # case that matters most: when every request is being refused there are no turns
+        # to divide by, and `refusals / turns` would be no data at all.
+        #
+        # `or vector(0)` is the other half of that, and it is not decoration. `sum()` over
+        # a metric with no series is *empty*, not zero, and empty on either side of a `+`
+        # makes the whole sum empty -- so without it the denominator vanishes in exactly
+        # the total-refusal case the shape above was chosen for. The promtool fixture
+        # caught that: the rule was written, reviewed and wrong, and the case named "every
+        # request refused, with no turns to divide by" failed on it.
+        - alert: CustomersRefusedAtTheEdge
+          expr: |
+            sum(rate(chat_edge_refusals_total[15m]))
+              /
+            (
+              sum(rate(chat_edge_refusals_total[15m]))
+                +
+              (sum(rate(chat_turns_total[15m])) or vector(0))
+            ) > 0.2
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "More than a fifth of requests are being refused before a turn starts"
+            description: >-
+              Split by reason first, because the four are different problems:
+              `daily_budget` is the ceiling above, `rate_limited` is TURNS_PER_MINUTE or
+              SESSIONS_PER_HOUR_PER_IP, `no_session` is usually a client that has stopped
+              sending its token or sessions expiring faster than SESSION_TTL suggests, and
+              `not_yours` is a client sending conversation ids it does not own. The
+              threshold is a placeholder: a service with a legitimately chatty client will
+              sit above it and should have it raised rather than muted.
+
+        # One subject being throttled again and again, which is what a per-minute limit
+        # cannot tell you on its own: a hundred customers refused once and one client
+        # refused a hundred times are the same number of 429s. Sampled per replica against
+        # the same rows, so max() rather than sum().
+        - alert: RepeatedlyRateLimitedSubjects
+          expr: max(chat_rate_limited_subjects) > 2
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Several subjects keep hitting the per-minute turn limit"
+            description: >-
+              More than two subjects have hit TURNS_PER_MINUTE in three or more separate
+              minutes of the last hour, for half an hour. That is a client looping, a
+              scraper, or a limit set below what the product actually does -- the
+              application logs the subject ids at warn level, which is where the id lives
+              because a subject is unbounded cardinality and cannot be a label.
+
         # Dollars per hour across every model. The threshold is a placeholder: set it from
         # the invoice you are prepared to explain. Per-conversation budgets bound one
         # conversation and the daily budget bounds a day; this is the only signal that

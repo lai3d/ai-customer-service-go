@@ -14,6 +14,8 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/config"
 	"github.com/lai3d/ai-customer-service-go/internal/httpapi"
 	"github.com/lai3d/ai-customer-service-go/internal/identity"
+	"github.com/lai3d/ai-customer-service-go/internal/obs"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // answering records which conversation the chat service was asked to run a turn for, so
@@ -32,20 +34,28 @@ func (a *answering) Turn(_ context.Context, id, _ string, emit func(chat.Event))
 	return nil
 }
 
-func serveWithSessions(t *testing.T) (*httptest.Server, *answering) {
+// serveEdge builds the edge the way cmd/server does, with whatever limits and registry
+// the caller wants to look at afterwards. The two helpers below are the common cases.
+func serveEdge(t *testing.T, limits *identity.Limits, metrics *obs.Metrics) (*httptest.Server, *answering) {
 	t.Helper()
 	turner := &answering{}
 	mux := http.NewServeMux()
 	httpapi.NewServer(turner, config.Chat{
 		MaxMessageLength: 4000, MaxConversationIDLength: 64,
 		KeepAliveInterval: 50 * time.Millisecond,
-	}, &httpapi.Identity{
+	}, metrics, &httpapi.Identity{
 		Sessions:      identity.NewSessions(pool, time.Hour),
 		Conversations: identity.NewConversations(pool),
+		Limits:        limits,
 	}, nil).Routes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server, turner
+}
+
+func serveWithSessions(t *testing.T) (*httptest.Server, *answering) {
+	t.Helper()
+	return serveEdge(t, nil, obs.NewMetrics())
 }
 
 func newSession(t *testing.T, server *httptest.Server) string {
@@ -192,19 +202,7 @@ func TestTheStreamRefusesBeforeItStartsStreaming(t *testing.T) {
 
 func serveWithLimits(t *testing.T, limits *identity.Limits) (*httptest.Server, *answering) {
 	t.Helper()
-	turner := &answering{}
-	mux := http.NewServeMux()
-	httpapi.NewServer(turner, config.Chat{
-		MaxMessageLength: 4000, MaxConversationIDLength: 64,
-		KeepAliveInterval: 50 * time.Millisecond,
-	}, &httpapi.Identity{
-		Sessions:      identity.NewSessions(pool, time.Hour),
-		Conversations: identity.NewConversations(pool),
-		Limits:        limits,
-	}, nil).Routes(mux)
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-	return server, turner
+	return serveEdge(t, limits, obs.NewMetrics())
 }
 
 // A per-conversation token budget already existed, and it is not this: conversation ids
@@ -350,5 +348,78 @@ func TestATurnAddsWhatItSpentToTheDay(t *testing.T) {
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM daily_spend`); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Every refusal at this edge answers before chat.Service.Turn runs, so none of the turn
+// meters move for it: the service can refuse every customer it has while chat_turns_total
+// stays flat and every dashboard reads green. That was the state of this repository for a
+// day, written down in docs/observability.md as the largest hole in it.
+//
+// All four reasons are driven through the real edge against a real Postgres rather than
+// asserted against the counter directly. A test that incremented the counter itself would
+// prove that a counter counts; what is in doubt is whether the four *refusal paths* reach
+// it, and each of them was seen to fail here with its own increment removed.
+func TestEveryRefusalAtTheEdgeIsCounted(t *testing.T) {
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `DELETE FROM daily_spend`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := pool.Exec(context.Background(), `DELETE FROM daily_spend`); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	limits := identity.NewLimits(pool)
+	limits.TurnsPerMinute = 2
+	limits.DailyTokenBudget = 1_000_000_000
+	metrics := obs.NewMetrics()
+	server, _ := serveEdge(t, limits, metrics)
+
+	// No session at all.
+	if resp := chatAs(t, server, "", "", "/api/v1/chat"); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("a request with no session returned %d, want 401", resp.StatusCode)
+	}
+
+	// Someone else's conversation. The owner's first turn spends one of their two.
+	owner, stranger := newSession(t, server), newSession(t, server)
+	first := chatAs(t, server, owner, "", "/api/v1/chat")
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("the owner's first turn returned %d", first.StatusCode)
+	}
+	id := first.Header.Get(httpapi.ConversationIDHeader)
+	if resp := chatAs(t, server, stranger, id, "/api/v1/chat"); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("a stranger got %d for someone else's conversation, want 404", resp.StatusCode)
+	}
+
+	// The per-subject limit. The stranger has already spent one of their two on the
+	// refusal above, because the limiter runs before ownership is checked.
+	if resp := chatAs(t, server, stranger, "", "/api/v1/chat"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("the stranger's second turn returned %d, still inside the limit", resp.StatusCode)
+	}
+	if resp := chatAs(t, server, stranger, "", "/api/v1/chat"); resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("the third turn in a minute returned %d, want 429", resp.StatusCode)
+	}
+
+	// The day's budget, on a subject that has not been rate limited.
+	if err := limits.RecordSpend(ctx, limits.DailyTokenBudget); err != nil {
+		t.Fatal(err)
+	}
+	if resp := chatAs(t, server, newSession(t, server), "", "/api/v1/chat"); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("a turn over the day's budget returned %d, want 503", resp.StatusCode)
+	}
+
+	for _, reason := range []string{"no_session", "not_yours", "rate_limited", "daily_budget"} {
+		if got := testutil.ToFloat64(metrics.Refusals.WithLabelValues(reason)); got != 1 {
+			t.Errorf("chat_edge_refusals_total{reason=%q} is %v after one such refusal, want 1",
+				reason, got)
+		}
+	}
+	// A fifth series would be a label value no alert names and nothing here expects --
+	// including one refusal counted twice under two spellings.
+	if series := testutil.CollectAndCount(metrics.Refusals); series != 4 {
+		t.Errorf("chat_edge_refusals_total has %d series; this test caused four refusals "+
+			"and there are four reasons", series)
 	}
 }

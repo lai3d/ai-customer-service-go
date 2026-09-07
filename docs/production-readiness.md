@@ -44,7 +44,7 @@ What is missing is almost entirely product, not scaffolding.
 | 11 | [Provider failover](#11-three-providers-are-supported-and-one-runs) | scale | both | not started | 1–2 h |
 | 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | queued behind 9; design from the Java side | 4–6 h |
 | 13 | [The deployment is a demo deployment](#13-the-manifests-stop-where-a-real-cluster-starts) | scale | Go | not started | 2–3 h |
-| 14 | [Abuse and content safety](#14-the-system-prompt-is-the-whole-of-the-safety-story) | scale | both | not started | 2–3 h |
+| 14 | [Abuse and content safety](#14-the-system-prompt-is-the-whole-of-the-safety-story) | scale | both | **partly done** 2026-09-07 | 2–3 h (moderation not built, deliberately) |
 | 15 | [A turn a dead process left behind stays in_flight for ever](#15-a-turn-a-dead-process-left-behind-stays-in_flight-for-ever) | week 2 | Go | **done** 2026-09-07 | 1 h |
 
 Estimates are Claude session hours: the work, not the calendar. Things only you can do —
@@ -412,12 +412,14 @@ service has. And there is no Grafana dashboard, because nothing in this reposito
 Grafana — the metric-name test would cover one the day one exists, which is the condition
 for adding it.
 
-**What this found:** a refusal at the HTTP edge emits no metric at all. The daily token
+**What this found:** a refusal at the HTTP edge emitted no metric at all. The daily token
 budget (503) and both rate limiters (429) refuse before `chat.Service.Turn` runs, so
-`chat_turns_total` never moves — the service can be refusing every customer it has while
-every meter stays flat and green. There is a `slog.Warn` and nothing else. It is the
-largest hole on the page and it needs instrumentation at the edge rather than another rule
-over the series that already exist.
+`chat_turns_total` never moved — the service could be refusing every customer it had while
+every meter stayed flat and green, with a `slog.Warn` as the only record. It was the
+largest hole on the page, it needed instrumentation at the edge rather than another rule
+over the series that already existed, and it was closed the next day as the first half of
+item 14: `chat_edge_refusals_total{reason}`, three more alerts, and fourteen rules where
+there were eleven.
 
 ### 9. The first change to a live schema is manual
 
@@ -546,12 +548,63 @@ repository's manifests were committed unapplied and two were wrong.
 
 ### 14. The system prompt is the whole of the safety story
 
-There is no content moderation, no jailbreak detection, no refusal logging, and no
-per-customer abuse signal. Grounding holds today because the corpus is small and the
-prompt is careful, and neither of those is a control.
+**Partly done, 2026-09-07.** [The reasoning, in full](safety.md).
 
-**Done looks like:** a moderation pass on input and output, refusals recorded so their rate
-is visible, and an abuse signal per identity — which is only possible after item 1.
+Of the four gaps this item named, one is built (a per-customer abuse signal), one is half
+built and half argued (refusal logging: the service refusing is now counted, the assistant
+declining is not, and the document says why approximating it would be worse than the gap),
+and two are decisions written down rather than features — moderation with its argument,
+jailbreak detection with the control that would actually bound it.
+
+**A refusal at the HTTP edge is counted.** It was the hole item 8 found: the daily budget
+(503), both rate limiters (429), a missing session (401) and somebody else's conversation
+(404) all answer before `chat.Service.Turn` runs, so `chat_turns_total` never moved for any
+of them. `chat_edge_refusals_total{reason}` now does — four reasons, no other labels,
+because the subject and the conversation id are unbounded and a refusal counter is exactly
+where an attacker chooses the label values. Three alerts sit on it, including one that
+fires on a *single* `daily_budget` refusal: the budget is service-wide, so one refusal
+means everybody is refused until midnight UTC. Each of the four increments was forced red
+on its own, and so was the mistake of counting one refusal under two spellings.
+
+**A per-subject abuse signal, out of counting that already happens.** The rate limiter
+writes a row per (bucket, subject, window) to decide whether to refuse; that table already
+knows who was over the limit and in how many separate minutes.
+`chat_rate_limited_subjects` is a `GROUP BY` over it, sampled once a minute — no new table,
+no write on the hot path. It answers what a per-minute limit cannot: a hundred customers
+refused once and one client refused a hundred times are the same number of 429s. The
+subject ids go to a log line and never to a label, and the signal scores nobody and bans
+nobody — a repeat offender is a scraper, a retry loop, a shared NAT or a limit set too low,
+and those need a person.
+
+**Refusal recording, in the sense of the assistant declining, is not built and should not
+be approximated.** Whether a reply says "I don't know, shall I fetch a human" is a property
+of text; classifying text takes a model or a phrase list, and
+[docs/evaluation.md](evaluation.md) records what phrase lists have cost this repository
+three times — an assertion that measured any sentence with a clock in it, a list of five
+ways to say "not included" that the model beat twice, and a regex that measured Chinese
+punctuation. The observable half is the *action*: `chat_tool_invocations_total{tool="create_support_ticket"}`
+is the model escalating, and it has been counted since the handoff loop was built. It
+undercounts by an unknown amount, which is said in the document rather than papered over.
+The honest fix is an offline judge over sampled `turn` rows — the question, reply and
+passages are already stored — and it waits on there being real traffic to sample.
+
+**Moderation was decided against, with the argument written down.** Two extra API calls per
+turn against a second vendor; output moderation is incompatible with streaming unless the
+whole reply is buffered, and the demo page's own numbers (first word at 3629 ms) are what
+that would cost. It would have to fail open, which makes it a filter for accidents rather
+than a boundary. And the harms this design actually has — an instruction hidden in an
+edited knowledge entry, and money — are not the ones a moderation API is trained on; the
+budgets and limits bound the second, and the first is
+[argued rather than evidenced](knowledge.md). `docs/safety.md` names what would change the
+decision (content flowing between customers, file input, a tool a third party reads, a
+compliance requirement) and the terms it would be built on if it is: off by default, fail
+open *with a counter*, moderate the input before the call and the stored reply after, and
+publish the measured latency.
+
+**Still open in this item:** jailbreak detection, which is the same classification problem
+against an adversary and which no phrase list bounds — what would actually bound it is
+constraining tool calls by the caller's identity, and `lookup_order_status` still takes any
+order number from any session (item 4 meets item 14 there).
 
 ### 15. A turn a dead process left behind stays in_flight for ever
 
