@@ -246,3 +246,41 @@ func repoRoot(t *testing.T) string {
 	t.Fatal("could not find the repository root")
 	return ""
 }
+
+// The sweeper marks a turn abandoned when it outlives the lease, and Finish runs after the
+// response on a detached context. A lease shorter than the request timeout therefore lets
+// the sweeper mark a live turn as abandoned -- inventing the failure it exists to report.
+func TestTheTurnLeaseMustOutliveTheRequestTimeout(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		lease    string
+		accepted bool
+	}{
+		{"shorter than the request timeout", "30s", false},
+		{"equal to it", "120s", false},
+		{"longer", "121s", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("CHAT_PROVIDER", "anthropic")
+			t.Setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+			t.Setenv("HTTP_READ_TIMEOUT", "120s")
+			t.Setenv("TURN_LEASE", c.lease)
+			cfg, err := config.Load()
+			if c.accepted && err != nil {
+				t.Fatalf("a lease of %s was refused: %v", c.lease, err)
+			}
+			if !c.accepted {
+				if err == nil {
+					t.Fatalf("a lease of %s was accepted against a 120s request timeout", c.lease)
+				}
+				if !strings.Contains(err.Error(), "TURN_LEASE") {
+					t.Errorf("the error does not name the variable that is wrong: %v", err)
+				}
+				return
+			}
+			if cfg.Chat.TurnLease <= cfg.Chat.RequestTimeout {
+				t.Error("the accepted lease does not exceed the request timeout")
+			}
+		})
+	}
+}

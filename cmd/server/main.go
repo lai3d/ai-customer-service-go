@@ -349,6 +349,33 @@ func run() error {
 			"Erasure on request is available to operators; expiry by age is not running.")
 	}
 
+	// A turn whose process died stays in flight for ever otherwise, and the overview counts
+	// it under "not completed" as though the customer had walked away. A crash and a closed
+	// tab are the two things that record exists to tell apart.
+	go func() {
+		recorder := chat.NewRecorder(pool)
+		ticker := time.NewTicker(cfg.Chat.TurnLease)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				n, err := recorder.Sweep(ctx, cfg.Chat.TurnLease)
+				if err != nil {
+					slog.Error("could not sweep abandoned turns", "error", err)
+					continue
+				}
+				if n > 0 {
+					// Only when it found something. An hourly line saying "nothing" is
+					// how a log stops being read.
+					slog.Warn("marked turns abandoned by a stopped process",
+						"turns", n, "lease", cfg.Chat.TurnLease)
+				}
+			}
+		}
+	}()
+
 	serverErr := make(chan error, 1)
 	go func() {
 		slog.Info("listening",

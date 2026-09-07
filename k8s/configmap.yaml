@@ -88,3 +88,7 @@ data:
   ORDER_SERVICE_TIMEOUT: "3s"
   # Total tries, not retries.
   ORDER_SERVICE_ATTEMPTS: "2"
+
+  # Longer than HTTP_READ_TIMEOUT: a turn still running past its own request timeout has
+  # lost its client, so anything older is abandoned rather than slow.
+  TURN_LEASE: "5m"

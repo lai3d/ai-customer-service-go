@@ -42,10 +42,10 @@ What is missing is almost entirely product, not scaffolding.
 | 9 | [A schema migration path](#9-the-first-change-to-a-live-schema-is-manual) | week 2 | Go | not started | 1–2 h |
 | 10 | [The admin list pages lie past one page](#10-the-admin-lists-lie-past-the-first-page) | week 2 | Go | **done** 2026-09-06 | 0.5 h |
 | 11 | [Provider failover](#11-three-providers-are-supported-and-one-runs) | scale | both | not started | 1–2 h |
-| 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | not started | 4–6 h |
+| 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | queued behind 9; design from the Java side | 4–6 h |
 | 13 | [The deployment is a demo deployment](#13-the-manifests-stop-where-a-real-cluster-starts) | scale | Go | not started | 2–3 h |
 | 14 | [Abuse and content safety](#14-the-system-prompt-is-the-whole-of-the-safety-story) | scale | both | not started | 2–3 h |
-| 15 | [A turn a dead process left behind stays in_flight for ever](#15-a-turn-a-dead-process-left-behind-stays-in_flight-for-ever) | week 2 | Go | not started | 1 h |
+| 15 | [A turn a dead process left behind stays in_flight for ever](#15-a-turn-a-dead-process-left-behind-stays-in_flight-for-ever) | week 2 | Go | **done** 2026-09-07 | 1 h |
 
 Estimates are Claude session hours: the work, not the calendar. Things only you can do —
 registering with providers, deciding a retention period with whoever owns that decision,
@@ -486,6 +486,52 @@ one set of operator tokens. Nothing is keyed by a tenant.
 per-tenant budgets and prices, and operator tokens scoped to a tenant. The audit trail
 becomes more important here, not less.
 
+**The Java implementation is building this**, which settles the question this item used to
+turn on. It was going to be argued against here — multi-tenancy is a product decision rather
+than an engineering one, and a single-brand service may never need it — but that argument
+dies the moment the pair diverges: the comparison is the point of these two repositories,
+and one of them having tenants and the other not is a bigger loss than the work.
+
+So it will be built, following their shape rather than inventing a second one. Their design
+has been asked for; adopting it is what made the corpus-versioning work comparable and it
+answered an objection that had been written into this very item.
+
+**Two things about it are already visible from here.** `corpus_active` has a primary key on
+a constant, so exactly one version can be active — which is precisely the shape that does
+not survive tenancy. And `admin_audit` has no tenant column, so it needs a migration on the
+one table that must never lose a row.
+
+**Ordered behind item 9.** This is the largest schema change on the list, and doing it with
+`CREATE TABLE IF NOT EXISTS` and no migration tool is how the first `ALTER` on a live
+database becomes a hand-run statement and a hope.
+
+### The shape to follow, from the Java side's ADR 002
+
+Written down here rather than left in a conversation, because it is the design this
+repository will implement and the ADR lives in the other one (`ai-customer-service-java`
+PR #50, not yet merged).
+
+| Decision | The shape |
+| --- | --- |
+| Where the tenant comes from | An **API key per tenant** on `/api/v1/**`, resolved before anything else into a request context. Not a subdomain and not a claim: there is no host identity to assert one. Keys stored as SHA-256 with a short `key_id` prefix for lookup, shown once at issue. No key, revoked key, disabled tenant → 401 **before any model call**. |
+| For this repository specifically | **The tenant is resolved before the session, and a session belongs to a tenant.** `internal/identity` issues anonymous sessions today; a tenant becomes the thing a session hangs off rather than a property discovered later. |
+| Where it lives | One database, `tenant_id` on every row that belongs to a customer, one `faq_document` table and one HNSW graph filtered on **tenant *and* corpus version**. Schema- and database-per-tenant deferred with a named reopening condition: a regulator, or a tenant big enough to need its own index. |
+| Enforcement | A predicate every query carries, plus an isolation test per module — write as A, read as B, find nothing — and a check that no store method takes a conversation id without a tenant. They suggest **RLS as a second guard on this side**, which with a pool means `SET LOCAL app.tenant` per *transaction*, not per connection. Same columns either way, so the two stay comparable. |
+| Per tenant | Conversations, turns and their retrieval/tool rows, tickets, feedback, knowledge entries and versions and the active pointer, staff accounts, audit rows, sessions. |
+| Global | The ticket number sequence (a number is not a secret), prices, the model provider, the bundled-corpus import record, the per-conversation token budget. Per-tenant budgets and providers are deferred to billing. |
+| Metrics | A **bounded** `tenant` label, dropped above a configured count. Unbounded cardinality is the rule this repository already has. |
+| Operators | One tenant per staff account and no account sees two, plus a tenant-less `platform` role that creates tenants and issues keys **and sees no customer content**. Usernames stay globally unique, because they are the audit actor. |
+| `admin_audit` | Gains `tenant_id` by a migration that backfills `default`. Append-only, so the migration only adds a column — the one table that must never lose a row. |
+| The corpus | `corpus_active` becomes **one row per tenant**, `tenant_id` as the primary key, replacing the primary key on a constant. `Activate` keeps its expected-version check on the tenant's row, so the shape survives with the key changed. Version ids stay globally unique; retention becomes "newest N **per tenant**", because today's global N would retire a neighbour's. |
+| The bundled corpus | Belongs to the **`default` tenant** and is not a template. `corpus/faq.json` stays byte-identical, bootstrap adopts it as that tenant's first version without re-embedding, and the parity fixtures run as the default tenant. A new tenant starts with nothing and gets grounded refusals. |
+| The migration | Create `default`; add the columns **with a default of `default`**; backfill; then **drop the column defaults**, so a row without a tenant becomes a bug rather than a silent orphan. |
+
+Two things this settles that were open here. `corpus_active`'s primary key on a constant —
+flagged above as the shape that does not survive tenancy — becomes a primary key on
+`tenant_id`, which is a smaller change than it looked. And the property to protect is the
+same one as before: the import path and the file untouched, with the default tenant owning
+what the import produces.
+
 ### 13. The manifests stop where a real cluster starts
 
 `k8s/` has a Namespace, two Deployments, two Services and two ConfigMaps. It has no
@@ -515,14 +561,21 @@ nothing sweeps it, and the operations overview counts it under "not completed" a
 the customer had abandoned the conversation. A crash and a closed tab are exactly the two
 things that record is supposed to tell apart.
 
-**Done looks like:** a lease, and a sweeper that marks a row still running past it —
-`unknown`, never `completed`, because what happened to it is not known. The Java
-implementation has this (`TurnRecordSweeper`) and this repository does not; the shape is
-worth copying rather than redesigning.
+**Done, 2026-09-07.** `Recorder.Sweep` marks a turn `unknown` once it has been in flight
+past `TURN_LEASE` — never `failed`, because a failure is something this service observed and
+described, and this is the absence of an observation; never `completed`, for the obvious
+reason.
 
-**Watch for:** the sweep and a slow `Finish` racing each other. `Finish` runs on a detached
-context after the response, so the lease has to be comfortably longer than the longest
-finish, or a live turn gets marked `unknown`.
+The race the item warned about is answered by a relation rather than a large number, which
+is the Java side's answer too: **`TURN_LEASE` must exceed `HTTP_READ_TIMEOUT`**, and the
+server refuses to start otherwise. A turn still running past its own request timeout has
+already lost its client, so anything older than the lease is abandoned rather than slow. A
+start-up error rather than a clamp, because a clamp is a value nobody chose taking effect
+silently.
+
+Forced red four ways: sweeping without regard to the lease took a one-second-old turn; the
+outcome as `completed`; a zero lease sweeping everything instead of nothing; and the
+config relation removed, which accepted a 30-second lease against a 120-second timeout.
 
 ---
 

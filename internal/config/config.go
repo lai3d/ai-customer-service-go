@@ -92,6 +92,11 @@ type Chat struct {
 	// hazard Spring Boot had.
 	ConnectTimeout time.Duration
 	RequestTimeout time.Duration
+	// TurnLease is how long a turn may be in flight before a sweeper decides the process
+	// running it died. It must exceed RequestTimeout: a turn still running past its own
+	// request timeout has already lost its client, so anything older than the lease is
+	// genuinely abandoned rather than merely slow.
+	TurnLease time.Duration
 
 	// SSE connections are legitimately idle between the request and the first token,
 	// and proxies close idle connections.
@@ -248,6 +253,7 @@ func Load() (Config, error) {
 			RetryMax:                10 * time.Second,
 			ConnectTimeout:          envDuration("HTTP_CONNECT_TIMEOUT", 10*time.Second),
 			RequestTimeout:          envDuration("HTTP_READ_TIMEOUT", 120*time.Second),
+			TurnLease:               envDuration("TURN_LEASE", 5*time.Minute),
 			KeepAliveInterval:       envDuration("SSE_KEEPALIVE", 15*time.Second),
 		},
 		RAG: RAG{
@@ -345,6 +351,16 @@ func Load() (Config, error) {
 	}
 	if err := checkOrders(c.Orders, c.Chat.RequestTimeout); err != nil {
 		return Config{}, err
+	}
+	// The sweeper marks a turn "unknown" when it has been in flight past the lease. Finish
+	// runs on a detached context after the response, so a lease shorter than the request
+	// timeout would let the sweeper mark a live turn as abandoned -- the function
+	// inventing the very failure it exists to report. A start-up error rather than a
+	// clamp, because a clamp is a value nobody chose taking effect silently.
+	if c.Chat.TurnLease <= c.Chat.RequestTimeout {
+		return Config{}, fmt.Errorf(
+			"TURN_LEASE (%s) must exceed HTTP_READ_TIMEOUT (%s), or the sweeper marks live turns as abandoned",
+			c.Chat.TurnLease, c.Chat.RequestTimeout)
 	}
 	return c, nil
 }

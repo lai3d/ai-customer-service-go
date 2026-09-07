@@ -119,3 +119,39 @@ func (r *Recorder) Finish(ctx context.Context, t TurnRecord) error {
 	}
 	return tx.Commit(ctx)
 }
+
+// OutcomeUnknown is what a turn becomes when the process running it died.
+//
+// Never "failed": a failure is something this service observed and can describe, and this
+// is the absence of an observation. Never "completed" for the obvious reason. The whole
+// point of the outcome column is telling a customer who closed the tab apart from a
+// database that broke, and a row that says in_flight for ever quietly reports both of
+// those as a third thing that is still happening.
+const OutcomeUnknown = "unknown"
+
+// Sweep marks turns that have been in flight longer than the lease.
+//
+// The lease has to be comfortably longer than the longest possible turn, because the race
+// here is not theoretical: Finish runs on a detached context after the response, so a slow
+// finish and an eager sweeper would mark a live turn unknown -- which would be this
+// function inventing the very failure it exists to report. The Java implementation of this
+// system reached the same shape and answers the race the same way: their lease exceeds
+// their HTTP read timeout, so a turn still running past it has already lost its request.
+//
+// Returns how many it marked, so a caller can log a number that means something rather
+// than a heartbeat that means nothing.
+func (r *Recorder) Sweep(ctx context.Context, lease time.Duration) (int64, error) {
+	if lease <= 0 {
+		return 0, nil
+	}
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE turn
+		SET outcome = $1, ended_at = now(),
+		    detail = coalesce(nullif(detail,''), 'the process running this turn stopped before it finished')
+		WHERE outcome = $2 AND started_at < now() - $3::interval`,
+		OutcomeUnknown, OutcomeInFlight, lease.String())
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}

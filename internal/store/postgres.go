@@ -205,7 +205,7 @@ CREATE TABLE IF NOT EXISTS turn (
     started_at      TIMESTAMPTZ NOT NULL,
     ended_at        TIMESTAMPTZ,
     -- completed | cancelled | failed | tool_limit | budget_exceeded | retrieval_failed
-    -- | memory_failed | in_flight. Never a bare success/failure: a turn the customer
+    -- | memory_failed | in_flight | unknown. Never a bare success/failure: a turn the customer
     -- abandoned and a turn the provider rejected are different events.
     outcome         TEXT        NOT NULL,
     question        TEXT        NOT NULL,

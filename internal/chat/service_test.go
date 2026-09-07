@@ -899,3 +899,70 @@ func TestAModelCallIsNotMadeIfTheTurnCannotBeRecorded(t *testing.T) {
 			client.calls)
 	}
 }
+
+// A turn whose process died stays in flight for ever, and the overview counts it under
+// "not completed" as though the customer had walked away. A crash and a closed tab are the
+// two things this record exists to tell apart.
+//
+// Found by the Java implementation of this system, which has the sweeper this did not.
+func TestATurnLeftInFlightByADeadProcessBecomesUnknown(t *testing.T) {
+	ctx := context.Background()
+	recorder := chat.NewRecorder(pool)
+
+	// Begin, and then nothing: the process died between Begin and Finish.
+	const id = "sweep-me"
+	if err := recorder.Begin(ctx, chat.TurnRecord{
+		ID: id, ConversationID: "sweep-conv", StartedAt: time.Now().Add(-time.Hour),
+		Question: "where is my order?",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A turn that is merely slow must survive the same sweep.
+	if err := recorder.Begin(ctx, chat.TurnRecord{
+		ID: "still-running", ConversationID: "sweep-conv", StartedAt: time.Now(),
+		Question: "still going",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	swept, err := recorder.Sweep(ctx, 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if swept == 0 {
+		t.Fatal("the sweep marked nothing though a turn has been in flight for an hour")
+	}
+
+	outcome, detail := outcomeOf(t, ctx, id)
+	if outcome != chat.OutcomeUnknown {
+		t.Errorf("the abandoned turn is %q, want %q", outcome, chat.OutcomeUnknown)
+	}
+	if detail == "" {
+		t.Error("the swept turn says nothing about why it is unknown")
+	}
+	// Never "failed": a failure is something this service observed and can describe, and
+	// this is the absence of an observation.
+	if outcome == "failed" || outcome == "completed" {
+		t.Errorf("a turn nobody watched end was recorded as %q", outcome)
+	}
+
+	if outcome, _ := outcomeOf(t, ctx, "still-running"); outcome != chat.OutcomeInFlight {
+		t.Errorf("a turn one second old was swept as %q; the lease is not being honoured", outcome)
+	}
+
+	// And a zero lease sweeps nothing, rather than sweeping everything.
+	if n, err := recorder.Sweep(ctx, 0); err != nil || n != 0 {
+		t.Errorf("a zero lease swept %d turns (%v)", n, err)
+	}
+}
+
+func outcomeOf(t *testing.T, ctx context.Context, id string) (string, string) {
+	t.Helper()
+	var outcome, detail string
+	if err := pool.QueryRow(ctx,
+		`SELECT outcome, coalesce(detail,'') FROM turn WHERE id = $1`, id).
+		Scan(&outcome, &detail); err != nil {
+		t.Fatal(err)
+	}
+	return outcome, detail
+}
