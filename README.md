@@ -278,6 +278,7 @@ out. See [Retrieval](docs/retrieval.md#retrieval-quality).
 | [Measuring the answers](docs/evaluation.md) | 35 cases against the real model, and the control run that makes the score mean something |
 | [Deleting customer data](docs/retention.md) | Expiry by age and erasure on request — and the harder half, which is what survives an erasure and why |
 | [Changing a schema that has data in it](docs/schema.md) | Versioned migrations with a ledger, a baseline that is applied rather than assumed, and two tests that are not the same test |
+| [Deployment](docs/deployment.md) | Getting an image somewhere a real cluster can pull it, pinning it by digest, and the three things the kind harness cannot verify at all |
 | [Safety, abuse, and what was decided against](docs/safety.md) | Which half of a refusal is countable, reading abuse out of rows that already exist, and why moderation is argued against rather than forgotten |
 | [What is missing before this runs a real product](docs/production-readiness.md) | The distance between a working system and a product, itemised: identity, knowledge that people can edit, the loop back to a human, and eleven more |
 

@@ -1,0 +1,98 @@
+# Scaling the API on CPU, with the reasons it is the wrong signal written down.
+#
+# **This is a bound, not a load-follower.** A turn spends most of its life blocked on the
+# model provider's socket, consuming no CPU at all: a replica holding a hundred streaming
+# turns can read close to idle. So CPU utilisation does not measure how busy this service
+# is. What it does measure is the one CPU-bound thing in the request path -- the embedding
+# model, which runs in-process through cgo -- and that is worth scaling on, because it is
+# the part that has a hard ceiling per pod.
+#
+# The useful signal is in-flight model calls, and `/metrics` publishes it. Reaching it
+# means KEDA or the Prometheus adapter, which means a second operator to run; until
+# somebody picks that up, this HPA is the honest half-measure and the paragraph above is
+# what stops it being read as more.
+#
+# ## The Go-specific part: what the CPU limit already decided
+#
+# Go 1.25+ derives GOMAXPROCS from the cgroup CPU limit, and GOMAXPROCS is what the
+# embedding concurrency bound defaults to. `limits.cpu: "2"` in deployment.yaml therefore
+# fixes two things at once: the throttle, and how many goroutines may be inside the native
+# embedding call. (EMBEDDING_MAX_CONCURRENCY is set explicitly in the ConfigMap so the
+# second one does not move silently when someone edits `resources` -- but the runtime's
+# own ceiling is still GOMAXPROCS.)
+#
+# Three consequences for scaling:
+#
+#   1. A pod cannot exceed 2 cores no matter how much CPU the node has, so utilisation --
+#      which is a ratio to `requests.cpu: 500m` -- saturates at 400%. The target below is
+#      200%: half of what one pod can actually use.
+#   2. Scaling out is the *only* way to add embedding throughput. Vertical scaling adds
+#      GOMAXPROCS, and a goroutine inside a cgo call blocks an OS thread, so a bigger pod
+#      buys threads rather than parallelism past a point (docs/benchmark.md measured 135-276
+#      OS threads unbounded against 40 bounded).
+#   3. Whoever changes `limits.cpu` changes the embedding concurrency and the meaning of
+#      this target in the same edit. Re-run the kind sweep after either.
+#
+# ## Why the behaviour block is not boilerplate
+#
+# Startup costs 8.0 s of CPU and reaches Ready in 4.4 s (k8s/README.md, measured). A new
+# replica therefore *raises* the deployment's average CPU while it boots. On a CPU-driven
+# HPA that is a positive feedback loop: scale up, average rises, scale up again. The
+# 300-second scale-up stabilisation window and the one-pod-per-two-minutes policy exist to
+# outlast the boot, not to be conservative for its own sake.
+#
+# Scale-down is slower still (900 s), because the cost of being wrong is asymmetric: a
+# replica removed too eagerly has to load 470 MB of model again to come back.
+#
+# ## Two things that will bite
+#
+# `replicas: 2` is still in deployment.yaml, and `kubectl apply -f k8s/` writes it. At rest
+# that is a no-op -- minReplicas is also 2 -- but an apply during a scale-out event resets
+# the count and the HPA has to climb again. The clean fix is to drop `replicas` from the
+# Deployment entirely once an HPA owns it; it is kept here because the kind harness reads
+# it to check the node has room, and because a manifest that does not say how many
+# replicas it wants is worse to read.
+#
+# `maxReplicas: 6` is 6 x 1536Mi of memory requests. If the cluster cannot hold that, the
+# extra pods sit Pending and nothing reports an error -- the same failure the harness's
+# capacity check exists to catch on the way in.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ai-customer-service-go
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: ai-customer-service-go
+    app.kubernetes.io/component: app
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ai-customer-service-go
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # Per cent of `requests.cpu` (500m), not of the limit. 200% = 1 core = half of
+          # what the 2-core limit allows one pod to use.
+          averageUtilization: 200
+  # Memory is deliberately absent. RSS is ~960 MiB of embedding model whether the service
+  # is idle or saturated, so a memory target would sit at a constant 62% of the request
+  # and never signal anything. A metric that cannot move is not a scaling signal.
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+    scaleDown:
+      stabilizationWindowSeconds: 900
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 300

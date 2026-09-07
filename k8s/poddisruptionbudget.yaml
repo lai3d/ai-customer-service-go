@@ -1,0 +1,63 @@
+# What a node drain is allowed to take away at once.
+#
+# A PodDisruptionBudget constrains *voluntary* disruption only -- `kubectl drain`, a
+# cluster autoscaler compacting nodes, a node-pool upgrade. It does nothing about a node
+# that dies, and nothing about a rolling update (that is `strategy.rollingUpdate` in
+# deployment.yaml, which is already maxUnavailable: 0). Reading it as "this service is
+# protected" is the mistake; it protects against exactly one class of event.
+#
+# The numbers:
+#
+# **maxUnavailable: 1, not minAvailable: 1.** They are the same thing at two replicas and
+# they diverge the moment the count moves, which for the API it does -- hpa.yaml scales it
+# to six. `minAvailable: 1` at six replicas permits evicting five pods simultaneously,
+# which is a floor nobody meant to set. `maxUnavailable: 1` means one at a time whatever
+# the replica count is.
+#
+# **Why one at a time matters here:** a replacement pod is not free. Startup reads a
+# 470 MB model into memory and costs 8.0 s of CPU to reach Ready (k8s/README.md, measured),
+# so the window where a drained replica is missing is tens of seconds rather than the
+# second or two a stateless HTTP service takes. Two at once, on a two-replica deployment,
+# is a full outage.
+#
+# **What not to write:** `maxUnavailable: 0`, or `minAvailable: 100%`. Either one makes
+# every drain block for ever, and the symptom is a cluster upgrade that hangs on this
+# namespace with no error anywhere -- the eviction API just keeps returning 429.
+#
+# A PDB whose selector matches no pods is the quiet failure in the other direction: it is
+# accepted, it appears in `kubectl get pdb`, and it protects nothing. `verify.sh` asserts
+# `status.expectedPods` rather than the object's existence, and then evicts a pod to see
+# the second eviction refused.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ai-customer-service-go
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: ai-customer-service-go
+    app.kubernetes.io/component: app
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ai-customer-service-go
+      app.kubernetes.io/component: app
+---
+# The operations UI. Same shape, different reason: nothing here is expensive to restart --
+# it is nginx and a 1 MB bundle -- but an operator reading a customer conversation during
+# a node drain should not have the page vanish, and there is no reason to allow both
+# replicas to go at once when the cost of not allowing it is zero.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ai-customer-service-go-admin-ui
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: ai-customer-service-go
+    app.kubernetes.io/component: admin-ui
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ai-customer-service-go
+      app.kubernetes.io/component: admin-ui

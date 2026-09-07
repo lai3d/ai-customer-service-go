@@ -1,0 +1,260 @@
+# Default-deny, plus the edges this system actually has.
+#
+# The edges were read out of the code rather than guessed:
+#
+#   internal/store        Postgres, POSTGRES_HOST:POSTGRES_PORT
+#   internal/llm          the model provider, HTTPS, on the public internet
+#   internal/obs          OTLP/HTTP to a collector, when OTLP_TRACING_EXPORT_ENABLED=true
+#   internal/tools        ORDER_SERVICE_URL, empty by default
+#   internal/ticket       HANDOFF_WEBHOOK_URL, empty by default
+#   internal/httpapi      inbound 8081, from whatever the edge is
+#   admin-ui/             inbound 8080 from a browser, and nothing outbound at all --
+#                         the page calls the API from the operator's laptop, cross-origin,
+#                         which is what ADMIN_CORS_ORIGINS is for
+#
+# The last one is the interesting one: the operations UI pod talks to nothing. It is
+# nginx serving a bundle. If it could reach the API, the CORS design would be pointless
+# and a compromised UI pod would be inside the cluster's east-west network for free.
+#
+# **A NetworkPolicy is only a policy if something enforces it.** Nothing errors when the
+# CNI ignores these objects -- they apply cleanly, `kubectl get netpol` lists them, and
+# every connection they name still works. That is the same shape as the three silently
+# blind detectors CLAUDE.md lists, so `k8s/kind/verify.sh` asserts a *denied* connection
+# is denied before it trusts any of this. kind's kindnetd does enforce policy (measured on
+# kind v0.31 / Kubernetes 1.35); older CNIs, and Flannel at any version, do not.
+#
+# What this does NOT do: encrypt anything, authenticate anything, or bound what the app
+# may ask the model to do. It bounds which sockets can open.
+---
+# 1. Deny everything, both directions, for every pod in the namespace.
+#
+# This has to come first in the file and, more importantly, has to exist at all: a
+# namespace with only "allow" policies is a namespace with no policy, because a pod that
+# no policy selects is unrestricted. Every rule below is an exception to this one.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: ai-customer-service-go
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# 2. DNS, for the API only.
+#
+# Egress policy is enforced on the DNS lookup as well as the connection, so a pod with an
+# egress rule for Postgres and no rule for DNS cannot resolve the Postgres hostname and
+# fails at start-up with what looks like a database outage. That is the mistake this file
+# is most likely to make, and it fails loudly -- the readiness probe never passes -- which
+# is why it is worth writing down rather than defending against.
+#
+# The operations UI is deliberately not included. It resolves nothing.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: app-egress-dns
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: ai-customer-service-go
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ai-customer-service-go
+      app.kubernetes.io/component: app
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# 3. Postgres.
+#
+# The in-cluster rule below is what the kind harness exercises, because the harness runs
+# a throwaway Postgres in this namespace (k8s/kind/postgres.yaml, which carries the
+# matching ingress policy -- "only the app may connect" belongs next to the database it
+# protects, and these manifests deliberately ship no database).
+#
+# **If your Postgres is a managed instance, this rule matches nothing and the app cannot
+# reach it.** Uncomment the ipBlock and put your instance's address in it. That failure is
+# loud: /readyz never passes and the pod never becomes Ready. It is not the kind of
+# mistake this file can make quietly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: app-egress-postgres
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: ai-customer-service-go
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ai-customer-service-go
+      app.kubernetes.io/component: app
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+        # - ipBlock:
+        #     cidr: 10.42.0.13/32      # your managed instance, a /32 and not a range
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+# 4. The model provider, and anything else this app calls over HTTPS.
+#
+# 0.0.0.0/0 on 443 is broad and is the honest shape: the providers are behind CDNs whose
+# address ranges change, so pinning them by IP would be a rule that breaks on a Tuesday.
+# What the `except` list buys is the part that matters -- the cloud metadata endpoint and
+# the private ranges. An egress rule that reaches 169.254.169.254 turns any request-forgery
+# bug into cloud credentials, and this service takes a customer's words and puts them
+# through a model that emits tool calls.
+#
+# Consequences worth knowing before you copy this:
+#   - An ORDER_SERVICE_URL or HANDOFF_WEBHOOK_URL on a private address needs its own rule.
+#     Both are empty by default and both fail loudly when blocked (a tool error the model
+#     reports, and a `handoff_delivery` row recording the failure).
+#   - The Kubernetes API server is inside 10.0.0.0/8 on most clusters and is therefore
+#     unreachable from these pods. That is intended; the app has no Kubernetes client.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: app-egress-https
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: ai-customer-service-go
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ai-customer-service-go
+      app.kubernetes.io/component: app
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.0.0/16   # link-local: the cloud metadata endpoint lives here
+              - 10.0.0.0/8       # RFC1918, which on most clusters is the cluster itself
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# 5. Traces, when they are turned on.
+#
+# OTLP_TRACING_EXPORT_ENABLED is "false" in the ConfigMap, so this rule permits a
+# connection nothing currently makes. It is here rather than added later because the
+# failure it prevents is quiet in a specific way: an OTLP exporter that cannot connect
+# logs at debug and drops spans, so tracing is simply absent and looks like a sampling
+# setting. Namespace and port match OTLP_TRACING_ENDPOINT in configmap.yaml.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: app-egress-otlp
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: ai-customer-service-go
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ai-customer-service-go
+      app.kubernetes.io/component: app
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - protocol: TCP
+          port: 4318   # OTLP/HTTP, which is what internal/obs uses
+        - protocol: TCP
+          port: 4317   # OTLP/gRPC, for a collector configured the other way
+---
+# 6. Who may reach the API.
+#
+# Two namespaces, named by the label the API server puts on every namespace itself
+# (kubernetes.io/metadata.name, automatic since 1.22 -- a hand-applied label is one
+# `kubectl label` away from a policy that matches nothing).
+#
+# Note who is NOT here: the operations UI. The browser calls the API directly, so the UI
+# pod never needs to, and the pair of assertions in verify.sh -- allowed from the ingress
+# controller, denied from anywhere else -- is what proves this rule is doing something.
+#
+# The kubelet's probes are not covered by any rule here. Probe traffic originates on the
+# node rather than in a pod, and the CNIs that enforce this policy treat it as host
+# traffic; if yours does not, the pods will never become Ready, which is the loudest
+# possible way to find out.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: app-ingress
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: ai-customer-service-go
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ai-customer-service-go
+      app.kubernetes.io/component: app
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8081
+---
+# 7. Who may reach the operations UI: the same edge, and nobody else.
+#
+# There is no egress rule for this pod anywhere in this file, which is the point. It
+# serves a static bundle and writes /tmp/config.js at start-up from its own ConfigMap --
+# both local operations. `verify.sh` asserts it cannot open a connection to the API.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: admin-ui-ingress
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: ai-customer-service-go
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ai-customer-service-go
+      app.kubernetes.io/component: admin-ui
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080

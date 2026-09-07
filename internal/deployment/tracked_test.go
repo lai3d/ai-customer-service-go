@@ -3,6 +3,7 @@ package deployment_test
 import (
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -62,13 +63,43 @@ func TestEveryPathTheKubernetesReadmeDrawsIsInTheRepository(t *testing.T) {
 			len(paths), paths)
 	}
 
+	drawn := map[string]bool{}
 	for _, p := range paths {
+		drawn[p] = true
 		out, err := exec.Command("git", "-C", root, "ls-files", "--error-unmatch", p).Output()
 		if err != nil || strings.TrimSpace(string(out)) == "" {
 			ignored, _ := exec.Command("git", "-C", root, "check-ignore", "-v", p).Output()
 			t.Errorf("the k8s README points at %s, which is not in the repository.\n"+
 				"Anyone who clones this will not have it.%s", p, ignoredBy(string(ignored)))
 		}
+	}
+
+	// And the other direction, which is the one with consequences. `kubectl apply -f k8s/`
+	// applies every manifest in the directory whether or not the README draws it, so a
+	// file that lands here undrawn is a thing the cluster gets and the documentation
+	// denies. The README→repo half above only catches the opposite mistake.
+	//
+	// Not recursive, on purpose: `kubectl apply -f <dir>` is not recursive either, which
+	// is the entire reason examples/secret.yaml is in a subdirectory.
+	tracked, err := exec.Command("git", "-C", root, "ls-files", "k8s/").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, file := range strings.Split(strings.TrimSpace(string(tracked)), "\n") {
+		if path.Dir(file) != "k8s" || !strings.HasSuffix(file, ".yaml") {
+			continue
+		}
+		checked++
+		if !drawn[file] {
+			t.Errorf("%s is in k8s/ and the README does not draw it. `kubectl apply -f k8s/` "+
+				"will apply it anyway, so the tree is not a description of the directory -- "+
+				"it is what somebody reads instead of listing it.", file)
+		}
+	}
+	if checked < 5 {
+		t.Fatalf("found only %d manifests directly in k8s/; the listing has stopped working",
+			checked)
 	}
 }
 

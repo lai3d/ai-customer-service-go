@@ -1,0 +1,96 @@
+# AN EXAMPLE. It needs an ingress controller you install, hostnames you own, and a
+# certificate that is not the one the kind harness makes up.
+#
+# Nothing here is usable as-is, and it is committed anyway because the alternative -- a
+# README paragraph saying "put an Ingress in front of it" -- is how the two wrong
+# manifests in the sibling Java repository happened. This one is applied and driven on
+# every `k8s/kind/verify.sh` run: a real ingress-nginx, a self-signed certificate the
+# harness generates, and an assertion that the certificate served is *ours* rather than
+# the controller's built-in fake one.
+#
+# ## What you must change
+#
+#   1. `host:` -- .test is a reserved TLD and resolves nowhere. Use names you own.
+#   2. `ingressClassName: nginx` -- to whatever your controller registers. A class no
+#      controller claims is the quiet failure here: the Ingress is accepted, appears in
+#      `kubectl get ingress`, and is served by nobody. Its `status.loadBalancer` stays
+#      empty, which is what verify.sh checks.
+#   3. `tls.secretName` -- a certificate from cert-manager or your PKI. If the Secret is
+#      missing or misnamed, ingress-nginx does not fail: it serves its own self-signed
+#      "Kubernetes Ingress Controller Fake Certificate" and every browser gets a warning
+#      it may well click through. The site works. That is why the harness asserts on the
+#      issuer of the certificate it is handed, not on the connection succeeding.
+#
+# ## What is deliberately not here
+#
+# **Authentication.** `AUTH_MODE` in the ConfigMap is "off", which means client-supplied
+# conversation ids and no ownership -- publishing that on the internet publishes a way to
+# read other people's conversations by guessing an id (docs/production-readiness.md, item
+# 1). Turn AUTH_MODE on before this host exists, or put something that authenticates in
+# front of it. The rate limits (TURNS_PER_MINUTE, SESSIONS_PER_HOUR_PER_IP) and the daily
+# budget bound the bill, not the exposure.
+#
+# **A WAF, an mTLS mesh, and a CDN.** Whoever owns the edge owns those.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ai-customer-service-go
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: ai-customer-service-go
+  annotations:
+    # A turn is a Server-Sent Events stream, and an HTTP proxy that buffers turns it back
+    # into a single slow response. The demo page's whole measured property -- retrieval on
+    # screen 3.5 seconds before the first word of the answer -- is a property of the bytes
+    # arriving when they are produced. nginx buffers proxied responses by default, so this
+    # annotation is not a tuning knob; without it the feature is silently gone and every
+    # test that reads the completed response still passes.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # A long answer plus a tool call is minutes, not seconds, and the default read timeout
+    # is 60s -- long enough that this looks like the model truncating rather than the
+    # proxy cutting the connection.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    # Plain HTTP redirects to HTTPS. This is ingress-nginx's default when a host has TLS;
+    # it is written out because a default that matters should be visible in the file.
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - chat.example.test
+        - ops.example.test
+      # Created out of band -- cert-manager, or `kubectl create secret tls`. It is not in
+      # this directory for the same reason the API keys are not: a certificate's private
+      # key does not belong in git.
+      secretName: ai-customer-service-go-tls
+  rules:
+    # The customer-facing API and demo page.
+    - host: chat.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-customer-service-go
+                port:
+                  name: http
+    # The operations UI, on its own host on purpose: it is a different application, and
+    # the origin it is served from is the value that must appear verbatim in
+    # ADMIN_CORS_ORIGINS (configmap.yaml) and in ADMIN_API_BASE (admin-ui.yaml). Three
+    # files, one string, and nothing but the harness checks that they agree.
+    #
+    # Two hosts rather than two paths under one host, because the CORS allowlist is the
+    # control that keeps other pages out of the support inbox, and a same-origin layout
+    # would make it dead configuration that nobody notices is wrong.
+    - host: ops.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-customer-service-go-admin-ui
+                port:
+                  name: http
