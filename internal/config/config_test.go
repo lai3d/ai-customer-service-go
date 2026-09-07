@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/lai3d/ai-customer-service-go/internal/config"
@@ -139,6 +140,94 @@ func TestTheDefaultPortMatchesWhatTheDocumentsPromise(t *testing.T) {
 		if strings.Contains(string(raw), "localhost:8080") {
 			t.Errorf("%s still points at 8080", name)
 		}
+	}
+}
+
+// An order lookup happens inside a turn a customer is watching. A tool budget that is not
+// shorter than the model request timeout lets the tool hold that turn open past the point
+// where anything else could have happened, and the symptom is not an error anywhere: it
+// is a slow assistant, which everybody reads as a slow model.
+//
+// A start-up failure rather than a clamp, because a clamp is a value nobody chose taking
+// effect silently.
+func TestAnOrderServiceTimeoutMustBeShorterThanTheTurns(t *testing.T) {
+	t.Setenv("CHAT_PROVIDER", "anthropic")
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv("ORDER_SERVICE_URL", "https://orders.internal")
+	t.Setenv("HTTP_READ_TIMEOUT", "30s")
+
+	for _, timeout := range []string{"30s", "45s"} {
+		t.Setenv("ORDER_SERVICE_TIMEOUT", timeout)
+		_, err := config.Load()
+		if err == nil {
+			t.Fatalf("a %s tool budget was accepted against a 30s turn", timeout)
+		}
+		// Both names, because knowing which one to change is the whole value of the
+		// message: either is a legitimate thing to have meant.
+		for _, name := range []string{"ORDER_SERVICE_TIMEOUT", "HTTP_READ_TIMEOUT"} {
+			if !strings.Contains(err.Error(), name) {
+				t.Errorf("error %q does not name %s", err, name)
+			}
+		}
+	}
+
+	t.Setenv("ORDER_SERVICE_TIMEOUT", "3s")
+	if _, err := config.Load(); err != nil {
+		t.Errorf("a 3s tool budget against a 30s turn was refused: %v", err)
+	}
+}
+
+// Unset means the fixture, and it must not be possible for a leftover ORDER_SERVICE_*
+// value to stop a service that is not using the order service at all.
+func TestWithNoOrderServiceTheOtherOrderSettingsAreInert(t *testing.T) {
+	t.Setenv("CHAT_PROVIDER", "anthropic")
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv("ORDER_SERVICE_URL", "")
+	t.Setenv("ORDER_SERVICE_TIMEOUT", "900s")
+	t.Setenv("ORDER_SERVICE_ATTEMPTS", "0")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("a service with no order service refused to start: %v", err)
+	}
+	if cfg.Orders.BaseURL != "" {
+		t.Errorf("an order service appeared from nowhere: %q", cfg.Orders.BaseURL)
+	}
+}
+
+// A URL that cannot be requested has to stop the process. The alternative is a service
+// that starts, reports ready, and tells every customer the order system is down.
+func TestAnUnusableOrderServiceURLStopsStartup(t *testing.T) {
+	t.Setenv("CHAT_PROVIDER", "anthropic")
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+
+	for _, value := range []string{"orders.internal", "ftp://orders.internal", "https://", "://x"} {
+		t.Setenv("ORDER_SERVICE_URL", value)
+		if _, err := config.Load(); err == nil {
+			t.Errorf("ORDER_SERVICE_URL=%q was accepted", value)
+		}
+	}
+}
+
+// The defaults, written down where a change to one is visible. 3s is an argument rather
+// than a measurement -- there is no order service to measure -- and two attempts is the
+// bound.
+func TestTheOrderServiceDefaultsAreTheDocumentedOnes(t *testing.T) {
+	t.Setenv("CHAT_PROVIDER", "anthropic")
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv("ORDER_SERVICE_URL", "https://orders.internal")
+	t.Setenv("ORDER_SERVICE_TIMEOUT", "")
+	t.Setenv("ORDER_SERVICE_ATTEMPTS", "")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Orders.Timeout != 3*time.Second {
+		t.Errorf("default ORDER_SERVICE_TIMEOUT is %s, want 3s", cfg.Orders.Timeout)
+	}
+	if cfg.Orders.Attempts != 2 {
+		t.Errorf("default ORDER_SERVICE_ATTEMPTS is %d, want 2", cfg.Orders.Attempts)
 	}
 }
 

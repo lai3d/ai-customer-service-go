@@ -28,6 +28,7 @@ type Config struct {
 	Auth      Auth
 	Retention Retention
 	Handoff   Handoff
+	Orders    Orders
 }
 
 type Postgres struct {
@@ -189,6 +190,26 @@ type Handoff struct {
 	Timeout    time.Duration
 }
 
+// Orders is where lookup_order_status reads from. An empty BaseURL means the in-memory
+// fixture, and that is the default -- the tests, the benchmark and the eval measure the
+// model's behaviour, and a lookup that could be slow or absent would put variance into
+// every one of them.
+//
+// The server says which source is wired at every start-up. A service answering from five
+// hard-coded orders while everyone believes it is talking to the order system is the
+// failure this whole seam exists to prevent, and a document is not what prevents it.
+type Orders struct {
+	BaseURL string
+	// Token is a bearer credential, so it has no default and is never logged.
+	Token string
+	// Timeout bounds the whole lookup including retries, and Load refuses one that is
+	// not shorter than the model request timeout -- see the check in Load for why that
+	// is a hard failure rather than a warning.
+	Timeout time.Duration
+	// Attempts is the total number of tries, not the number of retries.
+	Attempts int
+}
+
 type Obs struct {
 	OTLPEndpoint  string
 	OTLPEnabled   bool
@@ -273,6 +294,21 @@ func Load() (Config, error) {
 			WebhookURL: os.Getenv("HANDOFF_WEBHOOK_URL"),
 			Timeout:    envDuration("HANDOFF_TIMEOUT", 5*time.Second),
 		},
+		Orders: Orders{
+			// Deliberately no default. There is no order service to point at, and a
+			// default URL would be a service that appears to be configured.
+			BaseURL: os.Getenv("ORDER_SERVICE_URL"),
+			Token:   os.Getenv("ORDER_SERVICE_TOKEN"),
+			// 3s, and the number is an argument rather than a measurement: this happens
+			// inside a turn a customer is watching, after the model has already spent a
+			// few seconds deciding to call the tool, and an answer that says "I could
+			// not check just now" at 3s is worth more than a correct one at 20s.
+			Timeout: envDuration("ORDER_SERVICE_TIMEOUT", 3*time.Second),
+			// Two tries, not more. The failures worth retrying are the ones a moment
+			// fixes; a retry loop against a service that is down turns one outage into
+			// two, and every attempt is spending a budget the customer is waiting on.
+			Attempts: envInt("ORDER_SERVICE_ATTEMPTS", 2),
+		},
 		Obs: Obs{
 			OTLPEndpoint:        env("OTLP_TRACING_ENDPOINT", "http://localhost:4318"),
 			OTLPEnabled:         envBool("OTLP_TRACING_EXPORT_ENABLED", false),
@@ -307,7 +343,50 @@ func Load() (Config, error) {
 	if _, err := identityMode(c.Auth.Mode); err != nil {
 		return Config{}, err
 	}
+	if err := checkOrders(c.Orders, c.Chat.RequestTimeout); err != nil {
+		return Config{}, err
+	}
 	return c, nil
+}
+
+// checkOrders refuses an order service that is configured to hang a turn.
+//
+// A tool call happens *inside* a turn: the model has already been asked, has already
+// decided to call the tool, and the customer is watching a spinner. If the order
+// service's budget is not shorter than the model request timeout then the tool can hold
+// the turn open past the point where anything else could have happened, and the symptom
+// is not an error anywhere -- it is a slow assistant, which reads as a slow model.
+//
+// It is a start-up failure rather than a clamp because a clamp is a value nobody chose
+// taking effect silently, which is the shape of every other defect in this repository's
+// notes.
+func checkOrders(o Orders, turnTimeout time.Duration) error {
+	if strings.TrimSpace(o.BaseURL) == "" {
+		// No order service: the in-memory fixture answers, and the timeout and attempt
+		// settings are inert. Refusing to start over a variable nothing reads would be
+		// worse than ignoring it.
+		return nil
+	}
+	u, err := url.Parse(strings.TrimSpace(o.BaseURL))
+	if err != nil {
+		return fmt.Errorf("ORDER_SERVICE_URL %q does not parse: %w", o.BaseURL, err)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("ORDER_SERVICE_URL %q must be an http or https URL with a host", o.BaseURL)
+	}
+	if o.Timeout <= 0 {
+		return fmt.Errorf("ORDER_SERVICE_TIMEOUT must be positive, got %s", o.Timeout)
+	}
+	if o.Timeout >= turnTimeout {
+		return fmt.Errorf(
+			"ORDER_SERVICE_TIMEOUT (%s) must be shorter than the model request timeout "+
+				"HTTP_READ_TIMEOUT (%s): a tool call runs inside the turn that is waiting on it",
+			o.Timeout, turnTimeout)
+	}
+	if o.Attempts < 1 {
+		return fmt.Errorf("ORDER_SERVICE_ATTEMPTS must be at least 1, got %d", o.Attempts)
+	}
+	return nil
 }
 
 // identityMode duplicates the parse in internal/identity so that a misspelt AUTH_MODE

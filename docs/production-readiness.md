@@ -34,7 +34,7 @@ What is missing is almost entirely product, not scaffolding.
 | 1 | [Identity, session ownership, rate limiting, global budget](#1-anyone-can-read-anyone-elses-conversation) | launch | both | **done** 2026-09-06 | 3–4 h |
 | 2 | [Knowledge as a knowledge base, not a fixture](#2-the-corpus-is-a-test-fixture) | launch | both | **core done** 2026-09-06, editor next | 4–6 h |
 | 3 | [The loop back to a human](#3-a-ticket-is-a-row-and-nothing-else-happens) | launch | both | **done** 2026-09-06 | 3–5 h |
-| 4 | [Real tools instead of the mock](#4-the-tools-are-fiction) | week 1 | both | not started | 2–3 h |
+| 4 | [Real tools instead of the mock](#4-the-tools-are-fiction) | week 1 | both | **seam done** 2026-09-07, integration blocked on access | 2–3 h (0.5 h left) |
 | 5 | [Retention and deletion of customer data](#5-there-is-no-way-to-delete-a-customer) | week 1 | both | **done** 2026-09-06 | 2–3 h |
 | 6 | [An answer-quality regression set](#6-nothing-tells-you-a-prompt-change-made-it-worse) | week 1 | both | **done** 2026-09-06 | 3–4 h |
 | 7 | [Feedback from customers and operators](#7-nothing-comes-back) | week 2 | both | not started | 2–3 h |
@@ -245,16 +245,47 @@ other end.
 
 ### 4. The tools are fiction
 
-`internal/tools/orders.go` answers from `mockOrders`, a hard-coded map with `ORD-10045` in
-it. Ticket creation is real; order lookup is not.
+`internal/tools/orders.go` answered from `mockOrders`, a hard-coded map with `ORD-10045` in
+it. Ticket creation is real; order lookup was not.
 
-**Done looks like:** the real order service behind the same interface, with its own
-credentials, a timeout shorter than the turn's, and a story for when it is down. Keep the
-current design when you do it: a tool failure is a *value* the model can act on, never an
-exception — an exception's message ends up in front of a customer.
+**Seam done, 2026-09-07. The integration is not, and cannot be from here** — see
+[Tool calling](tools.md#where-an-order-comes-from) for the reasoning and the evidence.
 
-**You must provide:** access to that service, and a non-production instance to test
-against.
+What exists now:
+
+| | |
+| --- | --- |
+| `tools.OrderSource` | one interface, two implementations, chosen by configuration |
+| `MemoryOrders` | the five-order fixture, still the default, still what the tests, the benchmark, the eval and the demo drive — they measure the *model's* behaviour, and a real lookup would put variance into every number |
+| `HTTPOrders` | `GET {ORDER_SERVICE_URL}/orders/{number}`, bearer token, a 3 s budget for the whole lookup, one retry for the failures a moment fixes |
+| `ORDER_SERVICE_*` | in `.env.example`, `docker-compose.yml` and `k8s/configmap.yaml`; unset means the fixture, and the server logs a **warning** saying exactly that at every start-up |
+| Six outcomes | `found`, `not_found`, `timed_out`, `unavailable`, `unreadable`, `denied` — a closed set, so they are safe as metric labels, and none of them is an exception |
+
+The contract the item asked to keep is kept, and slightly strengthened: `lookup_order_status`
+now has **no** path that returns an error. A ticket storage failure still does, because
+that is this service's own database and the model has nothing useful to say about it; an
+order service failing is somebody else's outage, and the model has something different and
+useful to say about each kind.
+
+**What is not done, and why it cannot be done here.** There is no order service to point
+this at, so the wire contract — the URL shape, the status codes, the field names — is a
+guess. It is written down in `orders_http.go` so that it can be corrected in one place, and
+`docs/tools.md` labels it unverified rather than describing it as a design. Every *failure*
+path is verified against an `httptest` server, and every assertion in that file was forced
+red before being trusted; the table of what was broken to make each one fail is in
+`docs/tools.md`.
+
+**You must still provide:** access to the real order service, a non-production instance to
+test against, and the credential. Expect the first run against it to change the request
+shape and the response field names. The parts that should not change are the ones this item
+was actually about: failures are values, the outcomes stay distinct, and the budget covers
+the whole lookup.
+
+**One thing found on the way that is not about orders.** A test written to prove the order
+number cannot escape its URL path asserted on `r.URL.Path` — which is what net/http
+*decoded* — and so reported a correctly-escaped `%2F..%2F` as a traversal. It was red
+against code that was right. `r.RequestURI` is what went on the wire; this is the same
+shape as the regex that measured the language rather than the bug.
 
 ### 5. There is no way to delete a customer
 
