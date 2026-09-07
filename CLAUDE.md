@@ -282,6 +282,17 @@ that show why it is not needed here.
   not interchangeable: the second is windowed. Write the turn record at the service
   boundary, never from the event stream — that stream feeds a page which may already be
   gone. A failure to open the record fails the turn; a failure to close it is logged.
+- **The schema is versioned files, and the baseline is applied rather than assumed.**
+  `internal/store/migrations/*.sql`, embedded, with a `schema_migration` ledger carrying a
+  checksum: an edited migration and one numbered below an applied one both fail start-up by
+  name. There is no baseline marker because the schema is idempotent by construction —
+  which is a property to preserve, not a coincidence. `:dimensions` is a plain string
+  replace and not a printf verb, because the first migration containing a `LIKE` wildcard
+  would corrupt the statement beside it.
+- **`conn.Exec` on a connection with an open pgx transaction runs inside that
+  transaction.** Swapping `tx.Exec` for `conn.Exec` is not a way to remove a transaction,
+  and a red-test perturbation built that way stays green while looking like it landed. To
+  actually separate two writes, commit the first before opening the transaction.
 - **Schema creation takes a Postgres advisory lock.** `CREATE EXTENSION IF NOT EXISTS` is
   not concurrency-safe — it checks the catalogue and then inserts, with nothing holding the
   gap — so two replicas starting against a cold database crash one of them with

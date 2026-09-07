@@ -39,7 +39,7 @@ What is missing is almost entirely product, not scaffolding.
 | 6 | [An answer-quality regression set](#6-nothing-tells-you-a-prompt-change-made-it-worse) | week 1 | both | **done** 2026-09-06 | 3–4 h |
 | 7 | [Feedback from customers and operators](#7-nothing-comes-back) | week 2 | both | **done** 2026-09-07 | 2–3 h |
 | 8 | [Alerting and an SLO](#8-there-are-metrics-and-nothing-watches-them) | week 2 | Go | **done** 2026-09-07 | 2 h |
-| 9 | [A schema migration path](#9-the-first-change-to-a-live-schema-is-manual) | week 2 | Go | not started | 1–2 h |
+| 9 | [A schema migration path](#9-the-first-change-to-a-live-schema-is-manual) | week 2 | Go | **done** 2026-09-07 | 1–2 h |
 | 10 | [The admin list pages lie past one page](#10-the-admin-lists-lie-past-the-first-page) | week 2 | Go | **done** 2026-09-06 | 0.5 h |
 | 11 | [Provider failover](#11-three-providers-are-supported-and-one-runs) | scale | both | **done** 2026-09-07 | 1–2 h |
 | 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | queued behind 9; design from the Java side | 4–6 h |
@@ -462,6 +462,33 @@ statement and a hope. The Java side uses Flyway; this side deliberately does not
 a baseline, holding the same advisory lock so two replicas starting together still
 serialise. `TestConcurrentStartersAgainstAColdDatabaseAllSucceed` is the test that must
 still pass.
+
+**Done, 2026-09-07.** `internal/store/migrations/*.sql`, embedded, with a
+`schema_migration` ledger carrying a checksum. The full account is in
+[Changing a schema that has data in it](schema.md); the three decisions worth repeating
+here:
+
+- **The baseline is applied rather than assumed.** No `baseline` command, no marker row,
+  no `--assume-applied` flag — because the previous start-up schema was already idempotent,
+  so running it against a database that has it does nothing. That is a property of this
+  schema, and it is asserted: removing one `IF NOT EXISTS` makes the adoption test red.
+- **The checksum is what the ledger is for.** A version records that a file with that
+  number ran; only the checksum records that it was this file. Editing an applied migration
+  fails start-up by name, and so does a migration numbered below one already applied — the
+  shape two branches both adding `0007` produce.
+- **The advisory lock is unchanged**, and the concurrency test now asserts one ledger row
+  per version rather than only that six starters survived. Six replicas each saved by a
+  primary key would have looked identical.
+
+The interesting part was the tests rather than the tool. Two of the four perturbations
+initially stayed **green**, and both were the test measuring something other than what its
+name said: an adoption test that called `Open` twice was really testing that a restart is a
+no-op, and swapping `tx.Exec` for `conn.Exec` does not remove a transaction because pgx
+runs both on the same connection. Both are written up in `schema.md`.
+
+**Not built:** down migrations, `CREATE INDEX CONCURRENTLY` (everything runs in a
+transaction), and a separate binary — migrations run at start-up, where the lock already
+was.
 
 ### 10. The admin lists lie past the first page
 

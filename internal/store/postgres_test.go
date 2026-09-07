@@ -187,4 +187,26 @@ func TestConcurrentStartersAgainstAColdDatabaseAllSucceed(t *testing.T) {
 			t.Errorf("starter %d failed: %v", i, err)
 		}
 	}
+
+	// And each migration ran once, not six times. Six starters that all succeed prove
+	// the lock serialises them; only the ledger proves they did not each apply the same
+	// migration in turn. The insert has a primary key on version, so a second attempt
+	// would have failed rather than duplicated -- which means a green suite here is the
+	// difference between "the lock works" and "the primary key caught it".
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	var versions, rows int
+	if err := conn.QueryRow(ctx, `SELECT count(DISTINCT version), count(*) FROM schema_migration`).
+		Scan(&versions, &rows); err != nil {
+		t.Fatal(err)
+	}
+	if versions == 0 {
+		t.Fatal("no migrations recorded after six starters came up")
+	}
+	if rows != versions {
+		t.Errorf("%d ledger rows for %d versions", rows, versions)
+	}
 }
