@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -55,7 +56,7 @@ func serve(t *testing.T) (*httptest.Server, *ticket.Store) {
 	tickets := ticket.NewStore(pool)
 	mux := http.NewServeMux()
 	admin.NewServer(admin.NewStore(pool), tickets, ops, corsFor(t),
-		retention.NewStore(pool), handoffFor(pool), knowledgeFor(pool), feedback.NewStore(pool)).Routes(mux)
+		retention.NewStore(pool), handoffFor(pool), knowledgeFor(pool), feedback.NewStore(pool), tenant.NewStore(pool)).Routes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server, tickets
@@ -377,7 +378,7 @@ func TestTheBrowserIsToldWhichOriginMayReadTheseResponses(t *testing.T) {
 			c := admin.ParseCORS(spec)
 			mux := http.NewServeMux()
 			admin.NewServer(admin.NewStore(pool), ticket.NewStore(pool), mustOps(t), c,
-				retention.NewStore(pool), handoffFor(pool), knowledgeFor(pool), feedback.NewStore(pool)).Routes(mux)
+				retention.NewStore(pool), handoffFor(pool), knowledgeFor(pool), feedback.NewStore(pool), tenant.NewStore(pool)).Routes(mux)
 			s := httptest.NewServer(mux)
 			req, _ := http.NewRequest("GET", s.URL+"/api/admin/v1/whoami", nil)
 			req.Header.Set("Authorization", "Bearer "+operatorToken)
@@ -416,7 +417,7 @@ func TestWithNoOriginsConfiguredThereIsNoCORS(t *testing.T) {
 	mux := http.NewServeMux()
 	admin.NewServer(admin.NewStore(pool), ticket.NewStore(pool), mustOps(t),
 		admin.ParseCORS(""), retention.NewStore(pool), handoffFor(pool),
-		knowledgeFor(pool), feedback.NewStore(pool)).Routes(mux)
+		knowledgeFor(pool), feedback.NewStore(pool), tenant.NewStore(pool)).Routes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
@@ -693,7 +694,7 @@ func TestAnOperatorSeesOnlyTheirOwnTenant(t *testing.T) {
 	mux := http.NewServeMux()
 	admin.NewServer(admin.NewStore(pool), tickets, ops, corsFor(t),
 		retention.NewStore(pool), handoffFor(pool), knowledgeFor(pool),
-		feedback.NewStore(pool)).Routes(mux)
+		feedback.NewStore(pool), tenant.NewStore(pool)).Routes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
@@ -776,5 +777,152 @@ func TestAnOperatorSeesOnlyTheirOwnTenant(t *testing.T) {
 	}
 	if body := read(globexToken, "/api/admin/v1/audit"); strings.Contains(body, "acmeop") {
 		t.Error("globex's audit trail contains acme's operator")
+	}
+}
+
+// The platform role administers tenants and reads no customer content, and both halves are
+// asserted. Either one alone would be a role that is called separated and is not.
+func TestThePlatformRoleAdministersTenantsAndSeesNoCustomerContent(t *testing.T) {
+	ctx := context.Background()
+	const platformToken = "platform-operator-token-01234"
+	const tenantOpToken = "tenant-operator-token-0123456"
+
+	tenants := tenant.NewStore(pool)
+	owner := fmt.Sprintf("owner-%d", time.Now().UnixNano())
+	if _, err := tenants.Create(ctx, owner, owner, "platform"); err != nil {
+		t.Fatal(err)
+	}
+	ops, err := admin.ParseOperators(
+		"root:" + platformToken + ":platform," +
+			"alex:" + tenantOpToken + ":operator:" + owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	admin.NewServer(admin.NewStore(pool), ticket.NewStore(pool), ops, corsFor(t),
+		retention.NewStore(pool), handoffFor(pool), knowledgeFor(pool),
+		feedback.NewStore(pool), tenants).Routes(mux)
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	// Every route that touches a tenant's data is refused for the platform account,
+	// reads included. This is the half that is easy to leave out.
+	for _, path := range []string{
+		"/api/admin/v1/overview",
+		"/api/admin/v1/conversations",
+		"/api/admin/v1/conversations/anything",
+		"/api/admin/v1/tickets",
+		"/api/admin/v1/knowledge",
+		"/api/admin/v1/feedback",
+		"/api/admin/v1/audit",
+	} {
+		if got := do(t, server, "GET", path, platformToken, "").StatusCode; got != http.StatusForbidden {
+			t.Errorf("the platform account got %d for %s, want 403", got, path)
+		}
+	}
+	// And it can find out what it is, which is the one authenticated route with no tenant.
+	if got := do(t, server, "GET", "/api/admin/v1/whoami", platformToken, "").StatusCode; got != http.StatusOK {
+		t.Errorf("the platform account cannot read whoami: %d", got)
+	}
+
+	// The other direction: a tenant operator cannot administer tenants.
+	for _, c := range []struct{ method, path, body string }{
+		{"GET", "/api/admin/v1/tenants", ""},
+		{"POST", "/api/admin/v1/tenants", `{"id":"sneaky-tenant","name":"Sneaky"}`},
+		{"GET", "/api/admin/v1/tenants/" + owner + "/keys", ""},
+		{"POST", "/api/admin/v1/tenants/" + owner + "/keys", `{"label":"mine"}`},
+	} {
+		if got := do(t, server, c.method, c.path, tenantOpToken, c.body).StatusCode; got != http.StatusForbidden {
+			t.Errorf("a tenant operator got %d for %s %s, want 403", got, c.method, c.path)
+		}
+	}
+
+	// Creating a tenant and issuing it a key, which is the whole reason the role exists.
+	made := fmt.Sprintf("new-%d", time.Now().UnixNano())
+	resp := do(t, server, "POST", "/api/admin/v1/tenants", platformToken,
+		fmt.Sprintf(`{"id":%q,"name":"New Customer"}`, made))
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("creating a tenant returned %d: %s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+
+	resp = do(t, server, "POST", "/api/admin/v1/tenants/"+made+"/keys", platformToken,
+		`{"label":"their integration"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("issuing a key returned %d", resp.StatusCode)
+	}
+	if cache := resp.Header.Get("Cache-Control"); cache != "no-store" {
+		t.Errorf("a credential came back with Cache-Control %q", cache)
+	}
+	var issued struct {
+		KeyID  string `json:"keyId"`
+		Secret string `json:"secret"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&issued); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if issued.Secret == "" {
+		t.Fatal("the issued key came back without its secret; it exists nowhere else")
+	}
+	if got, err := tenants.Resolve(ctx, issued.Secret); err != nil || got != made {
+		t.Errorf("the issued key resolves to %q (%v), want %q", got, err, made)
+	}
+
+	// Listing the keys afterwards must not hand the secret back a second time.
+	resp = do(t, server, "GET", "/api/admin/v1/tenants/"+made+"/keys", platformToken, "")
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), issued.Secret) {
+		t.Error("listing a tenant's keys returned the secret")
+	}
+	if !strings.Contains(string(body), issued.KeyID) {
+		t.Errorf("the issued key is not in the list: %s", body)
+	}
+
+	// Revoking through another tenant's URL is a 404, on the same rule as reading a ticket
+	// by number: a key_id is not the authorisation.
+	if got := do(t, server, "DELETE",
+		"/api/admin/v1/tenants/"+owner+"/keys/"+issued.KeyID, platformToken, "").StatusCode; got != http.StatusNotFound {
+		t.Errorf("revoking a key through another tenant's URL returned %d, want 404", got)
+	}
+	if got, err := tenants.Resolve(ctx, issued.Secret); err != nil || got != made {
+		t.Error("the key was revoked through the wrong tenant's URL after all")
+	}
+
+	// And through its own, which then stops it answering.
+	if got := do(t, server, "DELETE",
+		"/api/admin/v1/tenants/"+made+"/keys/"+issued.KeyID, platformToken, "").StatusCode; got != http.StatusNoContent {
+		t.Errorf("revoking the key returned %d", got)
+	}
+	if _, err := tenants.Resolve(ctx, issued.Secret); !errors.Is(err, tenant.ErrNoSuchKey) {
+		t.Errorf("a revoked key still resolves: %v", err)
+	}
+
+	// Every one of those is audited against the tenant administered, not against the
+	// platform account's (which has none).
+	var actions int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM admin_audit WHERE tenant_id = $1 AND actor = 'root'`,
+		made).Scan(&actions); err != nil {
+		t.Fatal(err)
+	}
+	if actions < 3 {
+		t.Errorf("%d audit rows for the tenant that was created, keyed and revoked", actions)
+	}
+}
+
+// A platform account that also names a tenant is the combination the role exists to avoid.
+func TestAPlatformOperatorCannotAlsoBelongToATenant(t *testing.T) {
+	_, err := admin.ParseOperators("root:" + operatorToken + ":platform:acme")
+	if err == nil {
+		t.Fatal("a platform operator with a tenant was accepted")
+	}
+	if !strings.Contains(err.Error(), "platform") {
+		t.Errorf("the error does not say why: %v", err)
 	}
 }

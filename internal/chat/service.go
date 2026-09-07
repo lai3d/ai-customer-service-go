@@ -163,7 +163,7 @@ func (s *Service) Turn(ctx context.Context, tenantID, conversationID, message st
 					"conversation_id", conversationID, "error", err)
 			}
 		}
-		s.metrics.Turns.WithLabelValues(outcome).Inc()
+		s.metrics.Turns.WithLabelValues(outcome, s.metrics.TenantLabel(tenantID)).Inc()
 		s.metrics.TurnSeconds.WithLabelValues(reportedModel).Observe(time.Since(started).Seconds())
 
 		// The operational record is finished on the same detached context and for the
@@ -291,7 +291,7 @@ func (s *Service) Turn(ctx context.Context, tenantID, conversationID, message st
 		if result.Model != "" {
 			reportedModel = result.Model
 		}
-		s.recordCall(reportedModel, result.Usage, callErr)
+		s.recordCall(tenantID, reportedModel, result.Usage, callErr)
 
 		if callErr != nil {
 			outcome = classify("failed", callErr)
@@ -330,14 +330,14 @@ func (s *Service) Turn(ctx context.Context, tenantID, conversationID, message st
 	return nil
 }
 
-func (s *Service) recordCall(model string, usage llm.Usage, callErr error) {
+func (s *Service) recordCall(tenantID, model string, usage llm.Usage, callErr error) {
 	callOutcome := "success"
 	if callErr != nil {
 		callOutcome = "error"
 	}
 	s.metrics.ModelCalls.WithLabelValues(model, callOutcome).Inc()
 	usd, priced := cost.USD(model, usage.InputTokens, usage.OutputTokens)
-	s.metrics.RecordUsage(model, usage.InputTokens, usage.OutputTokens, usd, priced)
+	s.metrics.RecordUsage(tenantID, model, usage.InputTokens, usage.OutputTokens, usd, priced)
 }
 
 func (s *Service) recordTurnSpend(ctx context.Context, conversationID, turnID, model string,

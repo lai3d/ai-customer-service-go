@@ -64,6 +64,13 @@ func emitted(t *testing.T) map[string]family {
 		if name == "Registry" {
 			continue
 		}
+		// Unexported fields are not metrics: a collector the registry can gather has to
+		// be reachable from outside this package to be incremented from outside it. They
+		// are skipped by name rather than by a type switch, because reflect panics on
+		// Interface() for one and the panic is not a failure a reader can act on.
+		if !value.Type().Field(i).IsExported() {
+			continue
+		}
 		if c, ok := value.Field(i).Interface().(prometheus.Collector); ok {
 			fields[name] = seriesOf(t, c)
 		}
@@ -494,7 +501,7 @@ func fieldsByMetric(t *testing.T) (map[string]string, map[string][]string) {
 	order := map[string][]string{}
 	for i := 0; i < value.NumField(); i++ {
 		name := value.Type().Field(i).Name
-		if name == "Registry" {
+		if name == "Registry" || !value.Type().Field(i).IsExported() {
 			continue
 		}
 		c, ok := value.Field(i).Interface().(prometheus.Collector)

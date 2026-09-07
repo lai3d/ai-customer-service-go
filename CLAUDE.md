@@ -243,6 +243,16 @@ that show why it is not needed here.
   Operator *names* stay globally unique because the name is the audit actor.
   `TestAnOperatorSeesOnlyTheirOwnTenant` hands each operator the other's conversation id and
   ticket number, which is the case that actually happens.
+- **The `tenant` metric label is capped, and only two metrics carry it.**
+  `chat_turns_total` and `chat_cost_usd_total` — whose traffic and whose bill. Past
+  `METRICS_MAX_TENANT_LABELS` a tenant reports as `other`, and a metric with no tenant
+  reports `unknown` rather than being attributed to somebody. A tenant is *nearly* bounded,
+  which is the shape that is fine for a year and then is not.
+- **`RolePlatform` administers tenants and is refused on every customer-facing route,
+  reads included.** The guard is load-bearing rather than belt-and-braces: with it removed
+  a tenant-less account gets 200 from the overview and 500 from the conversation list,
+  because an empty tenant is neither "everything" nor an error in those queries. Start-up
+  refuses a platform account that also names a tenant.
 - **A tool takes the tenant as a parameter**, next to the conversation id and for the same
   reason: a call site that forgets it does not compile. That is the Spring AI ToolContext
   lesson applied a second time.
@@ -480,7 +490,10 @@ screenshot, and fail on any console error, page error or failed request.
 
 ## Scope
 
-No multi-tenancy, no MCP. No Gemini — three providers, and `CHAT_PROVIDER=gemini` fails at
+Multi-tenant since 2026-09-07: an API key in `X-API-Key` names the tenant, and every
+conversation, corpus, ticket, session and audit row belongs to one. `TENANCY=single` (the
+default) serves a keyless request as `default`, which is what the benchmark and the
+cross-repository parity fixtures run as. No MCP. No Gemini — three providers, and `CHAT_PROVIDER=gemini` fails at
 startup by name. Authentication exists only for `/admin`: the chat endpoints are open, and
 an operator login is not customer identity.
 

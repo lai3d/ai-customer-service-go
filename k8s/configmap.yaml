@@ -73,6 +73,10 @@ data:
   # once there is more than one tenant -- it refuses a request with no key before any model
   # call, and needs AUTH_MODE=session, because a tenant is what a session belongs to.
   TENANCY: "single"
+
+  # How many tenants get their own value of the `tenant` metric label. Past it a tenant
+  # reports as `other` -- aggregated visibly rather than dropped silently.
+  METRICS_MAX_TENANT_LABELS: "20"
   SESSION_TTL_HOURS: "24"
   TURNS_PER_MINUTE: "20"
   SESSIONS_PER_HOUR_PER_IP: "60"

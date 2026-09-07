@@ -9,7 +9,8 @@
 一个用 Go 写的 AI 客服后端：在双语 FAQ 语料上做检索增强问答、用工具调用完成真实业务动作、
 SSE 流式输出、按会话计的 token 预算、Prometheus 指标和 OpenTelemetry 链路。**嵌入模型跑在
 本进程内**；对话模型默认是 Anthropic Claude，OpenAI 和 xAI 通过配置切换 —— 还可以指定第二个
-供应商作为兜底，在第一个以"重试也没用"的方式失败时接管。
+供应商作为兜底，在第一个以"重试也没用"的方式失败时接管。它是**多租户**的：API key 决定一个
+请求属于哪个产品，每一条会话、语料、工单和审计记录都属于某一个租户。
 
 **这是同一套系统的第二个实现，第一个[在 Java 里](https://github.com/lai3d/ai-customer-service-java/blob/main/README.zh.md)。**
 （那边的 [English README](https://github.com/lai3d/ai-customer-service-java)。）

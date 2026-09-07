@@ -27,6 +27,18 @@ const (
 	// more entries than the actions it governs is a design document, not a control.
 	RoleViewer   Role = "viewer"
 	RoleOperator Role = "operator"
+	// RolePlatform creates tenants and issues their keys, and **sees no customer content
+	// at all**. It is the third role because it is a third kind of action, not a bigger
+	// version of the second: an account that can make a tenant has no reason to read one,
+	// and the whole point of separating them is that the account with the widest reach is
+	// the one holding the least.
+	//
+	// It has no tenant, and that is what its guard checks. Every customer-facing handler
+	// filters on the operator's tenant, so a platform account reaching one would filter on
+	// the empty string -- which is not "everything" in any of those queries, but relying on
+	// that would be relying on the shape of a WHERE clause somebody may rewrite. The guard
+	// refuses first.
+	RolePlatform Role = "platform"
 )
 
 type Operator struct {
@@ -45,6 +57,9 @@ type Operator struct {
 }
 
 func (o Operator) CanWrite() bool { return o.Role == RoleOperator }
+
+// IsPlatform reports the tenant-less role that administers tenants.
+func (o Operator) IsPlatform() bool { return o.Role == RolePlatform }
 
 // Operators is the configured set. An empty set means the admin surface is not mounted
 // at all -- see Enabled.
@@ -79,11 +94,13 @@ func ParseOperators(spec string) (Operators, error) {
 			switch Role(parts[2]) {
 			case RoleOperator:
 				role = RoleOperator
+			case RolePlatform:
+				role = RolePlatform
 			case RoleViewer, "":
 				role = RoleViewer
 			default:
-				return Operators{}, fmt.Errorf("operator %q has unknown role %q: want %s or %s",
-					parts[0], parts[2], RoleViewer, RoleOperator)
+				return Operators{}, fmt.Errorf("operator %q has unknown role %q: want %s, %s or %s",
+					parts[0], parts[2], RoleViewer, RoleOperator, RolePlatform)
 			}
 		}
 		if len(parts[1]) < 16 {
@@ -94,6 +111,18 @@ func ParseOperators(spec string) (Operators, error) {
 		tenantID := tenant.Default
 		if len(parts) > 3 && strings.TrimSpace(parts[3]) != "" {
 			tenantID = strings.TrimSpace(parts[3])
+		}
+		if role == RolePlatform {
+			// A platform account with a tenant would be an account that both administers
+			// tenants and belongs to one, which is the combination the role exists to
+			// avoid. Refused rather than ignored: silently dropping a field somebody
+			// wrote is how a configuration means something other than what it says.
+			if len(parts) > 3 && strings.TrimSpace(parts[3]) != "" {
+				return Operators{}, fmt.Errorf("operator %q is %s and names a tenant; "+
+					"the platform role administers tenants and belongs to none",
+					parts[0], RolePlatform)
+			}
+			tenantID = ""
 		}
 		if len(parts) > 4 {
 			return Operators{}, fmt.Errorf("operator %q has %d fields; the form is "+
@@ -171,6 +200,44 @@ type Refusal func(r *http.Request, operator Operator)
 
 // RequireWrite gates the mutating handlers. Checked on the server for every request,
 // because hiding a button is a user-interface decision and not an access control.
+// RequireTenant refuses the platform role on every route that touches customer data.
+//
+// Wrapped around *reads* as well as writes, which is the whole point: a platform account
+// that could read conversations would be an account with the widest reach in the system and
+// the least reason to have it. Every one of those handlers filters on the operator's
+// tenant, so a platform account reaching one would filter on the empty string -- which
+// happens to return nothing today, and relying on that is relying on the shape of a WHERE
+// clause somebody may rewrite.
+func RequireTenant(refused Refusal, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		operator, ok := FromContext(r.Context())
+		if !ok || operator.TenantID == "" {
+			if ok && refused != nil {
+				refused(r, operator)
+			}
+			http.Error(w, "this operator administers tenants and belongs to none, so it "+
+				"cannot read or change any tenant's data", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// RequirePlatform is the other side: only the tenant-less role administers tenants.
+func RequirePlatform(refused Refusal, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		operator, ok := FromContext(r.Context())
+		if !ok || !operator.IsPlatform() {
+			if ok && refused != nil {
+				refused(r, operator)
+			}
+			http.Error(w, "only a platform operator administers tenants", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func RequireWrite(refused Refusal, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		operator, ok := FromContext(r.Context())

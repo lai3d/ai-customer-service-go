@@ -15,6 +15,7 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/knowledge"
 	"github.com/lai3d/ai-customer-service-go/internal/rag"
 	"github.com/lai3d/ai-customer-service-go/internal/retention"
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 	"github.com/lai3d/ai-customer-service-go/internal/ticket"
 )
 
@@ -27,13 +28,18 @@ type Server struct {
 	handoff   *handoff.Store
 	knowledge *knowledge.Store
 	feedback  *feedback.Store
+	// tenants is nil when no platform operator is configured, and the tenant routes are
+	// then never registered -- the same rule as the whole surface: an absent route cannot
+	// be misconfigured.
+	tenants Tenants
 }
 
 func NewServer(store *Store, tickets *ticket.Store, operators Operators, cors CORS,
 	erasure *retention.Store, replies *handoff.Store, entries *knowledge.Store,
-	verdicts *feedback.Store) *Server {
+	verdicts *feedback.Store, tenants Tenants) *Server {
 	return &Server{store: store, tickets: tickets, operators: operators, cors: cors,
-		erasure: erasure, handoff: replies, knowledge: entries, feedback: verdicts}
+		erasure: erasure, handoff: replies, knowledge: entries, feedback: verdicts,
+		tenants: tenants}
 }
 
 // Routes mounts the operations surface.
@@ -46,11 +52,20 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	// CORS wraps the outside, authentication the inside. The order is not cosmetic: a
 	// preflight carries no Authorization header, so authenticating first rejects every
 	// cross-origin request before the browser has even sent the real one.
+	// Three wrappers, and the middle layer is the tenant guard.
+	//
+	// `read` and `write` are for handlers that touch one tenant's data, so both refuse the
+	// tenant-less platform role. `platform` is the opposite: only that role, and it reaches
+	// no customer content at all. An account is on exactly one side of this line.
 	read := func(h http.HandlerFunc) http.Handler {
-		return s.cors.Wrap(s.operators.Authenticate(h))
+		return s.cors.Wrap(s.operators.Authenticate(RequireTenant(s.refused, h)))
 	}
 	write := func(h http.HandlerFunc) http.Handler {
-		return s.cors.Wrap(s.operators.Authenticate(RequireWrite(s.refused, h)))
+		return s.cors.Wrap(s.operators.Authenticate(
+			RequireTenant(s.refused, RequireWrite(s.refused, h))))
+	}
+	platform := func(h http.HandlerFunc) http.Handler {
+		return s.cors.Wrap(s.operators.Authenticate(RequirePlatform(s.refused, h)))
 	}
 
 	mux.Handle("GET /api/admin/v1/overview", read(s.overview))
@@ -76,7 +91,22 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /api/admin/v1/turns/{id}/feedback", write(s.feedbackRecord))
 	mux.Handle("POST /api/admin/v1/turns/{id}/feedback/handled", write(s.feedbackHandle))
 	mux.Handle("GET /api/admin/v1/audit", read(s.audit))
-	mux.Handle("GET /api/admin/v1/whoami", read(s.whoami))
+	// whoami is the one authenticated route with no tenant guard: a platform account has
+	// to be able to find out what it is, and the answer contains nothing but its own name,
+	// role and tenant.
+	mux.Handle("GET /api/admin/v1/whoami", s.cors.Wrap(s.operators.Authenticate(http.HandlerFunc(s.whoami))))
+
+	// Tenants. Only the platform role, and none of it reads customer content: a tenant's
+	// id, name and keys say who a customer of this service is, never what their customers
+	// said. A key is returned in full exactly once, at issue.
+	if s.tenants != nil {
+		mux.Handle("GET /api/admin/v1/tenants", platform(s.tenantList))
+		mux.Handle("POST /api/admin/v1/tenants", platform(s.tenantCreate))
+		mux.Handle("POST /api/admin/v1/tenants/{id}/disabled", platform(s.tenantSetDisabled))
+		mux.Handle("GET /api/admin/v1/tenants/{id}/keys", platform(s.tenantKeys))
+		mux.Handle("POST /api/admin/v1/tenants/{id}/keys", platform(s.tenantIssueKey))
+		mux.Handle("DELETE /api/admin/v1/tenants/{id}/keys/{keyId}", platform(s.tenantRevokeKey))
+	}
 
 	// A preflight arrives as OPTIONS on the same path, and Go's mux matches on method,
 	// so every route above needs its OPTIONS twin or the browser gets a 405 and reports
@@ -93,6 +123,8 @@ func (s *Server) Routes(mux *http.ServeMux) {
 		"/api/admin/v1/turns/{id}/feedback/handled",
 		"/api/admin/v1/audit",
 		"/api/admin/v1/whoami",
+		"/api/admin/v1/tenants", "/api/admin/v1/tenants/{id}/disabled",
+		"/api/admin/v1/tenants/{id}/keys", "/api/admin/v1/tenants/{id}/keys/{keyId}",
 	} {
 		mux.Handle("OPTIONS "+p, s.cors.Wrap(http.NotFoundHandler()))
 	}
@@ -103,18 +135,13 @@ func (s *Server) Routes(mux *http.ServeMux) {
 
 // refused records an authenticated operator being turned away.
 func (s *Server) refused(r *http.Request, operator Operator) {
-	if err := s.store.Audit(r.Context(), AuditEntry{
-		// The tenant is here for the same reason the actor is. This path does not go
-		// through `record`, which is how it was the one audit write that lost its tenant
-		// and became a foreign-key error and a log line -- the exact failure an audit
-		// trail exists to prevent. Caught by TestARefusedActionIsAudited.
-		TenantID: operator.TenantID,
-		Actor:    operator.Name, Action: "refused " + r.Method, Object: r.URL.Path,
-		Outcome: "forbidden", Detail: "role " + string(operator.Role),
-	}); err != nil {
-		slog.Error("could not record a refused action",
-			"actor", operator.Name, "path", r.URL.Path, "error", err)
-	}
+	// Through recordFor, which is how it stops being the one audit write with its own copy
+	// of the row-building: it was, it lost its tenant when the column arrived, and it
+	// became a foreign-key error and a log line -- the exact failure an audit trail exists
+	// to prevent. A refused *platform* operator has no tenant at all, which recordFor
+	// files under the default one rather than dropping.
+	s.recordFor(r, operator.TenantID, "refused "+r.Method, r.URL.Path, "forbidden",
+		"role "+string(operator.Role))
 }
 
 func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
@@ -601,8 +628,26 @@ func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 // which disconnects mid-response does not lose the record of what it did.
 func (s *Server) record(r *http.Request, action, object, outcome, detail string) {
 	operator, _ := FromContext(r.Context())
+	s.recordFor(r, operator.TenantID, action, object, outcome, detail)
+}
+
+// recordFor writes an audit row against a tenant the operator does not belong to.
+//
+// It exists for exactly one caller: the platform role, which belongs to no tenant and
+// administers all of them. The row is filed under the tenant being administered rather
+// than under an empty string, because "who created this tenant" is a question asked while
+// looking at that tenant.
+func (s *Server) recordFor(r *http.Request, tenantID, action, object, outcome, detail string) {
+	operator, _ := FromContext(r.Context())
+	if tenantID == "" {
+		// A row with no tenant cannot be written -- the column is NOT NULL with a foreign
+		// key -- and losing an audit row is the failure the table exists to prevent. The
+		// default tenant is the honest place for an action that named no valid tenant:
+		// somebody tried something, and that is worth a row.
+		tenantID = tenant.Default
+	}
 	if err := s.store.Audit(r.Context(), AuditEntry{
-		TenantID: operator.TenantID, Actor: operator.Name, Action: action, Object: object,
+		TenantID: tenantID, Actor: operator.Name, Action: action, Object: object,
 		Outcome: outcome, Detail: detail,
 	}); err != nil {
 		// Loud, because an unrecorded action is the failure this table exists to

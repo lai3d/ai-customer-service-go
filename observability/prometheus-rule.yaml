@@ -314,7 +314,10 @@ spec:
             summary: "Model spend is above $5/hour"
             description: >-
               Sustained for fifteen minutes. If UnpricedModelCalls is also firing, this
-              number is an under-estimate rather than the whole bill.
+              number is an under-estimate rather than the whole bill. Split by `tenant`
+              to see whose spend it is -- the label is capped, so a large `other` means
+              the spend is spread across more tenants than METRICS_MAX_TENANT_LABELS
+              names, not that one anonymous tenant is expensive.
 
         # The service is answering from a provider nobody chose.
         #

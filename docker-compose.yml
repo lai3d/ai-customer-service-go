@@ -66,6 +66,7 @@ services:
       # .env.example for why it is opt-in rather than opt-out.
       AUTH_MODE: ${AUTH_MODE:-off}
       TENANCY: ${TENANCY:-single}
+      METRICS_MAX_TENANT_LABELS: ${METRICS_MAX_TENANT_LABELS:-20}
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-24}
       TURNS_PER_MINUTE: ${TURNS_PER_MINUTE:-20}
       SESSIONS_PER_HOUR_PER_IP: ${SESSIONS_PER_HOUR_PER_IP:-60}

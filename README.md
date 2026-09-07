@@ -11,7 +11,9 @@ corpus, tool calling for real business actions, SSE streaming, a per-conversatio
 budget, Prometheus metrics and OpenTelemetry traces. The embedding model runs in this
 process; the chat model is Anthropic Claude by default, with OpenAI and xAI selectable by
 configuration — and a second provider can be named as a fallback, used when the first one
-fails in a way retrying it will not fix.
+fails in a way retrying it will not fix. It is **multi-tenant**: an API key names which
+product a request is for, and every conversation, corpus, ticket and audit row belongs to
+one.
 
 **This is the second implementation of a system that already exists
 [in Java](https://github.com/lai3d/ai-customer-service-java).** It is not a port. The two

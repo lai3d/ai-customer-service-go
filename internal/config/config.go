@@ -200,6 +200,9 @@ type Auth struct {
 	// the benchmark and the cross-repository comparison measure, and a default that
 	// silently changes a measurement is worse than one that has to be chosen.
 	Tenancy string
+	// MaxTenantLabels caps distinct values of the `tenant` metric label. Past it a tenant
+	// reports as `other` -- visibly aggregated rather than silently dropped.
+	MaxTenantLabels int
 }
 
 // Retention is how long customer data is kept, and how often the sweeper looks.
@@ -318,6 +321,7 @@ func Load() (Config, error) {
 			SessionsPerHourPerIP: envInt("SESSIONS_PER_HOUR_PER_IP", 60),
 			DailyTokenBudget:     int64(envInt("DAILY_TOKEN_BUDGET", 0)),
 			Tenancy:              env("TENANCY", "single"),
+			MaxTenantLabels:      envInt("METRICS_MAX_TENANT_LABELS", 20),
 		},
 		Retention: Retention{
 			Window:        time.Duration(envInt("RETENTION_DAYS", 0)) * 24 * time.Hour,

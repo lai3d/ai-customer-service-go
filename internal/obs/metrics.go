@@ -31,6 +31,17 @@ type Metrics struct {
 	AbandonedTokens *prometheus.CounterVec
 	Retrieval       prometheus.Histogram
 	Embedding       prometheus.Histogram
+
+	// tenants bounds the `tenant` label. See internal/obs/tenants.go: a tenant is nearly
+	// bounded, and nearly bounded is the shape that is fine for a year and then is not.
+	tenants *TenantLabels
+}
+
+// WithTenantLabels sets the cap on distinct tenant label values. Called once at start-up;
+// without it the default applies rather than the label being unbounded.
+func (m *Metrics) WithTenantLabels(max int) *Metrics {
+	m.tenants = NewTenantLabels(max)
+	return m
 }
 
 func NewMetrics() *Metrics {
@@ -42,22 +53,30 @@ func NewMetrics() *Metrics {
 
 	m := &Metrics{
 		Registry: registry,
+		tenants:  NewTenantLabels(0),
 		Tokens: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "chat_tokens_total",
 			Help: "Tokens billed, by model and direction.",
 		}, []string{"model", "type"}),
 		CostUSD: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "chat_cost_usd_total",
-			Help: "Estimated spend in USD, by model. Stays at zero for a model with no price entry.",
-		}, []string{"model"}),
+			Help: "Estimated spend in USD, by model and tenant. Stays at zero for a model " +
+				"with no price entry.",
+		}, []string{"model", "tenant"}),
 		ModelCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "chat_model_calls_total",
 			Help: "Model calls. A tool-calling turn makes at least two, and each is billed.",
 		}, []string{"model", "outcome"}),
+		// The tenant is on the turn counter and on the money, and on nothing else.
+		//
+		// Those two answer the questions tenancy actually creates -- whose traffic is this
+		// and whose bill is this -- and every other metric here would multiply its series
+		// by the tenant count to answer a question nobody asked. The label is capped; past
+		// the cap a tenant reports as `other`.
 		Turns: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "chat_turns_total",
-			Help: "Customer turns, by how they ended.",
-		}, []string{"outcome"}),
+			Help: "Customer turns, by how they ended and for which tenant.",
+		}, []string{"outcome", "tenant"}),
 		TurnSeconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "chat_turn_duration_seconds",
 			Help:    "Wall time of a whole customer turn, retrieval and every model call included.",
@@ -174,12 +193,22 @@ func (m *Metrics) RecordAbandonedAttempt(provider, model string, inputTokens, ou
 }
 
 // RecordUsage meters one model call. The model is the one the provider reported.
-func (m *Metrics) RecordUsage(model string, inputTokens, outputTokens int64, usd float64, priced bool) {
+func (m *Metrics) RecordUsage(tenantID, model string, inputTokens, outputTokens int64,
+	usd float64, priced bool) {
+
 	m.Tokens.WithLabelValues(model, "input").Add(float64(inputTokens))
 	m.Tokens.WithLabelValues(model, "output").Add(float64(outputTokens))
 	if priced {
-		m.CostUSD.WithLabelValues(model).Add(usd)
+		m.CostUSD.WithLabelValues(model, m.TenantLabel(tenantID)).Add(usd)
 		return
 	}
 	m.Unpriced.WithLabelValues(model).Inc()
+}
+
+// TenantLabel is the bounded label value for a tenant.
+func (m *Metrics) TenantLabel(tenantID string) string {
+	if m.tenants == nil {
+		m.tenants = NewTenantLabels(0)
+	}
+	return m.tenants.Label(tenantID)
 }

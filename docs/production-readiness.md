@@ -42,7 +42,7 @@ What is missing is almost entirely product, not scaffolding.
 | 9 | [A schema migration path](#9-the-first-change-to-a-live-schema-is-manual) | week 2 | Go | **done** 2026-09-07 | 1–2 h |
 | 10 | [The admin list pages lie past one page](#10-the-admin-lists-lie-past-the-first-page) | week 2 | Go | **done** 2026-09-06 | 0.5 h |
 | 11 | [Provider failover](#11-three-providers-are-supported-and-one-runs) | scale | both | **done** 2026-09-07 | 1–2 h |
-| 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | **done** 2026-09-07 (metrics label and per-tenant retention open) | 4–6 h |
+| 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | **done** 2026-09-07 (per-tenant retention windows open) | 4–6 h |
 | 13 | [The deployment is a demo deployment](#13-the-manifests-stop-where-a-real-cluster-starts) | scale | Go | **manifests done** 2026-09-07; secrets and digest pinning remain | 2–3 h (0.5 h left) |
 | 14 | [Abuse and content safety](#14-the-system-prompt-is-the-whole-of-the-safety-story) | scale | both | **partly done** 2026-09-07 | 2–3 h (moderation not built, deliberately) |
 | 15 | [A turn a dead process left behind stays in_flight for ever](#15-a-turn-a-dead-process-left-behind-stays-in_flight-for-ever) | week 2 | Go | **done** 2026-09-07 | 1 h |
@@ -792,9 +792,46 @@ Two things fell out of this that were not tenancy work:
   says a thing is pluggable when it is not, and it compiled happily for as long as it
   existed. Found when the tenant made its signature wrong.
 
-**Still open on this item:** the bounded `tenant` metric label, per-tenant retention windows,
-and the tenant-less `platform` role that creates tenants and issues keys through the
-operations API — today that is done through `internal/tenant` directly.
+**Fifth stage done: the metric label and the platform role.**
+
+`chat_turns_total` and `chat_cost_usd_total` carry a **capped** `tenant` label — whose
+traffic and whose bill, which are the two questions tenancy creates. Every other metric
+would multiply its series by the tenant count to answer a question nobody asked. Past
+`METRICS_MAX_TENANT_LABELS` (20 by default) a tenant reports as `other`, which is visible
+on purpose: a rising `other` says the cap is now deciding what you can see, rather than
+truncating silently. A metric with no tenant reports `unknown` rather than being attributed
+to somebody.
+
+The first N are kept rather than the busiest N, and that is argued: picking the important
+ones needs a definition of important that a metrics package does not have.
+
+**The re-check under the write lock is argued rather than evidenced**, and labelled so. It
+is the line that stops two goroutines both getting past the read and both inserting past
+the cap; removing it leaves the concurrency test green at 200 goroutines and at 5,000, run
+several times. The window is a couple of instructions wide and this machine does not lose
+that race. Same terms as `hnsw.iterative_scan`.
+
+**`RolePlatform`** creates tenants, issues and revokes their keys, and **sees no customer
+content at all**. It is a third role because it is a third kind of action, not a bigger
+version of the second: the account with the widest reach in the system is deliberately the
+one holding the least. It belongs to no tenant, start-up refuses a platform account that
+names one, and `RequireTenant` refuses it on every customer-facing route — **reads
+included**, which is the half that is easy to leave out. The opposite guard refuses a
+tenant operator on `/api/admin/v1/tenants/*`.
+
+Relying on the queries would not have been enough: with the guard removed a platform
+account got **200** from the overview and a **500** from the conversation list, because the
+empty string is not "everything" in those `WHERE` clauses and is not an error either. The
+guard refuses first.
+
+Keys are issued once, `Cache-Control: no-store`, and never returned again — listing a
+tenant's keys returns ids and labels. Revoking through another tenant's URL is a 404, on
+the same rule as reading a ticket by number. Every action is audited **against the tenant
+being administered** rather than against the platform account's, which has none.
+
+**Still open on this item:** per-tenant retention windows. Retention is still one window for
+the whole service; a tenant with a different contractual obligation would need its own, and
+that is a configuration surface rather than a predicate.
 
 Two things this settles that were open here. `corpus_active`'s primary key on a constant —
 flagged above as the shape that does not survive tenancy — becomes a primary key on

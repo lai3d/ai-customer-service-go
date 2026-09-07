@@ -137,7 +137,7 @@ func run() error {
 		return err
 	}
 
-	metrics := obs.NewMetrics()
+	metrics := obs.NewMetrics().WithTenantLabels(cfg.Auth.MaxTenantLabels)
 
 	shutdownTracing, err := obs.StartTracing(ctx, obs.TracingOptions{
 		Enabled:     cfg.Obs.OTLPEnabled,
@@ -360,7 +360,7 @@ func run() error {
 	if operators.Enabled() {
 		admin.NewServer(admin.NewStore(pool), tickets, operators,
 			admin.ParseCORS(cfg.Admin.CORSOrigins), retention.NewStore(pool), handoffs,
-			knowledgeStore, feedbackStore).Routes(mux)
+			knowledgeStore, feedbackStore, tenant.NewStore(pool)).Routes(mux)
 		slog.Info("operations API mounted at /api/admin/v1; the UI is admin-ui/, served separately",
 			"operators", operators.Names(), "cors_origins", cfg.Admin.CORSOrigins)
 	} else {
