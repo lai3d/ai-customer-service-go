@@ -20,17 +20,41 @@ import (
 // protected by the predicate and by nothing else, so removing it is immediately visible in
 // every test below.
 
+// newTenants makes throwaway tenants and **removes them and everything they own** when the
+// test ends.
+//
+// The cleanup is not tidiness. `Replace` -- the bundled-corpus load -- refuses to run once
+// another tenant has documents, which is the guard that stops it clearing a neighbour's
+// corpus. A test that leaves a tenant's documents behind therefore breaks every later test
+// that reloads the corpus, and it breaks them by *file name order*: this file sorts before
+// reload_test.go and retrieval_test.go, so it did.
 func newTenants(t *testing.T, names ...string) []string {
 	t.Helper()
+	ctx := context.Background()
 	store := tenant.NewStore(sharedPool)
 	out := make([]string, 0, len(names))
 	for i, name := range names {
 		id := fmt.Sprintf("%s-%d-%d", name, time.Now().UnixNano(), i)
-		if _, err := store.Create(context.Background(), id, name, "platform"); err != nil {
+		if _, err := store.Create(ctx, id, name, "platform"); err != nil {
 			t.Fatal(err)
 		}
 		out = append(out, id)
 	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		// In foreign-key order: documents, then the active pointer, then the versions,
+		// then the tenant itself.
+		for _, sql := range []string{
+			`DELETE FROM faq_document WHERE tenant_id = ANY($1)`,
+			`DELETE FROM corpus_active WHERE tenant_id = ANY($1)`,
+			`DELETE FROM corpus_version WHERE tenant_id = ANY($1)`,
+			`DELETE FROM tenant WHERE tenant_id = ANY($1)`,
+		} {
+			if _, err := sharedPool.Exec(ctx, sql, out); err != nil {
+				t.Errorf("could not clean up the test tenants: %v", err)
+			}
+		}
+	})
 	return out
 }
 
