@@ -29,6 +29,9 @@ export interface Overview {
    *  notification fails silently by nature, so this is the number that makes "nobody told
    *  us" visible rather than deniable. */
   undeliveredHandoffs: number
+  /** Reported-wrong answers nobody has acted on. The number that matters is this one and
+   *  not the total: feedback nobody clears is a suggestion box. */
+  openFeedback: number
 }
 
 export interface ConversationSummary {
@@ -147,4 +150,25 @@ export interface CorpusVersion {
 /** The bound the server enforces on an answer. Mirrored so the editor can say so before
  *  the request rather than after it; the server is still the one that decides. */
 export const MAX_ANSWER_LENGTH = 4000
+
+export type FeedbackSource = 'customer' | 'operator'
+export type FeedbackVerdict = 'helpful' | 'wrong' | 'unclear'
+
+export interface FeedbackItem {
+  turnId: string
+  conversationId: string
+  source: FeedbackSource
+  verdict: FeedbackVerdict
+  note?: string
+  actor: string
+  at: string
+  question: string
+  answer?: string
+  model?: string
+  outcome: string
+  /** What was retrieved for that turn: where a wrong answer usually starts. */
+  entries?: string[]
+  handled: boolean
+  handledAt?: string
+}
 

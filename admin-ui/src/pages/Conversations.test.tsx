@@ -35,14 +35,14 @@ describe('the conversation list', () => {
   // that anything was missing.
   it('states the number of conversations the server has, not the number on screen', async () => {
     conversations.mockResolvedValue({ total: 250, conversations: rows(20) })
-    render(<ConversationsPage />)
+    render(<ConversationsPage canWrite={false} />)
     await waitFor(() => expect(screen.getByText(/conversation\(s\)/)).toBeTruthy())
     expect(screen.getByText('250 conversation(s)')).toBeTruthy()
   })
 
   it('asks the server for the next page rather than slicing what it has', async () => {
     conversations.mockResolvedValue({ total: 250, conversations: rows(20) })
-    render(<ConversationsPage />)
+    render(<ConversationsPage canWrite={false} />)
     await waitFor(() => expect(conversations).toHaveBeenCalled())
     expect(conversations).toHaveBeenLastCalledWith(
       expect.objectContaining({ limit: 20, offset: 0 }))
@@ -58,7 +58,7 @@ describe('the conversation list', () => {
     // range, so a page size the server will not honour produces a table that disagrees
     // with its own footer.
     conversations.mockResolvedValue({ total: 250, conversations: rows(20) })
-    render(<ConversationsPage />)
+    render(<ConversationsPage canWrite={false} />)
     await waitFor(() => expect(conversations).toHaveBeenCalled())
     const { limit } = conversations.mock.calls[0]![0] as { limit: number }
     expect(limit).toBeGreaterThan(0)

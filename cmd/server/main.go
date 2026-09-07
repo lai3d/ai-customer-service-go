@@ -16,6 +16,7 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/chat"
 	"github.com/lai3d/ai-customer-service-go/internal/config"
 	"github.com/lai3d/ai-customer-service-go/internal/cost"
+	"github.com/lai3d/ai-customer-service-go/internal/feedback"
 	"github.com/lai3d/ai-customer-service-go/internal/handoff"
 	"github.com/lai3d/ai-customer-service-go/internal/httpapi"
 	"github.com/lai3d/ai-customer-service-go/internal/identity"
@@ -297,7 +298,7 @@ func run() error {
 	if operators.Enabled() {
 		admin.NewServer(admin.NewStore(pool), tickets, operators,
 			admin.ParseCORS(cfg.Admin.CORSOrigins), retention.NewStore(pool), handoffs,
-			knowledgeStore).Routes(mux)
+			knowledgeStore, feedback.NewStore(pool)).Routes(mux)
 		slog.Info("operations API mounted at /api/admin/v1; the UI is admin-ui/, served separately",
 			"operators", operators.Names(), "cors_origins", cfg.Admin.CORSOrigins)
 	} else {

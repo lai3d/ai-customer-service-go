@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lai3d/ai-customer-service-go/internal/feedback"
 	"github.com/lai3d/ai-customer-service-go/internal/handoff"
 	"github.com/lai3d/ai-customer-service-go/internal/knowledge"
 	"github.com/lai3d/ai-customer-service-go/internal/rag"
@@ -25,12 +26,14 @@ type Server struct {
 	erasure   *retention.Store
 	handoff   *handoff.Store
 	knowledge *knowledge.Store
+	feedback  *feedback.Store
 }
 
 func NewServer(store *Store, tickets *ticket.Store, operators Operators, cors CORS,
-	erasure *retention.Store, replies *handoff.Store, entries *knowledge.Store) *Server {
+	erasure *retention.Store, replies *handoff.Store, entries *knowledge.Store,
+	verdicts *feedback.Store) *Server {
 	return &Server{store: store, tickets: tickets, operators: operators, cors: cors,
-		erasure: erasure, handoff: replies, knowledge: entries}
+		erasure: erasure, handoff: replies, knowledge: entries, feedback: verdicts}
 }
 
 // Routes mounts the operations surface.
@@ -67,6 +70,11 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /api/admin/v1/knowledge/publish", write(s.knowledgePublish))
 	mux.Handle("POST /api/admin/v1/knowledge/versions/{version}/activate", write(s.knowledgeActivate))
 	mux.Handle("DELETE /api/admin/v1/conversations/{id}", write(s.erase))
+	// Feedback. Reading the queue is a read; adding a verdict and clearing one are writes,
+	// because both change what the next person sees as their work.
+	mux.Handle("GET /api/admin/v1/feedback", read(s.feedbackQueue))
+	mux.Handle("POST /api/admin/v1/turns/{id}/feedback", write(s.feedbackRecord))
+	mux.Handle("POST /api/admin/v1/turns/{id}/feedback/handled", write(s.feedbackHandle))
 	mux.Handle("GET /api/admin/v1/audit", read(s.audit))
 	mux.Handle("GET /api/admin/v1/whoami", read(s.whoami))
 
@@ -81,6 +89,8 @@ func (s *Server) Routes(mux *http.ServeMux) {
 		"/api/admin/v1/knowledge/versions",
 		"/api/admin/v1/knowledge/publish",
 		"/api/admin/v1/knowledge/versions/{version}/activate",
+		"/api/admin/v1/feedback", "/api/admin/v1/turns/{id}/feedback",
+		"/api/admin/v1/turns/{id}/feedback/handled",
 		"/api/admin/v1/audit",
 		"/api/admin/v1/whoami",
 	} {
@@ -240,6 +250,76 @@ func (s *Server) ticketUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.record(r, "update ticket", "ticket/"+number, "ok", patch.State+" "+patch.Note)
 	writeJSON(w, updated)
+}
+
+// feedbackQueue is what somebody works from: answers that were reported wrong, with the
+// question, the reply and what was retrieved, so acting on one does not start with a
+// lookup.
+func (s *Server) feedbackQueue(w http.ResponseWriter, r *http.Request) {
+	includeHandled := r.URL.Query().Get("handled") == "true"
+	items, err := s.feedback.Queue(r.Context(), includeHandled, atoi(r.URL.Query().Get("limit")))
+	if err != nil {
+		fail(w, r, "feedback", err)
+		return
+	}
+	writeJSON(w, map[string]any{"items": items})
+}
+
+func (s *Server) feedbackRecord(w http.ResponseWriter, r *http.Request) {
+	operator, _ := FromContext(r.Context())
+	var body struct {
+		Verdict string `json:"verdict"`
+		Note    string `json:"note"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+		http.Error(w, "the request body is not valid JSON", http.StatusBadRequest)
+		return
+	}
+	turnID := r.PathValue("id")
+	switch err := s.feedback.Record(r.Context(), turnID, feedback.SourceOperator,
+		feedback.Verdict(body.Verdict), body.Note, operator.Name); {
+	case errors.Is(err, feedback.ErrNoSuchTurn):
+		http.Error(w, "no such turn", http.StatusNotFound)
+		return
+	case errors.Is(err, feedback.ErrBadVerdict):
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	case err != nil:
+		fail(w, r, "feedback", err)
+		return
+	}
+	// Audited because it is a judgement about the service recorded against a named person,
+	// which is exactly what the trail is for. The note is not in the detail: it is on the
+	// feedback row, which an erasure can reach.
+	s.record(r, "judge answer", "turn/"+turnID, "ok", body.Verdict)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) feedbackHandle(w http.ResponseWriter, r *http.Request) {
+	operator, _ := FromContext(r.Context())
+	turnID := r.PathValue("id")
+	var body struct {
+		Source string `json:"source"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+		http.Error(w, "the request body is not valid JSON", http.StatusBadRequest)
+		return
+	}
+	source := feedback.Source(body.Source)
+	if source != feedback.SourceCustomer && source != feedback.SourceOperator {
+		http.Error(w, "source must be customer or operator", http.StatusUnprocessableEntity)
+		return
+	}
+	switch err := s.feedback.Handle(r.Context(), turnID, source, operator.Name); {
+	case errors.Is(err, feedback.ErrNoSuchTurn):
+		http.Error(w, "no such open feedback", http.StatusNotFound)
+		return
+	case err != nil:
+		fail(w, r, "feedback", err)
+		return
+	}
+	s.record(r, "clear feedback", "turn/"+turnID, "ok", string(source))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) knowledgeList(w http.ResponseWriter, r *http.Request) {

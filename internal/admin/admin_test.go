@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lai3d/ai-customer-service-go/internal/admin"
 	"github.com/lai3d/ai-customer-service-go/internal/chat"
+	"github.com/lai3d/ai-customer-service-go/internal/feedback"
 	"github.com/lai3d/ai-customer-service-go/internal/handoff"
 	"github.com/lai3d/ai-customer-service-go/internal/knowledge"
 	"github.com/lai3d/ai-customer-service-go/internal/rag"
@@ -53,7 +54,7 @@ func serve(t *testing.T) (*httptest.Server, *ticket.Store) {
 	tickets := ticket.NewStore(pool)
 	mux := http.NewServeMux()
 	admin.NewServer(admin.NewStore(pool), tickets, ops, corsFor(t),
-		retention.NewStore(pool), handoffFor(pool), knowledgeFor(pool)).Routes(mux)
+		retention.NewStore(pool), handoffFor(pool), knowledgeFor(pool), feedback.NewStore(pool)).Routes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server, tickets
@@ -374,7 +375,7 @@ func TestTheBrowserIsToldWhichOriginMayReadTheseResponses(t *testing.T) {
 			c := admin.ParseCORS(spec)
 			mux := http.NewServeMux()
 			admin.NewServer(admin.NewStore(pool), ticket.NewStore(pool), mustOps(t), c,
-				retention.NewStore(pool), handoffFor(pool), knowledgeFor(pool)).Routes(mux)
+				retention.NewStore(pool), handoffFor(pool), knowledgeFor(pool), feedback.NewStore(pool)).Routes(mux)
 			s := httptest.NewServer(mux)
 			req, _ := http.NewRequest("GET", s.URL+"/api/admin/v1/whoami", nil)
 			req.Header.Set("Authorization", "Bearer "+operatorToken)
@@ -413,7 +414,7 @@ func TestWithNoOriginsConfiguredThereIsNoCORS(t *testing.T) {
 	mux := http.NewServeMux()
 	admin.NewServer(admin.NewStore(pool), ticket.NewStore(pool), mustOps(t),
 		admin.ParseCORS(""), retention.NewStore(pool), handoffFor(pool),
-		knowledgeFor(pool)).Routes(mux)
+		knowledgeFor(pool), feedback.NewStore(pool)).Routes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 

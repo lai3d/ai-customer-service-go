@@ -7,6 +7,7 @@ import { ConversationsPage } from './pages/Conversations'
 import { TicketsPage } from './pages/Tickets'
 import { AuditPage } from './pages/Audit'
 import { KnowledgePage } from './pages/Knowledge'
+import { FeedbackPage } from './pages/Feedback'
 
 export function App() {
   const [me, setMe] = useState<WhoAmI | null>(null)
@@ -114,9 +115,10 @@ function Signed({ me, onSignOut }: { me: WhoAmI; onSignOut: () => void }) {
           destroyInactiveTabPane
           items={[
             { key: 'overview', label: 'Overview', children: <OverviewPage /> },
-            { key: 'conversations', label: 'Conversations', children: <ConversationsPage /> },
+            { key: 'conversations', label: 'Conversations', children: <ConversationsPage canWrite={me.canWrite} /> },
             { key: 'tickets', label: 'Tickets', children: <TicketsPage canWrite={me.canWrite} /> },
             { key: 'knowledge', label: 'Knowledge', children: <KnowledgePage canWrite={me.canWrite} /> },
+            { key: 'feedback', label: 'Feedback', children: <FeedbackPage canWrite={me.canWrite} /> },
             { key: 'audit', label: 'Audit', children: <AuditPage /> },
           ]}
         />

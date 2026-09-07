@@ -244,6 +244,30 @@ CREATE TABLE IF NOT EXISTS turn_tool_call (
 
 -- Who did what through the admin surface. Operators cannot edit this table through
 -- any endpoint; there is deliberately no update or delete path to it.
+-- What somebody thought of an answer.
+--
+-- Two sources with different weight and the same shape: a customer knows whether they were
+-- helped and nothing about whether the answer was correct; an operator knows the opposite.
+-- Recording which one said it is the difference between a signal and a number.
+--
+-- One verdict per turn per source: a customer changing their mind replaces their own
+-- verdict and leaves the operator's alone.
+CREATE TABLE IF NOT EXISTS turn_feedback (
+    turn_id    TEXT        NOT NULL REFERENCES turn (id) ON DELETE CASCADE,
+    source     TEXT        NOT NULL CHECK (source IN ('customer','operator')),
+    verdict    TEXT        NOT NULL CHECK (verdict IN ('helpful','wrong','unclear')),
+    note       TEXT,
+    actor      TEXT        NOT NULL,
+    at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Whether this has been turned into an eval case or a knowledge edit. The point of
+    -- collecting it is the work it causes; a table nobody clears is a suggestion box.
+    handled_at TIMESTAMPTZ,
+    handled_by TEXT,
+    PRIMARY KEY (turn_id, source)
+);
+CREATE INDEX IF NOT EXISTS turn_feedback_open_idx
+    ON turn_feedback (at DESC) WHERE verdict <> 'helpful' AND handled_at IS NULL;
+
 -- Whether the people who answer tickets were actually told.
 --
 -- The failure mode of a notification is silence, and silence is indistinguishable from

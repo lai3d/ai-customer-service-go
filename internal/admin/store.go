@@ -28,6 +28,10 @@ type Overview struct {
 	// window. A notification's failure mode is silence, so this is the number that makes
 	// "nobody told us about that ticket" visible rather than deniable.
 	UndeliveredHandoffs int `json:"undeliveredHandoffs"`
+	// Feedback that says something went wrong and has not been acted on. The number that
+	// matters is this one rather than the total: collecting feedback nobody clears is a
+	// suggestion box.
+	OpenFeedback int `json:"openFeedback"`
 }
 
 func (s *Store) Overview(ctx context.Context, window time.Duration) (Overview, error) {
@@ -86,6 +90,11 @@ func (s *Store) Overview(ctx context.Context, window time.Duration) (Overview, e
 	if err := s.pool.QueryRow(ctx, `
 		SELECT count(*) FROM handoff_delivery
 		WHERE failure IS NOT NULL AND at >= $1`, since).Scan(&o.UndeliveredHandoffs); err != nil {
+		return o, err
+	}
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM turn_feedback
+		WHERE verdict <> 'helpful' AND handled_at IS NULL`).Scan(&o.OpenFeedback); err != nil {
 		return o, err
 	}
 	return o, nil

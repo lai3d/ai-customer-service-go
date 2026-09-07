@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Alert, Button, Card, Descriptions, Input, Select, Space, Table, Tag, Typography } from 'antd'
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 import type { ConversationSummary, Turn } from '../api/types'
 import { Markdown } from '../components/Markdown'
 import { useLoad, when } from './hooks'
@@ -9,10 +9,10 @@ import { usePaging } from './paging'
 const OUTCOMES = ['completed', 'cancelled', 'failed', 'tool_limit', 'budget_exceeded',
   'retrieval_failed', 'memory_failed', 'in_flight']
 
-export function ConversationsPage() {
+export function ConversationsPage({ canWrite }: { canWrite: boolean }) {
   const [open, setOpen] = useState<string | null>(null)
   return open
-    ? <Conversation id={open} onBack={() => setOpen(null)} />
+    ? <Conversation id={open} canWrite={canWrite} onBack={() => setOpen(null)} />
     : <List onOpen={setOpen} />
 }
 
@@ -82,7 +82,8 @@ function List({ onOpen }: { onOpen: (id: string) => void }) {
   )
 }
 
-function Conversation({ id, onBack }: { id: string; onBack: () => void }) {
+function Conversation({ id, canWrite, onBack }:
+  { id: string; canWrite: boolean; onBack: () => void }) {
   const { data, error, loading } = useLoad(() => api.conversation(id), [id])
 
   return (
@@ -97,13 +98,28 @@ function Conversation({ id, onBack }: { id: string; onBack: () => void }) {
         Opening this conversation is recorded in the audit trail.
       </Typography.Paragraph>
       {error && <Alert type="error" showIcon message={error} />}
-      {(data?.turns ?? []).map((t) => <TurnCard key={t.id} turn={t} />)}
+      {(data?.turns ?? []).map((t) => <TurnCard key={t.id} turn={t} canWrite={canWrite} />)}
       {loading && <Card size="small" loading />}
     </>
   )
 }
 
-function TurnCard({ turn }: { turn: Turn }) {
+function TurnCard({ turn, canWrite }: { turn: Turn; canWrite: boolean }) {
+  const [judged, setJudged] = useState<string>('')
+  const [problem, setProblem] = useState('')
+
+  // The operator's way in. Reading a bad answer and being unable to say so is how a known
+  // problem stays known only to the person who read it.
+  const judge = async (verdict: 'wrong' | 'unclear') => {
+    setProblem('')
+    try {
+      await api.judgeAnswer(turn.id, verdict, '')
+      setJudged(verdict)
+    } catch (err) {
+      setProblem(err instanceof ApiError ? err.message : String(err))
+    }
+  }
+
   return (
     <Card size="small" style={{ marginBottom: 10 }}>
       <Space wrap size="middle" style={{ marginBottom: 8 }}>
@@ -122,6 +138,18 @@ function TurnCard({ turn }: { turn: Turn }) {
         ? <div className="turn-reply"><Markdown text={turn.reply} /></div>
         : <Typography.Text type="secondary">No reply was recorded for this turn.</Typography.Text>}
       {turn.detail && <Alert type="warning" showIcon style={{ marginTop: 8 }} message={turn.detail} />}
+
+      {problem && <Alert type="error" showIcon style={{ marginTop: 8 }} message={problem} />}
+      {canWrite && (
+        <Space style={{ marginTop: 8 }}>
+          {judged
+            ? <Typography.Text type="secondary">Reported as {judged}. It is in the Feedback queue.</Typography.Text>
+            : <>
+                <Button size="small" danger onClick={() => judge('wrong')}>This answer was wrong</Button>
+                <Button size="small" onClick={() => judge('unclear')}>Unclear</Button>
+              </>}
+        </Space>
+      )}
 
       {(turn.passages?.length || turn.toolCalls?.length || turn.traceId) && (
         <Descriptions size="small" column={1} style={{ marginTop: 10 }}>

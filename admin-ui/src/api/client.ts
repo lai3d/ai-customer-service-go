@@ -1,6 +1,6 @@
 import type {
-  AuditEntry, ConversationSummary, CorpusVersion, KnowledgeEntry, Overview, Ticket,
-  TicketEvent, TicketPatch, Turn, WhoAmI,
+  AuditEntry, ConversationSummary, CorpusVersion, FeedbackItem, FeedbackSource,
+  FeedbackVerdict, KnowledgeEntry, Overview, Ticket, TicketEvent, TicketPatch, Turn, WhoAmI,
 } from './types'
 
 // Written by the container at start-up (public/config.js). Reading it through a function
@@ -127,6 +127,17 @@ export const api = {
   activateVersion: (version: string, revision: number) =>
     request<null>(`/knowledge/versions/${encodeURIComponent(version)}/activate`, {
       method: 'POST', body: JSON.stringify({ revision }),
+    }),
+  feedback: (includeHandled: boolean) =>
+    request<{ items: FeedbackItem[] | null }>(
+      `/feedback?handled=${includeHandled}&limit=200`),
+  judgeAnswer: (turnId: string, verdict: FeedbackVerdict, note: string) =>
+    request<null>(`/turns/${encodeURIComponent(turnId)}/feedback`, {
+      method: 'POST', body: JSON.stringify({ verdict, note }),
+    }),
+  clearFeedback: (turnId: string, source: FeedbackSource) =>
+    request<null>(`/turns/${encodeURIComponent(turnId)}/feedback/handled`, {
+      method: 'POST', body: JSON.stringify({ source }),
     }),
   audit: (params: { limit: number; offset: number }) =>
     request<{ total: number; entries: AuditEntry[] | null }>(
