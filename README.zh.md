@@ -8,7 +8,8 @@
 
 一个用 Go 写的 AI 客服后端：在双语 FAQ 语料上做检索增强问答、用工具调用完成真实业务动作、
 SSE 流式输出、按会话计的 token 预算、Prometheus 指标和 OpenTelemetry 链路。**嵌入模型跑在
-本进程内**；对话模型默认是 Anthropic Claude，OpenAI 和 xAI 通过配置切换。
+本进程内**；对话模型默认是 Anthropic Claude，OpenAI 和 xAI 通过配置切换 —— 还可以指定第二个
+供应商作为兜底，在第一个以"重试也没用"的方式失败时接管。
 
 **这是同一套系统的第二个实现，第一个[在 Java 里](https://github.com/lai3d/ai-customer-service-java/blob/main/README.zh.md)。**
 （那边的 [English README](https://github.com/lai3d/ai-customer-service-java)。）
@@ -34,6 +35,7 @@ SSE 流式输出、按会话计的 token 预算、Prometheus 指标和 OpenTelem
 | 每家 provider 的当前模型都拒绝 `temperature`；OpenAI 协议不主动要就不给用量 | [对话 provider](docs/providers.md#what-only-a-live-call-found) |
 | 一个静默读零的成本指标比没有指标更糟，所以"漏掉的"要被计数 | [成本与失败](docs/reliability.md#the-model-in-the-metrics-is-not-the-model-you-asked-for) |
 | 被放弃的流其实早已计费；而本该抓到它的测试之所以能通过，是因为它测的是 stub | [成本与失败](docs/reliability.md#an-abandoned-stream-has-usually-already-been-billed) |
+| 切到第二个供应商是一次**无声的成功** —— 所有告警都是绿的，账单却换了一家没人选过的供应商 | [对话供应商](docs/providers.md#the-money-of-an-attempt-that-was-thrown-away) |
 | 一个被拒绝的操作没有留下任何痕迹——审计记下了所有成功的动作，没记下任何被拒的 | [运营后台](docs/operations.md#reading-is-an-action) |
 | 关掉标签页的客户被记成了数据库故障，而那份记录的全部职责就是区分这两件事 | [运营后台](docs/operations.md#the-turn-record-is-not-the-chat-memory) |
 | 一个安全响应头写在配置里却没出现在响应上——nginx 不会把 add_header 继承进自己也设了 add_header 的 location | [运营后台](docs/operations.md#what-the-container-found-which-a-laptop-would-not-have) |
@@ -252,6 +254,7 @@ reply      关于你的两个问题：
 | [回到人的闭环](docs/handoff.md) | 让人知道有工单，以及把人的回复送回给提问的客户（英文） |
 | [度量答案质量](docs/evaluation.md) | 35 个用例打真实模型，以及那次让分数变得有意义的对照实验（英文） |
 | [删除客户数据](docs/retention.md) | 按时限过期与按请求擦除——以及更难的那一半：擦除之后什么必须留下，为什么（英文） |
+| [安全、滥用，以及被明确决定不做的部分](docs/safety.md) | 「拒绝」的哪一半是可计数的、如何从已有的行里读出滥用信号，以及为什么内容审核是被论证掉的而不是被忘掉的（英文） |
 | [真跑一个产品还缺什么](docs/production-readiness.md) | 从"能跑的系统"到"产品"之间的距离，逐条列出：身份、能被人编辑的知识、回到人的闭环，以及另外十一项（英文） |
 
 ---

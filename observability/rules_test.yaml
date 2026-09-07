@@ -75,6 +75,12 @@ tests:
         values: "0+1x480"
       - series: 'chat_rate_limited_subjects{instance="10.0.0.1:8081", job="ai-customer-service-go"}'
         values: "1x480"
+      # One turn in a hundred failing over, for the same reason the failure ratios are not
+      # zero: no failover series at all makes the ratio empty, and an empty expression
+      # fires nothing however wrong the threshold is. A provider having a bad minute is a
+      # healthy day, not an incident.
+      - series: 'chat_provider_failovers_total{from="anthropic", to="openai", reason="unavailable"}'
+        values: "0+1x480"
       - series: 'up{job="ai-customer-service-go", instance="10.0.0.1:8081"}'
         values: "1x480"
     promql_expr_test:
@@ -317,4 +323,26 @@ tests:
     promql_expr_test:
       - expr: 'ALERTS{alertname="RepeatedlyRateLimitedSubjects", alertstate="firing"}'
         eval_time: 40m
+        exp_samples: []
+
+  # A fifth of turns answered by the second provider: the primary is down and every alert
+  # about turns is quiet, because the customers are being answered.
+  - interval: 1m
+    name: the primary provider is down and the fallback is carrying the traffic
+    input_series:
+      - series: 'chat_turns_total{outcome="completed"}'
+        values: "0+10x480"
+      - series: 'chat_provider_failovers_total{from="anthropic", to="openai", reason="unavailable"}'
+        values: "0+2x480"
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="RunningOnTheFallbackProvider", alertstate="firing"}'
+        eval_time: 90m
+        exp_samples:
+          - labels: 'ALERTS{alertname="RunningOnTheFallbackProvider", alertstate="firing", severity="warning"}'
+            value: 1
+      # And nothing else, which is the point of the alert existing: the turns all
+      # completed, so every objective above is being met while the service runs on a
+      # provider nobody chose.
+      - expr: 'ALERTS{alertname!="RunningOnTheFallbackProvider"}'
+        eval_time: 90m
         exp_samples: []

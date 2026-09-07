@@ -37,7 +37,7 @@ What is missing is almost entirely product, not scaffolding.
 | 4 | [Real tools instead of the mock](#4-the-tools-are-fiction) | week 1 | both | **seam done** 2026-09-07, integration blocked on access | 2–3 h (0.5 h left) |
 | 5 | [Retention and deletion of customer data](#5-there-is-no-way-to-delete-a-customer) | week 1 | both | **done** 2026-09-06 | 2–3 h |
 | 6 | [An answer-quality regression set](#6-nothing-tells-you-a-prompt-change-made-it-worse) | week 1 | both | **done** 2026-09-06 | 3–4 h |
-| 7 | [Feedback from customers and operators](#7-nothing-comes-back) | week 2 | both | not started | 2–3 h |
+| 7 | [Feedback from customers and operators](#7-nothing-comes-back) | week 2 | both | **operator half done** 2026-09-07; customer half open | 2–3 h |
 | 8 | [Alerting and an SLO](#8-there-are-metrics-and-nothing-watches-them) | week 2 | Go | **done** 2026-09-07 | 2 h |
 | 9 | [A schema migration path](#9-the-first-change-to-a-live-schema-is-manual) | week 2 | Go | not started | 1–2 h |
 | 10 | [The admin list pages lie past one page](#10-the-admin-lists-lie-past-the-first-page) | week 2 | Go | **done** 2026-09-06 | 0.5 h |
@@ -356,6 +356,18 @@ either.
 in the operations UI that captures the turn; and a queue of those that feeds item 6's
 regression set and item 2's knowledge editor. The value is the loop, not the widget.
 
+**The operator half is done, 2026-09-07.** `internal/feedback` records a verdict per turn
+per source, the conversation view has a Judge action, and the Feedback page is the queue —
+each item carrying the question, the reply, the model and the entries it was answered from,
+so a reported-wrong answer arrives as a piece of work rather than a complaint. The two
+sources are stored separately and never averaged: a customer knows whether they were
+helped and nothing about correctness, an operator knows the opposite, and one number would
+lose the distinction that decides what to do.
+
+**The customer half is open.** There is no rating on the demo page and no session-scoped
+`POST /api/v1/turns/{id}/feedback`, so the only verdicts in the queue are operators'. That
+is the half that scales: operators read a sample, customers read everything.
+
 ### 8. There are metrics and nothing watches them
 
 **Done, 2026-09-07.** `observability/`, and [the reasoning](observability.md#an-slo-on-the-turn).
@@ -525,6 +537,14 @@ error check makes every timed-out turn call a second provider, and the test for 
 ordering exists because the first version of the cancellation test could not see the guard
 at all. That first version was left in place with a comment saying what it does and does
 not prove.
+
+**Closed at the merge, having been flagged rather than carried.** An alert
+(`RunningOnTheFallbackProvider`) now names `chat_provider_failovers_total`, seen firing on
+a fifth of turns failing over and seen *not* firing on one in a hundred;
+`k8s/examples/secret.yaml` names the fallback provider's key, which `envFrom` carries into
+the pod; and both READMEs' opening paragraph says a fallback exists. A capability that only
+the docs behind it know about is the failure mode CLAUDE.md names in *the front door does
+not get re-read*.
 
 **Not done, and known.** `chat_model_calls_total` counts one call per `Stream`, so it
 undercounts by one per failover — provider calls attempted is that plus

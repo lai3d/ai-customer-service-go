@@ -10,7 +10,8 @@ An AI customer service backend in Go: retrieval-augmented answers over a bilingu
 corpus, tool calling for real business actions, SSE streaming, a per-conversation token
 budget, Prometheus metrics and OpenTelemetry traces. The embedding model runs in this
 process; the chat model is Anthropic Claude by default, with OpenAI and xAI selectable by
-configuration.
+configuration — and a second provider can be named as a fallback, used when the first one
+fails in a way retrying it will not fix.
 
 **This is the second implementation of a system that already exists
 [in Java](https://github.com/lai3d/ai-customer-service-java).** It is not a port. The two
@@ -37,6 +38,7 @@ recorded too.
 | Every provider's current model rejects `temperature`, and the OpenAI protocol hides usage unless asked | [Chat providers](docs/providers.md#what-only-a-live-call-found) |
 | A cost meter that silently reads zero is worse than none, so the misses are counted | [Cost and failure](docs/reliability.md#the-model-in-the-metrics-is-not-the-model-you-asked-for) |
 | An abandoned stream had already been billed, and the test that would have caught it could only pass because it tested the stub | [Cost and failure](docs/reliability.md#an-abandoned-stream-has-usually-already-been-billed) |
+| Failing over to a second provider is a *silent success* — every alert stays green while the bill moves to a provider nobody chose | [Chat providers](docs/providers.md#the-money-of-an-attempt-that-was-thrown-away) |
 | A refused action left no trace at all — the audit trail recorded everything that succeeded and nothing that was denied | [Operations](docs/operations.md#reading-is-an-action) |
 | A customer who closed the tab was recorded as a database failure, in the record whose whole job is telling those apart | [Operations](docs/operations.md#the-turn-record-is-not-the-chat-memory) |
 | A security header was in the config file and not on the response, because nginx does not inherit one into a location that sets its own | [Operations](docs/operations.md#what-the-container-found-which-a-laptop-would-not-have) |
@@ -261,6 +263,7 @@ out. See [Retrieval](docs/retrieval.md#retrieval-quality).
 | [The loop back to a human](docs/handoff.md) | Telling somebody a ticket exists, and getting a person's reply back to the customer who asked |
 | [Measuring the answers](docs/evaluation.md) | 35 cases against the real model, and the control run that makes the score mean something |
 | [Deleting customer data](docs/retention.md) | Expiry by age and erasure on request — and the harder half, which is what survives an erasure and why |
+| [Safety, abuse, and what was decided against](docs/safety.md) | Which half of a refusal is countable, reading abuse out of rows that already exist, and why moderation is argued against rather than forgotten |
 | [What is missing before this runs a real product](docs/production-readiness.md) | The distance between a working system and a product, itemised: identity, knowledge that people can edit, the loop back to a human, and eleven more |
 
 ---

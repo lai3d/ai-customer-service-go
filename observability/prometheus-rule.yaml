@@ -312,3 +312,39 @@ spec:
             description: >-
               Sustained for fifteen minutes. If UnpricedModelCalls is also firing, this
               number is an under-estimate rather than the whole bill.
+
+        # The service is answering from a provider nobody chose.
+        #
+        # A failover is a silent success: the customer gets an answer, the turn is
+        # recorded `completed`, and every alert above stays quiet. Without this one the
+        # first sign that the primary provider is down is the invoice from the second --
+        # which is also why the threshold is a ratio rather than a count. One failover an
+        # hour is a provider having a bad minute; a twentieth of all turns is an outage
+        # somebody upstream has not admitted to yet.
+        #
+        # `or vector(0)` on the denominator only, and deliberately not on the numerator:
+        # no failovers means the numerator is empty and the whole expression is empty,
+        # which is the correct silence. Failovers with no turns at all divides by zero and
+        # fires, which is also correct -- turns are recorded for every outcome, so that
+        # combination means the turn recorder has stopped rather than that nothing is
+        # happening.
+        - alert: RunningOnTheFallbackProvider
+          expr: |
+            sum(rate(chat_provider_failovers_total[15m]))
+              /
+            (sum(rate(chat_turns_total[15m])) or vector(0)) > 0.05
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "More than a twentieth of turns are being answered by the fallback provider"
+            description: >-
+              Split by `reason` first: `unavailable` is the primary returning 429 or 5xx
+              after its own retries, `transport` is no HTTP response at all, and `stalled`
+              is a provider that accepted the request and went quiet -- the failure a
+              status page admits to last. Two things are true while this fires. The cost
+              figures are wrong: an abandoned attempt's tokens are billed by the primary
+              and counted against the fallback's model id and price, and
+              chat_failover_abandoned_tokens_total is how much. And the answers are coming
+              from a different model than the one this service was tuned and evaluated
+              against.
