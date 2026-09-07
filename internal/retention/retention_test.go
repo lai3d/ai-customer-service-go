@@ -58,8 +58,8 @@ func conversation(t *testing.T, id, subject string, age time.Duration) string {
 		VALUES ($1,1,'lookup_order_status','found')`, turnID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO conversation_owner (conversation_id, subject, created_at)
-		VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, id, subject, at); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO conversation_owner (conversation_id, subject, tenant_id, created_at)
+		VALUES ($1,$2,'default',$3) ON CONFLICT DO NOTHING`, id, subject, at); err != nil {
 		t.Fatal(err)
 	}
 
@@ -244,8 +244,8 @@ func TestErasingASubjectCoversEveryConversationTheyOwn(t *testing.T) {
 	other := "sub-other-" + stamp
 	conversation(t, other, "subject-e-"+stamp, 0)
 
-	if _, err := pool.Exec(ctx, `INSERT INTO chat_session (token_hash, subject, created_at, last_seen_at, expires_at)
-		VALUES (sha256($1::bytea), $2, now(), now(), now() + interval '1 hour')`,
+	if _, err := pool.Exec(ctx, `INSERT INTO chat_session (token_hash, subject, tenant_id, created_at, last_seen_at, expires_at)
+		VALUES (sha256($1::bytea), $2, 'default', now(), now(), now() + interval '1 hour')`,
 		[]byte(stamp), subject); err != nil {
 		t.Fatal(err)
 	}

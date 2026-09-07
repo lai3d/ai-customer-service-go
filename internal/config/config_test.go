@@ -385,3 +385,45 @@ func TestTheTurnLeaseMustOutliveTheRequestTimeout(t *testing.T) {
 		})
 	}
 }
+
+// TENANCY is validated at start-up rather than compared later. `TENANCY=requird` silently
+// meaning "every request is the default tenant" is the exact shape of a security control
+// that is configured, believed, and absent.
+func TestTenancyIsValidatedAndNeedsSessions(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "test")
+
+	t.Run("a misspelling fails at start-up", func(t *testing.T) {
+		t.Setenv("TENANCY", "requird")
+		if _, err := config.Load(); err == nil {
+			t.Error("TENANCY=requird was accepted")
+		}
+	})
+	t.Run("required needs sessions", func(t *testing.T) {
+		t.Setenv("TENANCY", "required")
+		t.Setenv("AUTH_MODE", "off")
+		if _, err := config.Load(); err == nil {
+			t.Error("TENANCY=required was accepted with AUTH_MODE=off, where there is " +
+				"no session for a tenant to belong to")
+		}
+	})
+	t.Run("required with sessions loads", func(t *testing.T) {
+		t.Setenv("TENANCY", "required")
+		t.Setenv("AUTH_MODE", "session")
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Auth.Tenancy != "required" {
+			t.Errorf("Tenancy is %q", cfg.Auth.Tenancy)
+		}
+	})
+	t.Run("unset is single", func(t *testing.T) {
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Auth.Tenancy != "single" {
+			t.Errorf("with TENANCY unset the mode is %q, want single", cfg.Auth.Tenancy)
+		}
+	})
+}

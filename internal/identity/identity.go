@@ -34,11 +34,18 @@ import (
 
 // Subject is who a request is from. An empty ID means the request is unattributed, which
 // is only reachable in Mode "off".
+// Subject is who is asking, and for whom.
+//
+// TenantID is not decoration on the id: it is half the identity. A subject id is 128 bits
+// of randomness and would not collide across tenants on its own, but "would not collide"
+// is an argument about probability, and every query below carries the tenant as a
+// predicate so that isolation is a constraint instead.
 type Subject struct {
-	ID string
+	ID       string
+	TenantID string
 }
 
-func (s Subject) Anonymous() bool { return s.ID == "" }
+func (s Subject) Anonymous() bool { return s.ID == "" || s.TenantID == "" }
 
 type Mode string
 
@@ -90,7 +97,12 @@ func NewSessions(pool *pgxpool.Pool, ttl time.Duration) *Sessions {
 
 // Issue returns a new session token. The token is returned exactly once and never stored,
 // so it cannot be recovered from the database or from a log line.
-func (s *Sessions) Issue(ctx context.Context) (token string, subject Subject, expires time.Time, err error) {
+func (s *Sessions) Issue(ctx context.Context, tenantID string) (token string, subject Subject, expires time.Time, err error) {
+	if tenantID == "" {
+		// Refused rather than defaulted. A session with no tenant would be a session that
+		// belongs to whichever tenant a later query forgets to filter on.
+		return "", Subject{}, time.Time{}, errors.New("refusing to issue a session with no tenant")
+	}
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return "", Subject{}, time.Time{}, err
@@ -101,13 +113,13 @@ func (s *Sessions) Issue(ctx context.Context) (token string, subject Subject, ex
 	if _, err := rand.Read(id); err != nil {
 		return "", Subject{}, time.Time{}, err
 	}
-	subject = Subject{ID: hex.EncodeToString(id)}
+	subject = Subject{ID: hex.EncodeToString(id), TenantID: tenantID}
 	expires = time.Now().Add(s.ttl)
 
 	if _, err := s.pool.Exec(ctx, `
-		INSERT INTO chat_session (token_hash, subject, created_at, last_seen_at, expires_at)
-		VALUES ($1, $2, now(), now(), $3)`,
-		hashToken(token), subject.ID, expires); err != nil {
+		INSERT INTO chat_session (token_hash, subject, tenant_id, created_at, last_seen_at, expires_at)
+		VALUES ($1, $2, $3, now(), now(), $4)`,
+		hashToken(token), subject.ID, tenantID, expires); err != nil {
 		return "", Subject{}, time.Time{}, err
 	}
 	return token, subject, expires, nil
@@ -120,18 +132,18 @@ func (s *Sessions) Verify(ctx context.Context, token string) (Subject, error) {
 	if token == "" {
 		return Subject{}, ErrNoSession
 	}
-	var subject string
+	var subject, tenantID string
 	err := s.pool.QueryRow(ctx, `
 		UPDATE chat_session SET last_seen_at = now()
 		WHERE token_hash = $1 AND expires_at > now()
-		RETURNING subject`, hashToken(token)).Scan(&subject)
+		RETURNING subject, tenant_id`, hashToken(token)).Scan(&subject, &tenantID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Subject{}, ErrNoSession
 	}
 	if err != nil {
 		return Subject{}, err
 	}
-	return Subject{ID: subject}, nil
+	return Subject{ID: subject, TenantID: tenantID}, nil
 }
 
 // Sweep deletes sessions that expired more than grace ago. Conversations outlive their
@@ -179,22 +191,37 @@ func (c *Conversations) Claim(ctx context.Context, id string, subject Subject) e
 	if subject.Anonymous() {
 		return errors.New("refusing to bind a conversation to an empty subject")
 	}
-	var owner string
+	// The conflict target stays the conversation id alone, and that is deliberate: ids are
+	// server-issued and must be unique across the whole service, not merely within a
+	// tenant. Two tenants that could each hold conversation `abc` would make every id in a
+	// log line ambiguous, and the first cross-tenant join written afterwards would return
+	// both.
+	//
+	// DO UPDATE with the row's own value rather than DO NOTHING, and the difference is a
+	// bug this had. DO NOTHING returns no row *and does not wait*, so a loser whose winner
+	// has not committed yet sees neither its own insert nor the other's -- and the
+	// `UNION ALL` reading the table finds nothing either, because that read is on the same
+	// snapshot. The customer got `no rows in result set`, which the edge turns into a 503
+	// on the first turn of a conversation.
+	//
+	// It was rare enough to look like nothing: twelve concurrent claims reproduce it
+	// roughly four runs in five, and one claim never does. DO UPDATE takes the row lock,
+	// waits for the other transaction to finish, and then returns the winner -- so the
+	// loser learns it lost instead of being told the database is broken. The update is a
+	// no-op by construction, and Claim runs once per conversation rather than once per
+	// turn, so the dead tuple it costs is one per conversation.
+	var owner, tenantID string
 	err := c.pool.QueryRow(ctx, `
-		WITH attempt AS (
-			INSERT INTO conversation_owner (conversation_id, subject, created_at)
-			VALUES ($1, $2, now())
-			ON CONFLICT (conversation_id) DO NOTHING
-			RETURNING subject
-		)
-		SELECT subject FROM attempt
-		UNION ALL
-		SELECT subject FROM conversation_owner WHERE conversation_id = $1
-		LIMIT 1`, id, subject.ID).Scan(&owner)
+		INSERT INTO conversation_owner (conversation_id, subject, tenant_id, created_at)
+		VALUES ($1, $2, $3, now())
+		ON CONFLICT (conversation_id) DO UPDATE
+			SET subject = conversation_owner.subject
+		RETURNING subject, tenant_id`,
+		id, subject.ID, subject.TenantID).Scan(&owner, &tenantID)
 	if err != nil {
 		return err
 	}
-	if owner != subject.ID {
+	if owner != subject.ID || tenantID != subject.TenantID {
 		return ErrNotYours
 	}
 	return nil
@@ -205,9 +232,17 @@ func (c *Conversations) Claim(ctx context.Context, id string, subject Subject) e
 // by someone else: a 403 confirms the id exists, and an id someone else can enumerate is
 // most of what this is protecting.
 func (c *Conversations) Owns(ctx context.Context, id string, subject Subject) error {
+	if subject.Anonymous() {
+		return ErrNotYours
+	}
+	// The tenant is in the WHERE clause rather than compared afterwards, so a conversation
+	// belonging to another tenant is ErrNoSuchConv rather than ErrNotYours. Both become the
+	// same 404 at the edge, and this is the shape that stays correct if they ever stop
+	// being the same: one tenant must not learn that another tenant's id exists.
 	var owner string
 	err := c.pool.QueryRow(ctx,
-		`SELECT subject FROM conversation_owner WHERE conversation_id = $1`, id).Scan(&owner)
+		`SELECT subject FROM conversation_owner WHERE conversation_id = $1 AND tenant_id = $2`,
+		id, subject.TenantID).Scan(&owner)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNoSuchConv
 	}

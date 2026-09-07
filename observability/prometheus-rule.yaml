@@ -272,11 +272,14 @@ spec:
           annotations:
             summary: "More than a fifth of requests are being refused before a turn starts"
             description: >-
-              Split by reason first, because the four are different problems:
+              Split by reason first, because the five are different problems:
               `daily_budget` is the ceiling above, `rate_limited` is TURNS_PER_MINUTE or
               SESSIONS_PER_HOUR_PER_IP, `no_session` is usually a client that has stopped
-              sending its token or sessions expiring faster than SESSION_TTL suggests, and
-              `not_yours` is a client sending conversation ids it does not own. The
+              sending its token or sessions expiring faster than SESSION_TTL suggests,
+              `not_yours` is a client sending conversation ids it does not own, and
+              `no_tenant` is an API key that is missing, unknown, revoked, on a disabled
+              tenant, or presented alongside another tenant's session -- one integration,
+              not a crowd, and usually one that has just been deployed. The
               threshold is a placeholder: a service with a legitimately chatty client will
               sit above it and should have it raised rather than muted.
 

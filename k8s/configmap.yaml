@@ -68,6 +68,11 @@ data:
   # Identity. "off" is the pre-identity behaviour -- client-supplied conversation ids and
   # no ownership -- which the benchmark drives and which is not a production setting.
   AUTH_MODE: "off"
+
+  # single: a request with no API key is served as the `default` tenant. Set to `required`
+  # once there is more than one tenant -- it refuses a request with no key before any model
+  # call, and needs AUTH_MODE=session, because a tenant is what a session belongs to.
+  TENANCY: "single"
   SESSION_TTL_HOURS: "24"
   TURNS_PER_MINUTE: "20"
   SESSIONS_PER_HOUR_PER_IP: "60"

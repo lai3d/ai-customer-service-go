@@ -42,7 +42,7 @@ What is missing is almost entirely product, not scaffolding.
 | 9 | [A schema migration path](#9-the-first-change-to-a-live-schema-is-manual) | week 2 | Go | **done** 2026-09-07 | 1–2 h |
 | 10 | [The admin list pages lie past one page](#10-the-admin-lists-lie-past-the-first-page) | week 2 | Go | **done** 2026-09-06 | 0.5 h |
 | 11 | [Provider failover](#11-three-providers-are-supported-and-one-runs) | scale | both | **done** 2026-09-07 | 1–2 h |
-| 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | **in progress** 2026-09-07: the tenant and its keys | 4–6 h |
+| 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | **in progress** 2026-09-07: tenants, keys, and the chat edge | 4–6 h |
 | 13 | [The deployment is a demo deployment](#13-the-manifests-stop-where-a-real-cluster-starts) | scale | Go | **manifests done** 2026-09-07; secrets and digest pinning remain | 2–3 h (0.5 h left) |
 | 14 | [Abuse and content safety](#14-the-system-prompt-is-the-whole-of-the-safety-story) | scale | both | **partly done** 2026-09-07 | 2–3 h (moderation not built, deliberately) |
 | 15 | [A turn a dead process left behind stays in_flight for ever](#15-a-turn-a-dead-process-left-behind-stays-in_flight-for-ever) | week 2 | Go | **done** 2026-09-07 | 1 h |
@@ -672,6 +672,51 @@ Four things are already decided by this stage, each with a perturbation that was
 `default` is a real row inserted by the migration rather than a value the code substitutes
 when it finds none: "no tenant" as a value is precisely the state a forgotten predicate
 produces, and it would be indistinguishable from correct.
+
+**Second stage done: the chat edge.** Migration `0003_tenant_identity.sql` puts `tenant_id`
+on `chat_session`, `conversation_owner` and `rate_window` — added with a default, backfilled
+by the `ALTER` itself, and then **the default is dropped**, so a row written without a
+tenant is a constraint violation rather than a silent orphan. Five test fixtures went red on
+that immediately, which is the check working.
+
+The key arrives in `X-API-Key`, not `Authorization`: that one already carries the customer's
+session token, and they are two different identities — *which product this is* and *which
+visitor this is*. The tenant is resolved **before** the session, because a session belongs to
+one; resolving it afterwards would mean minting a session and then assigning it, and the
+window between the two is where a session with no tenant lives.
+
+`TENANCY=single` (the default) serves a keyless request as `default`, which is what this
+service has always done and what the parity fixtures need. `TENANCY=required` refuses one
+before any model call. **A presented key is resolved in both modes and an invalid one is 401
+in both** — there is no mode in which a wrong key quietly becomes the default tenant, because
+that is the failure where a misconfigured integration writes another customer's data into
+`default` and every response looks successful.
+
+**The obvious isolation test does not test isolation, and finding that out was the point.**
+Two tenants at the edge get two different subjects, so a cross-tenant request is already
+refused by the subject comparison that existed before tenancy: removing the tenant from the
+`WHERE` clause of `Owns` leaves that test green. It was run, and it passed. What tests the
+predicate is a test that holds the subject *equal* across two tenants, which only the store
+API can construct — and that one goes red under the same perturbation. The edge test is kept
+for what it does prove; the store test is what proves the predicate.
+
+Six perturbations were seen red: the tenant dropped from `Owns`, from `Claim`, the
+session/key mismatch check removed, an unknown key falling back to `default`,
+`TENANCY=required` ignored, and the rate limiter keyed without the tenant.
+
+**A pre-existing bug fell out of this**, and it was not a tenancy bug. `Claim` used
+`ON CONFLICT DO NOTHING` followed by a `UNION ALL` read: a loser whose winner has not
+committed sees neither its own insert nor the other's, because both are on the same
+snapshot — and the customer got `no rows in result set`, which the edge turns into a 503 on
+the first turn of a conversation. Twelve concurrent claims reproduce it about four runs in
+five; one never does, which is why it survived. `ON CONFLICT DO UPDATE` with the row's own
+value takes the lock, waits, and returns the winner. The deterministic test uses transaction
+visibility rather than timing, the same construction `internal/store` used for the
+`CREATE EXTENSION` race.
+
+**Not yet:** the corpus, knowledge, tickets, feedback, turns and the operations surface are
+all still single-tenant. `corpus_active`'s primary key on a constant is unchanged, and
+`admin_audit` has no tenant column yet.
 
 Two things this settles that were open here. `corpus_active`'s primary key on a constant —
 flagged above as the shape that does not survive tenancy — becomes a primary key on

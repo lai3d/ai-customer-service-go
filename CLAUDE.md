@@ -150,7 +150,7 @@ that show why it is not needed here.
   and somebody else's conversation (404) are all decided in `internal/httpapi/identity.go`,
   and for a day the service could have refused every customer it had while
   `chat_turns_total` stayed flat and green. `chat_edge_refusals_total{reason}` closes it:
-  four reasons, **no subject and no conversation id** — a refusal counter is where an
+  five reasons, **no subject, no conversation id and no key id** — a refusal counter is where an
   attacker would choose the label values. Anything else added at that edge needs its own
   increment, because nothing downstream will count it.
 - **The assistant declining is not detectable without a second model call, and a phrase
@@ -310,6 +310,25 @@ that show why it is not needed here.
   passes.
 - **The ticket table and the budget table are both bounded LRUs.** A map keyed by
   conversation id that nothing removes from is a memory leak with a long fuse.
+- **The tenant key is `X-API-Key`, never `Authorization`.** That header carries the
+  customer's session token; the two are different identities (which product, which visitor)
+  and one header carrying whichever was sent is how a client authenticates as the wrong
+  thing. The tenant is resolved *before* the session, because a session belongs to one, and
+  a session presented with another tenant's key is refused rather than reconciled.
+- **There is no mode in which a wrong API key becomes the `default` tenant.**
+  `TENANCY=single` serves a *keyless* request as default; a key that is present is always
+  resolved and an invalid one is always 401. The other shape is a misconfigured integration
+  writing another customer's data into `default` with every response looking successful.
+- **A cross-tenant test at the edge does not test the tenant predicate.** Two tenants get
+  two different subjects, so the subject comparison refuses the request and removing
+  `tenant_id` from the `WHERE` clause leaves the test green — verified. What tests the
+  predicate holds the subject *equal* across two tenants, which only the store API can
+  construct.
+- **`ON CONFLICT DO NOTHING` plus a read is not a claim.** The loser sees neither its own
+  insert nor the uncommitted winner's — both are on its own snapshot — and gets `no rows in
+  result set`, which the edge turns into a 503 on a customer's first turn. `DO UPDATE` with
+  the row's own value takes the lock, waits, and returns the winner. It reproduced about
+  four runs in five at twelve-way concurrency and never at one, which is why it lived.
 - **A customer's rating is scoped by the turn's conversation, not by the turn id.** The id
   is in the usage event and reaches the browser; what refuses somebody else's turn is
   resolving it to a conversation and checking the session owns that. A turn that is not

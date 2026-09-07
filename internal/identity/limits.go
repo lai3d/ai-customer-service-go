@@ -49,20 +49,27 @@ var (
 // statement and cannot drift between replicas. A sliding window needs either a sorted set
 // per subject or a second table, and neither is worth it until something says this bound
 // is the one being hit.
-func (l *Limits) Allow(ctx context.Context, bucket, key string, limit int, window time.Duration) (retryAfter time.Duration, err error) {
+//
+// The tenant is a separate argument rather than folded into the key, because the key is
+// sometimes a client IP: one tenant's chatty office would otherwise spend another tenant's
+// session allowance, and the two would be indistinguishable in the table afterwards.
+func (l *Limits) Allow(ctx context.Context, tenantID, bucket, key string, limit int, window time.Duration) (retryAfter time.Duration, err error) {
 	if limit <= 0 {
 		return 0, nil
+	}
+	if tenantID == "" {
+		return 0, errors.New("refusing to count a request against no tenant")
 	}
 	start := time.Now().UTC().Truncate(window)
 	var count int
 	// The insert is the increment. Doing it as a read and then a write is a race that
 	// resolves in favour of whoever is hammering the endpoint.
 	err = l.pool.QueryRow(ctx, `
-		INSERT INTO rate_window (bucket, subject, window_start, count)
-		VALUES ($1, $2, $3, 1)
-		ON CONFLICT (bucket, subject, window_start)
+		INSERT INTO rate_window (tenant_id, bucket, subject, window_start, count)
+		VALUES ($1, $2, $3, $4, 1)
+		ON CONFLICT (tenant_id, bucket, subject, window_start)
 		DO UPDATE SET count = rate_window.count + 1
-		RETURNING count`, bucket, key, start).Scan(&count)
+		RETURNING count`, tenantID, bucket, key, start).Scan(&count)
 	if err != nil {
 		return 0, err
 	}

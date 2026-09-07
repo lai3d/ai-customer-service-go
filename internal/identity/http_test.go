@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,7 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/httpapi"
 	"github.com/lai3d/ai-customer-service-go/internal/identity"
 	"github.com/lai3d/ai-customer-service-go/internal/obs"
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -40,6 +42,12 @@ func (a *answering) Turn(_ context.Context, id, _ string, emit func(chat.Event))
 // serveEdge builds the edge the way cmd/server does, with whatever limits and registry
 // the caller wants to look at afterwards. The two helpers below are the common cases.
 func serveEdge(t *testing.T, limits *identity.Limits, metrics *obs.Metrics) (*httptest.Server, *answering) {
+	return serveTenanted(t, limits, metrics, false)
+}
+
+// serveTenanted is the same edge with the tenant resolver wired and TENANCY chosen.
+func serveTenanted(t *testing.T, limits *identity.Limits, metrics *obs.Metrics,
+	requireKey bool) (*httptest.Server, *answering) {
 	t.Helper()
 	turner := &answering{}
 	mux := http.NewServeMux()
@@ -50,6 +58,8 @@ func serveEdge(t *testing.T, limits *identity.Limits, metrics *obs.Metrics) (*ht
 		Sessions:      identity.NewSessions(pool, time.Hour),
 		Conversations: identity.NewConversations(pool),
 		Limits:        limits,
+		Tenants:       tenant.NewStore(pool),
+		RequireKey:    requireKey,
 	}, nil, feedback.NewStore(pool)).Routes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
@@ -612,5 +622,255 @@ func TestRatingIsLimitedWithoutSpendingTheCustomersTurns(t *testing.T) {
 	// The third rating is refused, because the bucket is a ceiling and not an exemption.
 	if resp := rate(t, server, token, turn, "wrong"); resp.StatusCode != http.StatusTooManyRequests {
 		t.Errorf("the third rating returned %d, want 429", resp.StatusCode)
+	}
+}
+
+// --- the tenant at the edge ----------------------------------------------------------
+
+func tenantWithKey(t *testing.T, name string) (id, key string) {
+	t.Helper()
+	ctx := context.Background()
+	store := tenant.NewStore(pool)
+	id = fmt.Sprintf("%s-%d", name, time.Now().UnixNano())
+	if len(id) > 40 {
+		id = id[:40]
+	}
+	if _, err := store.Create(ctx, id, name, "platform"); err != nil {
+		t.Fatal(err)
+	}
+	issued, err := store.IssueKey(ctx, id, "test", "platform")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id, issued.Secret
+}
+
+// sessionAs mints a session presenting a tenant's key, and returns the token.
+func sessionAs(t *testing.T, server *httptest.Server, key string) string {
+	t.Helper()
+	req, err := http.NewRequest("POST", server.URL+"/api/v1/session", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key != "" {
+		req.Header.Set(httpapi.TenantKeyHeader, key)
+	}
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /api/v1/session with a key returned %d", resp.StatusCode)
+	}
+	var body struct{ Token string }
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	return body.Token
+}
+
+func chatWithKey(t *testing.T, server *httptest.Server, token, key, conversation string) *http.Response {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"message": "hello", "conversationId": conversation})
+	req, err := http.NewRequest("POST", server.URL+"/api/v1/chat", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if key != "" {
+		req.Header.Set(httpapi.TenantKeyHeader, key)
+	}
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	return resp
+}
+
+func sessionTenant(t *testing.T, token string) string {
+	t.Helper()
+	var got string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT tenant_id FROM chat_session WHERE token_hash = sha256($1::bytea)`,
+		[]byte(token)).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// A session belongs to the tenant whose key minted it. Read out of the row rather than
+// inferred from behaviour: the row is what every later query filters on.
+func TestASessionBelongsToTheTenantWhoseKeyMintedIt(t *testing.T) {
+	server, _ := serveTenanted(t, nil, obs.NewMetrics(), false)
+	acme, acmeKey := tenantWithKey(t, "acme")
+	globex, globexKey := tenantWithKey(t, "globex")
+
+	if got := sessionTenant(t, sessionAs(t, server, acmeKey)); got != acme {
+		t.Errorf("a session minted with A's key belongs to %q", got)
+	}
+	if got := sessionTenant(t, sessionAs(t, server, globexKey)); got != globex {
+		t.Errorf("a session minted with B's key belongs to %q", got)
+	}
+	// And with no key, in single-tenant mode, the default -- which is what every request
+	// this service has ever served was.
+	if got := sessionTenant(t, sessionAs(t, server, "")); got != tenant.Default {
+		t.Errorf("a session minted with no key belongs to %q", got)
+	}
+}
+
+// The isolation test the ADR asks for, at the edge: write as A, read as B, find nothing.
+//
+// A conversation id is a server-issued uuid, so reaching this requires B to already have
+// A's id -- from a log, a screenshot, a shared browser. That is the case worth defending,
+// because it is the only one that ever happens.
+func TestOneTenantsSessionCannotReachAnothersConversation(t *testing.T) {
+	server, turner := serveTenanted(t, nil, obs.NewMetrics(), false)
+	_, acmeKey := tenantWithKey(t, "acme")
+	_, globexKey := tenantWithKey(t, "globex")
+
+	acmeToken := sessionAs(t, server, acmeKey)
+	resp := chatWithKey(t, server, acmeToken, acmeKey, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("A's first turn returned %d", resp.StatusCode)
+	}
+	conversation := resp.Header.Get(httpapi.ConversationIDHeader)
+	if conversation == "" {
+		t.Fatal("no conversation id came back")
+	}
+
+	globexToken := sessionAs(t, server, globexKey)
+	before := len(turner.conversations)
+	resp = chatWithKey(t, server, globexToken, globexKey, conversation)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("another tenant got %d for a conversation of A's, want 404", resp.StatusCode)
+	}
+	// A 404 that ran the turn anyway has already appended to the other tenant's history,
+	// which is most of the damage.
+	if len(turner.conversations) != before {
+		t.Errorf("the turn ran anyway: %v", turner.conversations)
+	}
+	// And A still owns it.
+	if resp := chatWithKey(t, server, acmeToken, acmeKey, conversation); resp.StatusCode != http.StatusOK {
+		t.Errorf("the owning tenant was refused its own conversation: %d", resp.StatusCode)
+	}
+}
+
+// Two identities, and they have to agree. A session says which visitor; a key says which
+// product. A request carrying one tenant's session and another's key means one of the two
+// is wrong, and continuing with either would be choosing which by accident.
+func TestASessionCannotBeUsedWithAnotherTenantsKey(t *testing.T) {
+	server, turner := serveTenanted(t, nil, obs.NewMetrics(), false)
+	_, acmeKey := tenantWithKey(t, "acme")
+	_, globexKey := tenantWithKey(t, "globex")
+
+	acmeToken := sessionAs(t, server, acmeKey)
+	before := len(turner.conversations)
+	if resp := chatWithKey(t, server, acmeToken, globexKey, ""); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("A's session with B's key returned %d, want 401", resp.StatusCode)
+	}
+	if len(turner.conversations) != before {
+		t.Error("the turn ran on a mismatched session and key")
+	}
+	// The same session with its own key still works, so the refusal is the mismatch and
+	// not the header being present.
+	if resp := chatWithKey(t, server, acmeToken, acmeKey, ""); resp.StatusCode != http.StatusOK {
+		t.Errorf("A's session with A's key returned %d", resp.StatusCode)
+	}
+}
+
+// A key that does not resolve is never quietly served as the default tenant. That failure
+// -- a misconfigured integration writing another customer's data into `default` while
+// every response looks successful -- is the reason there is no such mode.
+func TestAnUnknownKeyIsRefusedRatherThanTreatedAsTheDefaultTenant(t *testing.T) {
+	metrics := obs.NewMetrics()
+	server, _ := serveTenanted(t, nil, metrics, false)
+
+	req, err := http.NewRequest("POST", server.URL+"/api/v1/session", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(httpapi.TenantKeyHeader, "csk_0123456789ab_"+strings.Repeat("A", 43))
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("an unknown key returned %d, want 401", resp.StatusCode)
+	}
+	if got := testutil.ToFloat64(metrics.Refusals.WithLabelValues("no_tenant")); got != 1 {
+		t.Errorf("chat_edge_refusals_total{reason=\"no_tenant\"} is %v; a refusal nothing "+
+			"counts is a refusal nothing can alert on", got)
+	}
+}
+
+// TENANCY=required: no key, no service, before any model call.
+func TestWithTenancyRequiredARequestWithNoKeyIsRefused(t *testing.T) {
+	metrics := obs.NewMetrics()
+	server, turner := serveTenanted(t, nil, metrics, true)
+	_, key := tenantWithKey(t, "acme")
+
+	req, err := http.NewRequest("POST", server.URL+"/api/v1/session", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("a session request with no key returned %d, want 401", resp.StatusCode)
+	}
+	if got := testutil.ToFloat64(metrics.Refusals.WithLabelValues("no_tenant")); got != 1 {
+		t.Errorf("the refusal was not counted: %v", got)
+	}
+	if len(turner.conversations) != 0 {
+		t.Error("a turn ran without a tenant")
+	}
+
+	// A key still works, so the mode refuses the missing key rather than everything.
+	if got := sessionTenant(t, sessionAs(t, server, key)); got == "" {
+		t.Error("a valid key was refused under TENANCY=required")
+	}
+}
+
+// The per-IP session limit is per tenant. Its key is a client address, so without the
+// tenant one product's chatty office would spend another product's allowance -- and the
+// two would be indistinguishable in the table afterwards.
+func TestOneTenantCannotSpendAnothersSessionAllowance(t *testing.T) {
+	limits := identity.NewLimits(pool)
+	limits.SessionsPerHourPerIP = 2
+	server, _ := serveTenanted(t, limits, obs.NewMetrics(), false)
+	_, acmeKey := tenantWithKey(t, "acme")
+	_, globexKey := tenantWithKey(t, "globex")
+
+	for i := 1; i <= 2; i++ {
+		sessionAs(t, server, acmeKey)
+	}
+	// A is now at its ceiling from this address.
+	req, _ := http.NewRequest("POST", server.URL+"/api/v1/session", nil)
+	req.Header.Set(httpapi.TenantKeyHeader, acmeKey)
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("A's third session returned %d, want 429", resp.StatusCode)
+	}
+
+	// And B, from the same address, is untouched.
+	if got := sessionTenant(t, sessionAs(t, server, globexKey)); got == "" {
+		t.Error("B was refused a session because A had spent its own allowance")
 	}
 }

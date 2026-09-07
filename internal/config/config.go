@@ -189,6 +189,17 @@ type Auth struct {
 	// This is the one the per-conversation budget cannot be: conversation ids are free,
 	// so a per-conversation ceiling is a ceiling on politeness.
 	DailyTokenBudget int64
+	// Tenancy is "single" or "required".
+	//
+	// `single` is what this service has always done: every request is the `default`
+	// tenant. A key that *is* presented is still resolved and still has to be valid --
+	// there is no mode in which a wrong key quietly becomes the default tenant.
+	//
+	// `required` refuses a request with no key. That is the production posture, and it is
+	// not the default for the same reason AUTH_MODE is not: turning it on changes what
+	// the benchmark and the cross-repository comparison measure, and a default that
+	// silently changes a measurement is worse than one that has to be chosen.
+	Tenancy string
 }
 
 // Retention is how long customer data is kept, and how often the sweeper looks.
@@ -306,6 +317,7 @@ func Load() (Config, error) {
 			TurnsPerMinute:       envInt("TURNS_PER_MINUTE", 20),
 			SessionsPerHourPerIP: envInt("SESSIONS_PER_HOUR_PER_IP", 60),
 			DailyTokenBudget:     int64(envInt("DAILY_TOKEN_BUDGET", 0)),
+			Tenancy:              env("TENANCY", "single"),
 		},
 		Retention: Retention{
 			Window:        time.Duration(envInt("RETENTION_DAYS", 0)) * 24 * time.Hour,
@@ -367,6 +379,18 @@ func Load() (Config, error) {
 	}
 	if _, err := identityMode(c.Auth.Mode); err != nil {
 		return Config{}, err
+	}
+	if c.Auth.Tenancy, err = tenancyMode(c.Auth.Tenancy); err != nil {
+		return Config{}, err
+	}
+	// A required tenant with no sessions is a configuration that cannot do what it says.
+	// The tenant is resolved before the session and a session belongs to a tenant, so with
+	// AUTH_MODE=off there is nothing for the tenant to be attached to: every request would
+	// present a key, be resolved, and then be handled with no subject and a client-supplied
+	// conversation id. Refused at start-up rather than half-enforced.
+	if c.Auth.Tenancy == "required" && c.Auth.Mode != "session" {
+		return Config{}, fmt.Errorf("TENANCY=required needs AUTH_MODE=session; " +
+			"a tenant is what a session belongs to, and with AUTH_MODE=off there is no session")
 	}
 	if err := checkOrders(c.Orders, c.Chat.RequestTimeout); err != nil {
 		return Config{}, err
@@ -434,6 +458,20 @@ func identityMode(mode string) (string, error) {
 		return "session", nil
 	default:
 		return "", fmt.Errorf("AUTH_MODE %q is not off or session", mode)
+	}
+}
+
+// tenancyMode fails at start-up on a misspelling rather than silently running single-
+// tenant. `TENANCY=requird` becoming "every request is the default tenant" is the exact
+// shape of a security control that is configured, believed, and absent.
+func tenancyMode(mode string) (string, error) {
+	switch strings.TrimSpace(mode) {
+	case "", "single":
+		return "single", nil
+	case "required":
+		return "required", nil
+	default:
+		return "", fmt.Errorf("TENANCY %q is not single or required", mode)
 	}
 }
 

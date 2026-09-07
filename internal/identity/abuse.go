@@ -46,6 +46,7 @@ const (
 // service has no idea who that is.
 type Offender struct {
 	Subject  string
+	TenantID string
 	Windows  int
 	Requests int64
 }
@@ -66,13 +67,17 @@ func (l *Limits) RepeatOffenders(ctx context.Context, bucket string, limit int,
 		// zero that was never measured -- the caller checks the limit before starting.
 		return nil, nil
 	}
+	// Grouped by tenant as well as subject. Subject ids are 128 bits and would not collide
+	// across tenants, so the count would be the same either way -- but the log line that
+	// sends somebody looking has to say *whose* client is looping, and a subject id with no
+	// tenant beside it is an id somebody has to go and look up before it means anything.
 	rows, err := l.pool.Query(ctx, `
-		SELECT subject, count(*)::int, coalesce(sum(count), 0)::bigint
+		SELECT subject, tenant_id, count(*)::int, coalesce(sum(count), 0)::bigint
 		FROM rate_window
 		WHERE bucket = $1
 		  AND window_start > now() - $2::interval
 		  AND count > $3
-		GROUP BY subject
+		GROUP BY subject, tenant_id
 		HAVING count(*) >= $4
 		ORDER BY count(*) DESC, sum(count) DESC
 		LIMIT 100`, bucket, lookback.String(), limit, minWindows)
@@ -84,7 +89,7 @@ func (l *Limits) RepeatOffenders(ctx context.Context, bucket string, limit int,
 	var out []Offender
 	for rows.Next() {
 		var o Offender
-		if err := rows.Scan(&o.Subject, &o.Windows, &o.Requests); err != nil {
+		if err := rows.Scan(&o.Subject, &o.TenantID, &o.Windows, &o.Requests); err != nil {
 			return nil, err
 		}
 		out = append(out, o)
@@ -134,7 +139,10 @@ func (w *AbuseWatch) Sample(ctx context.Context) ([]Offender, error) {
 			if len(ids) == abuseLogged {
 				break
 			}
-			ids = append(ids, o.Subject)
+			// tenant/subject, so the line is actionable without a lookup. The tenant is
+			// a bounded set and could be a metric label; the subject is not, and is why
+			// both live here rather than on the gauge.
+			ids = append(ids, o.TenantID+"/"+o.Subject)
 		}
 		slog.Warn("subjects are repeatedly hitting the per-minute turn limit",
 			"subjects", len(offenders), "worst", ids,

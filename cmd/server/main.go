@@ -26,6 +26,7 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/rag"
 	"github.com/lai3d/ai-customer-service-go/internal/retention"
 	"github.com/lai3d/ai-customer-service-go/internal/store"
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 	"github.com/lai3d/ai-customer-service-go/internal/ticket"
 	"github.com/lai3d/ai-customer-service-go/internal/tools"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -298,12 +299,24 @@ func run() error {
 			Sessions:      identity.NewSessions(pool, cfg.Auth.SessionTTL),
 			Conversations: identity.NewConversations(pool),
 			Limits:        limits,
+			Tenants:       tenant.NewStore(pool),
+			RequireKey:    cfg.Auth.Tenancy == "required",
 		}
 		slog.Info("chat sessions are required",
 			"session_ttl", cfg.Auth.SessionTTL,
 			"turns_per_minute", cfg.Auth.TurnsPerMinute,
 			"sessions_per_hour_per_ip", cfg.Auth.SessionsPerHourPerIP,
-			"daily_token_budget", cfg.Auth.DailyTokenBudget)
+			"daily_token_budget", cfg.Auth.DailyTokenBudget,
+			"tenancy", cfg.Auth.Tenancy)
+		if cfg.Auth.Tenancy != "required" {
+			// The same shape of warning as AUTH_MODE=off, and for the same reason: this
+			// is the configuration that is correct for one product and quietly wrong for
+			// two. A request with no key is served as the default tenant, so a second
+			// integration that forgets its key writes into the first one's data and every
+			// response looks successful.
+			slog.Warn("TENANCY=single: a request with no API key is served as the " +
+				"'default' tenant. Set TENANCY=required once more than one tenant exists.")
+		}
 
 		// Who keeps being refused, from the rows the limiter already writes. Started
 		// only where the limit exists: with TURNS_PER_MINUTE unset nothing is ever

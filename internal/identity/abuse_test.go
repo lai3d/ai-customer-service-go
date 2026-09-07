@@ -7,6 +7,7 @@ import (
 
 	"github.com/lai3d/ai-customer-service-go/internal/identity"
 	"github.com/lai3d/ai-customer-service-go/internal/obs"
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -24,10 +25,10 @@ func refuse(t *testing.T, limits *identity.Limits, subject string, windows int, 
 			// Past the truncation boundary, so the next pair lands in its own window.
 			time.Sleep(window + window/10)
 		}
-		if _, err := limits.Allow(ctx, "turn", subject, 1, window); err != nil {
+		if _, err := limits.Allow(ctx, tenant.Default, "turn", subject, 1, window); err != nil {
 			t.Fatalf("the first request in window %d was refused: %v", i, err)
 		}
-		if _, err := limits.Allow(ctx, "turn", subject, 1, window); err == nil {
+		if _, err := limits.Allow(ctx, tenant.Default, "turn", subject, 1, window); err == nil {
 			t.Fatalf("the second request in window %d was allowed past a limit of 1", i)
 		}
 	}

@@ -55,7 +55,7 @@ func (s *Server) handleFeedback(w http.ResponseWriter, r *http.Request) {
 	// knows; sharing the *bucket* would let ratings spend the customer's turns, which is
 	// the one thing a rating must never cost.
 	if s.identity.Limits != nil {
-		if p := s.allow(r, "feedback", subject.ID,
+		if p := s.allow(r, subject.TenantID, "feedback", subject.ID,
 			s.identity.Limits.TurnsPerMinute, time.Minute); p != nil {
 			writeProblem(w, p)
 			return

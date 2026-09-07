@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,6 +24,12 @@ type Identity struct {
 	Sessions      *identity.Sessions
 	Conversations *identity.Conversations
 	Limits        *identity.Limits
+	// Tenants resolves an API key to a tenant. Nil is a service that cannot check one,
+	// which makes a presented key a 401 rather than something ignored.
+	Tenants Tenants
+	// RequireKey is TENANCY=required: a request with no key is refused before any model
+	// call, rather than being served as the default tenant.
+	RequireKey bool
 }
 
 // Transcripts lets a customer read their own conversation, which is how a human's reply
@@ -60,6 +67,28 @@ func (s *Server) resolve(r *http.Request) (identity.Subject, *problem) {
 			Detail: "The service could not check the session. Retrying shortly is worthwhile.",
 		}
 	}
+
+	// The session carries its own tenant, so nothing downstream needs the header — which
+	// is the point: a client cannot move a conversation to another tenant by changing a
+	// header half way through.
+	//
+	// A key that *is* sent still has to agree. A mismatch means one of the two identities
+	// is wrong, and continuing with either would be choosing which by accident.
+	if strings.TrimSpace(r.Header.Get(TenantKeyHeader)) != "" {
+		presented, p := s.tenantFor(r)
+		if p != nil {
+			return identity.Subject{}, p
+		}
+		if presented != subject.TenantID {
+			s.metrics.Refusals.WithLabelValues("no_tenant").Inc()
+			slog.Warn("a session was presented with another tenant's API key",
+				"path", r.URL.Path, "remote", clientIP(r))
+			return identity.Subject{}, &problem{
+				Title: "No session", Status: http.StatusUnauthorized,
+				Detail: "Start a session at POST /api/v1/session and send its token as a bearer token.",
+			}
+		}
+	}
 	return subject, nil
 }
 
@@ -74,7 +103,7 @@ func (s *Server) admit(r *http.Request, subject identity.Subject) *problem {
 	if s.identity == nil || s.identity.Limits == nil {
 		return nil
 	}
-	if p := s.allow(r, "turn", subject.ID,
+	if p := s.allow(r, subject.TenantID, "turn", subject.ID,
 		s.identity.Limits.TurnsPerMinute, time.Minute); p != nil {
 		return p
 	}
@@ -174,11 +203,11 @@ func (s *Server) conversationFor(ctx context.Context, supplied string, subject i
 // Retry-After is set on both, and it is not decoration: without it a client backs off by
 // guessing, and the guesses that get written are "immediately" and "a minute", neither of
 // which is the answer.
-func (s *Server) allow(r *http.Request, bucket, key string, limit int, window time.Duration) *problem {
+func (s *Server) allow(r *http.Request, tenantID, bucket, key string, limit int, window time.Duration) *problem {
 	if s.identity == nil || s.identity.Limits == nil {
 		return nil
 	}
-	retryAfter, err := s.identity.Limits.Allow(r.Context(), bucket, key, limit, window)
+	retryAfter, err := s.identity.Limits.Allow(r.Context(), tenantID, bucket, key, limit, window)
 	switch {
 	case errors.Is(err, identity.ErrTooManyRequests):
 		// One reason for both buckets. `turn` and `session` are a bounded pair and could
@@ -224,16 +253,24 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 			Detail: "This service is running with AUTH_MODE=off."})
 		return
 	}
+	// The tenant is resolved before the session exists, because the session belongs to it.
+	// Resolving it afterwards would mean a session was minted and then assigned, and the
+	// window between the two is where a session with no tenant lives.
+	tenantID, p := s.tenantFor(r)
+	if p != nil {
+		writeProblem(w, p)
+		return
+	}
 	// This is the one endpoint reachable without a session, so it is the one that mints
 	// subjects -- and a per-subject limit is worth nothing if subjects are free.
 	if s.identity.Limits != nil {
-		if p := s.allow(r, "session", clientIP(r),
+		if p := s.allow(r, tenantID, "session", clientIP(r),
 			s.identity.Limits.SessionsPerHourPerIP, time.Hour); p != nil {
 			writeProblem(w, p)
 			return
 		}
 	}
-	token, _, expires, err := s.identity.Sessions.Issue(r.Context())
+	token, _, expires, err := s.identity.Sessions.Issue(r.Context(), tenantID)
 	if err != nil {
 		writeProblem(w, &problem{Title: "Could not start a session",
 			Status: http.StatusServiceUnavailable,
