@@ -136,6 +136,19 @@ that show why it is not needed here.
   unbounded cardinality — and so is anything the *model* writes. A tool name is validated
   against `s.tools` before it can become a metric label or a span name; a span name is an
   aggregated dimension just like a label.
+- **An alert that names a series the application does not emit never fires**, and looks
+  exactly like a healthy system. `observability/prometheus-rule.yaml` is therefore checked
+  against a real `obs.Metrics` by `internal/deployment/observability_test.go` -- names,
+  label names, label values read out of the Go source, and the `le` of the latency SLI
+  against the histogram's real boundaries -- and `make check-rules` runs promtool so every
+  alert has been seen to fire. The quiet case in `observability/rules_test.yaml` is
+  deliberately a *healthy but imperfect* service: with no failures in the fixture the
+  failure ratios go empty rather than small, and an empty expression fires nothing however
+  wrong the threshold is.
+- **A refusal at the HTTP edge emits no metric.** The daily budget (503) and both rate
+  limiters (429) answer before `chat.Service.Turn` runs, so `chat_turns_total` never moves
+  and every meter stays flat while the service refuses everyone. Known, written down in
+  `docs/observability.md`, and not yet fixed.
 - **Never return early from a client `Stream` on error.** Anthropic reports the input
   count at `message_start`, so an abandoned stream has already been billed. Build the
   result from whatever accumulated and return it alongside the error. The contract is

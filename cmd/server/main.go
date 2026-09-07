@@ -175,7 +175,7 @@ func run() error {
 	// The webhook is optional and its absence is a working no-op, but an absent
 	// destination means a raised ticket tells nobody: it is the difference between an
 	// assistant that escalates and one that files into a drawer, and it says so.
-	notifier := handoff.NewNotifier(pool, cfg.Handoff.WebhookURL, cfg.Handoff.Timeout)
+	notifier := handoff.NewNotifier(pool, cfg.Handoff.WebhookURL, cfg.Handoff.Timeout).Meter(metrics)
 	handoffs := handoff.NewStore(pool, chat.NewMemory(pool, 40), notifier)
 	if notifier.Enabled() {
 		slog.Info("handoff notifications enabled", "timeout", cfg.Handoff.Timeout)

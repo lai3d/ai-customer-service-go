@@ -321,6 +321,7 @@ login does not make this a service with customer identity.
 ```
 ├── Dockerfile            # 4 stages; the model baked in, no runtime downloads
 ├── k8s/                  # manifests + a kind harness that verifies them
+├── observability/        # alert rules and a ServiceMonitor, checked against the metrics the code emits
 ├── docker-compose.yml    # Postgres, Jaeger, the app; the operations UI under --profile ops -- ports avoid the Java stack's
 ├── admin-ui/             # the operations UI: React 18 + TypeScript + Vite, Ant Design; its own
 │                         # image (nginx, unprivileged), its own origin, CORS to /api/admin/v1/*

@@ -38,7 +38,7 @@ What is missing is almost entirely product, not scaffolding.
 | 5 | [Retention and deletion of customer data](#5-there-is-no-way-to-delete-a-customer) | week 1 | both | **done** 2026-09-06 | 2–3 h |
 | 6 | [An answer-quality regression set](#6-nothing-tells-you-a-prompt-change-made-it-worse) | week 1 | both | **done** 2026-09-06 | 3–4 h |
 | 7 | [Feedback from customers and operators](#7-nothing-comes-back) | week 2 | both | not started | 2–3 h |
-| 8 | [Alerting and an SLO](#8-there-are-metrics-and-nothing-watches-them) | week 2 | Go | not started | 2 h |
+| 8 | [Alerting and an SLO](#8-there-are-metrics-and-nothing-watches-them) | week 2 | Go | **done** 2026-09-07 | 2 h |
 | 9 | [A schema migration path](#9-the-first-change-to-a-live-schema-is-manual) | week 2 | Go | not started | 1–2 h |
 | 10 | [The admin list pages lie past one page](#10-the-admin-lists-lie-past-the-first-page) | week 2 | Go | **done** 2026-09-06 | 0.5 h |
 | 11 | [Provider failover](#11-three-providers-are-supported-and-one-runs) | scale | both | not started | 1–2 h |
@@ -321,18 +321,66 @@ regression set and item 2's knowledge editor. The value is the loop, not the wid
 
 ### 8. There are metrics and nothing watches them
 
-Traces reach Jaeger, metrics reach Prometheus, and no alert rule exists in this
-repository. There is no `observability/` directory here at all. The Java implementation
-has one — dashboards, a `PrometheusRule`, a `ServiceMonitor`, and a test that fails when a
-dashboard references a metric the application does not emit.
+**Done, 2026-09-07.** `observability/`, and [the reasoning](observability.md#an-slo-on-the-turn).
 
-`chat_unpriced_model_calls_total` exists precisely so a permanently-zero cost meter is
-visible rather than plausible, and today nothing looks at it.
+Traces reached Jaeger and metrics reached Prometheus, and no alert rule existed anywhere
+in this repository. `chat_unpriced_model_calls_total` was the sharpest example: a counter
+built precisely so that a permanently-zero cost meter is visible rather than plausible,
+with nothing looking at it.
 
-**Done looks like:** an SLO on the turn (success rate and latency), alerts on unpriced
-calls, on budget-exceeded turns, on provider 5xx, and on the audit table not growing when
-operators are working — and each alert forced red once before it is trusted, the way the
-kind harness assertions are.
+**An SLO on the turn**, written down with its reasoning: 99% of turns end `completed` and
+95% finish inside 16 seconds, both over 28 days. **Neither number is measured** — there is
+no production traffic here — and the document says so first rather than last. What they are
+anchored to is what has been watched: an 11.1 s tool-calling turn in Jaeger, a 5.065 s
+usage card in the browser, and 35 eval cases at a 3.7 s mean. The first real week should
+replace both by deriving them.
+
+**Eleven alerts** as a `PrometheusRule`, with a `ServiceMonitor` beside it because the
+operator ignores the `prometheus.io/*` annotations the Deployment carries: the two SLO
+burn rates, two latency ones, the target being scraped at all, unpriced model calls,
+provider errors, budget-exceeded turns, turns that hit the tool-round cap, undelivered
+handoff notifications, and cost per hour. They live outside `k8s/` because
+`kubectl apply -f k8s/` would fail on both files on any cluster without the
+monitoring.coreos.com CRDs — including the kind cluster the harness builds.
+
+One metric was added to make the last of those possible: `chat_handoff_notifications_total`.
+Delivery outcomes were rows in `handoff_delivery` and a red number on the operations
+overview, both of which need a person to go and look.
+
+**The part that makes the rest worth having is the test**, and it is the Java side's
+`DashboardMetricsTest` idea aimed at rules instead of dashboards. `internal/deployment`
+exercises every metric through a real registry, reads them back out of a real `Gather`,
+and checks every expression in the manifest against that: metric names, label names, label
+values (from the Go source — the literals that reach `WithLabelValues`, including through
+a variable), and the `le` of the latency SLI against the histogram's actual boundaries.
+Four perturbations were forced red, one at a time; a matcher whose value cannot be
+resolved fails rather than passes; and the test was shown non-vacuous three separate ways
+— an empty manifest, a crippled source scan and a crippled metric-exercising loop each
+produce a specific complaint rather than a pass. The wiring is checked too, because none
+of it errors when it is wrong: namespaces, the monitor's selector against the Service's
+labels, the port name, the scraped path against the route `main.go` registers, and the
+`job` value against the monitor's `jobLabel`.
+
+`make check-rules` runs Prometheus's own promtool in a container: the PromQL parses, and
+**all eleven alerts have been seen to fire** on synthetic series. The case worth more than
+those is the quiet one — a healthy but imperfect service raises nothing — and it is
+imperfect deliberately: with no failures at all in the fixture the failure ratios go
+*empty* rather than small, and an empty expression fires nothing however wrong the
+threshold is. The first version of that test passed against a rule loosened to `> -1`.
+
+**Two things in the original sketch were not built, and both are named in the document
+rather than quietly dropped.** There is no alert on the audit trail not growing while
+operators work: there is no metric for it and "operators are working" is not a signal this
+service has. And there is no Grafana dashboard, because nothing in this repository runs
+Grafana — the metric-name test would cover one the day one exists, which is the condition
+for adding it.
+
+**What this found:** a refusal at the HTTP edge emits no metric at all. The daily token
+budget (503) and both rate limiters (429) refuse before `chat.Service.Turn` runs, so
+`chat_turns_total` never moves — the service can be refusing every customer it has while
+every meter stays flat and green. There is a `slog.Warn` and nothing else. It is the
+largest hole on the page and it needs instrumentation at the edge rather than another rule
+over the series that already exist.
 
 ### 9. The first change to a live schema is manual
 

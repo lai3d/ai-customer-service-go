@@ -82,6 +82,29 @@ Unlike the API pod, this one needs writable volumes. `config.js` is written at s
 from the ConfigMap so one built image serves any environment, and nginx wants its own
 temporary directories; all three are `emptyDir`, and the root filesystem stays read-only.
 
+## Alerts and scraping live in `observability/`, not in here
+
+```sh
+# Both need the monitoring.coreos.com CRDs -- kube-prometheus-stack, or the operator alone.
+kubectl apply -f observability/servicemonitor.yaml
+kubectl apply -f observability/prometheus-rule.yaml
+```
+
+A `ServiceMonitor` (because the operator ignores the `prometheus.io/*` annotations on the
+Deployment and reads one of these instead) and a `PrometheusRule` with eleven alerts and
+an SLO on the turn. [docs/observability.md](../docs/observability.md#an-slo-on-the-turn)
+has the reasoning and says which numbers are measured, which is none of the thresholds.
+
+**They are outside this directory on purpose.** `kubectl apply -f k8s/` is the documented
+way to deploy this and it would fail on both files on any cluster without those CRDs —
+including the throwaway cluster `kind/verify.sh` builds, where no operator is installed.
+Rather than being verified by proximity, they are verified by a test:
+`internal/deployment` checks their namespace against `namespace.yaml`, their selector
+against `service.yaml`'s labels, the scraped port name against the Service's ports, the
+scraped path against the route `cmd/server/main.go` registers, and the `job` label the
+rules match on against the `jobLabel` the monitor sets. None of those five produces an
+error anywhere when it is wrong: the rules simply evaluate against nothing.
+
 ## Before you apply
 
 1. `deployment.yaml` → `image` — currently `ghcr.io/lai3d/ai-customer-service-go:0.1.0`.

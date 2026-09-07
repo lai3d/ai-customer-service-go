@@ -1,0 +1,44 @@
+# How Prometheus finds the app when it is the prometheus-operator doing the finding.
+#
+# k8s/deployment.yaml carries prometheus.io/scrape annotations, which are the convention a
+# hand-configured Prometheus uses. The operator ignores annotations entirely and reads a
+# ServiceMonitor, so a cluster running kube-prometheus-stack scrapes nothing at all without
+# this file -- and every alert in prometheus-rule.yaml then evaluates against no data,
+# which is indistinguishable from a service with no problems.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ai-customer-service-go
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: ai-customer-service-go
+    app.kubernetes.io/component: observability
+    # The same operator selector as prometheus-rule.yaml; check what your Prometheus
+    # actually selects on rather than trusting this default.
+    release: kube-prometheus-stack
+spec:
+  # Both halves matter. The operations UI Service carries the same
+  # app.kubernetes.io/name, so selecting on the name alone would add an nginx that serves
+  # no /metrics as a permanently-down target -- and a target that is always down is a
+  # target nobody reads.
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ai-customer-service-go
+      app.kubernetes.io/component: app
+  namespaceSelector:
+    matchNames:
+      - ai-customer-service-go
+  # Makes the `job` label on every series the value of the Service's
+  # app.kubernetes.io/name -- `ai-customer-service-go` -- which is what
+  # prometheus-rule.yaml's AppTargetDown matches on. The two are asserted to agree by
+  # internal/deployment/observability_test.go, because a job label that does not match is
+  # not an error anywhere: the rule simply never fires.
+  jobLabel: app.kubernetes.io/name
+  endpoints:
+    # The port *name* on the Service, not a number: the Service's http port is 8081 today
+    # and this keeps working if that changes.
+    - port: http
+      path: /metrics
+      # Faster than the 1m default because the alerts with `for: 0m` fire on a single
+      # increase, and a 1m interval makes "did it happen" a question about scrape timing.
+      interval: 15s

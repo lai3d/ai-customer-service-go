@@ -31,6 +31,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lai3d/ai-customer-service-go/internal/llm"
+	"github.com/lai3d/ai-customer-service-go/internal/obs"
 )
 
 var (
@@ -165,9 +166,10 @@ type Event struct {
 // Notifier posts events to a webhook. A nil Notifier is a working no-op, which is what
 // makes the URL optional without every caller checking.
 type Notifier struct {
-	url    string
-	client *http.Client
-	pool   *pgxpool.Pool
+	url     string
+	client  *http.Client
+	pool    *pgxpool.Pool
+	metrics *obs.Metrics
 }
 
 func NewNotifier(pool *pgxpool.Pool, url string, timeout time.Duration) *Notifier {
@@ -175,6 +177,22 @@ func NewNotifier(pool *pgxpool.Pool, url string, timeout time.Duration) *Notifie
 		timeout = 5 * time.Second
 	}
 	return &Notifier{url: strings.TrimSpace(url), client: &http.Client{Timeout: timeout}, pool: pool}
+}
+
+// Meter attaches the delivery counter, so that a notification nobody received is a
+// number an alert can reach rather than only a row somebody has to go and read.
+//
+// It is a separate call rather than a constructor parameter because two test packages
+// build a Notifier with no registry at all, and a counter is not worth a required
+// argument in every one of them. That makes it possible to forget, which is why
+// TestTheHandoffNotifierIsMeteredWhereItIsConstructed reads the one production
+// construction and fails if the wiring goes missing: an optional meter is otherwise a
+// hole with nothing looking at it.
+func (n *Notifier) Meter(metrics *obs.Metrics) *Notifier {
+	if n != nil {
+		n.metrics = metrics
+	}
+	return n
 }
 
 func (n *Notifier) Enabled() bool { return n != nil && n.url != "" }
@@ -242,6 +260,15 @@ func (n *Notifier) deliver(ctx context.Context, e Event) {
 }
 
 func (n *Notifier) record(ctx context.Context, e Event, status int, failure string) {
+	// Counted here rather than at the two call sites above, because this is the one
+	// place every outcome passes through -- the same reason the row is written here.
+	outcome := "delivered"
+	if failure != "" {
+		outcome = "failed"
+	}
+	if n.metrics != nil {
+		n.metrics.Handoffs.WithLabelValues(e.Type, outcome).Inc()
+	}
 	if _, err := n.pool.Exec(ctx, `
 		INSERT INTO handoff_delivery (at, type, ticket_number, status, failure)
 		VALUES (now(), $1, $2, $3, NULLIF($4,''))`,

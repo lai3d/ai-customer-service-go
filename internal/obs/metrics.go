@@ -22,6 +22,7 @@ type Metrics struct {
 	TurnSeconds *prometheus.HistogramVec
 	ToolCalls   *prometheus.CounterVec
 	Unpriced    *prometheus.CounterVec
+	Handoffs    *prometheus.CounterVec
 	Retrieval   prometheus.Histogram
 	Embedding   prometheus.Histogram
 }
@@ -69,6 +70,19 @@ func NewMetrics() *Metrics {
 			Name: "chat_unpriced_model_calls_total",
 			Help: "Model calls whose tokens were counted but could not be costed, by model.",
 		}, []string{"model"}),
+		// A notification that did not arrive is silent by nature -- the destination is
+		// outside this service's control, and nobody chases a message they do not know
+		// was never sent. handoff_delivery records every outcome as a row and the
+		// operations overview shows the undelivered count, but a row is something a
+		// person has to go and look at. This is the same events counted where an alert
+		// can reach them.
+		//
+		// It is per process and resets when a replica restarts, which the rows do not.
+		// The row is the record; this is the smoke detector.
+		Handoffs: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "chat_handoff_notifications_total",
+			Help: "Handoff webhook deliveries, by event type and whether they arrived.",
+		}, []string{"type", "outcome"}),
 		Retrieval: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "chat_retrieval_duration_seconds",
 			Help:    "Query embedding plus vector search.",
@@ -81,7 +95,7 @@ func NewMetrics() *Metrics {
 		}),
 	}
 	registry.MustRegister(m.Tokens, m.CostUSD, m.ModelCalls, m.Turns,
-		m.TurnSeconds, m.ToolCalls, m.Unpriced, m.Retrieval, m.Embedding)
+		m.TurnSeconds, m.ToolCalls, m.Unpriced, m.Handoffs, m.Retrieval, m.Embedding)
 	return m
 }
 
