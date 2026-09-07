@@ -843,6 +843,19 @@ overview → 403; no key → 401. Disabling made the key 401 and re-enabling bro
 The meters came back labelled per tenant and the audit rows were filed under the tenant
 administered.
 
+**Reported back to the Java side**, which is what makes this a pair rather than two
+repositories: [ai-customer-service-java#74](https://github.com/lai3d/ai-customer-service-java/issues/74).
+Each finding was checked against their code before being written down, and **three of the
+five did not apply** — their `AdminTenantScopeTest` genuinely tests the tenant predicate
+where the equivalent Go test did not, their admin routes take the tenant from the account
+rather than from a parameter, and their conversation model has no per-subject ownership to
+mask anything. What did transfer: their `Conversations.resolve()` is correct *because* it is
+three statements rather than one, and collapsing it is the obvious tidy-up that reintroduces
+the race the Go side hit; their `@Tag` exclusion compiles the harness where a Go build tag
+does not, so they are immune to the signature half of the rot and exposed to the schema half;
+and the two eval-assertion traps are worth knowing before they write an injection case or a
+Chinese one, rather than after.
+
 **Still open on this item:** per-tenant retention windows. Retention is still one window for
 the whole service; a tenant with a different contractual obligation would need its own, and
 that is a configuration surface rather than a predicate.
