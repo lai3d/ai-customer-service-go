@@ -43,7 +43,7 @@ What is missing is almost entirely product, not scaffolding.
 | 10 | [The admin list pages lie past one page](#10-the-admin-lists-lie-past-the-first-page) | week 2 | Go | **done** 2026-09-06 | 0.5 h |
 | 11 | [Provider failover](#11-three-providers-are-supported-and-one-runs) | scale | both | **done** 2026-09-07 | 1–2 h |
 | 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | **done** 2026-09-07 (per-tenant retention windows open) | 4–6 h |
-| 13 | [The deployment is a demo deployment](#13-the-manifests-stop-where-a-real-cluster-starts) | scale | Go | **manifests done** 2026-09-07; secrets and digest pinning remain | 2–3 h (0.5 h left) |
+| 13 | [The deployment is a demo deployment](#13-the-manifests-stop-where-a-real-cluster-starts) | scale | Go | **done** 2026-09-07 (key custody remains, and needs infrastructure) | 2–3 h |
 | 14 | [Abuse and content safety](#14-the-system-prompt-is-the-whole-of-the-safety-story) | scale | both | **partly done** 2026-09-07 | 2–3 h (moderation not built, deliberately) |
 | 15 | [A turn a dead process left behind stays in_flight for ever](#15-a-turn-a-dead-process-left-behind-stays-in_flight-for-ever) | week 2 | Go | **done** 2026-09-07 | 1 h |
 
