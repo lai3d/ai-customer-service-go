@@ -1,6 +1,7 @@
 import type {
   AuditEntry, ConversationSummary, CorpusVersion, FeedbackItem, FeedbackSource,
-  FeedbackVerdict, KnowledgeEntry, Overview, Ticket, TicketEvent, TicketPatch, Turn, WhoAmI,
+  FeedbackVerdict, KnowledgeEntry, Overview, Tenant, TenantKey, Ticket, TicketEvent,
+  TicketPatch, Turn, WhoAmI,
 } from './types'
 
 // Written by the container at start-up (public/config.js). Reading it through a function
@@ -142,6 +143,28 @@ export const api = {
   audit: (params: { limit: number; offset: number }) =>
     request<{ total: number; entries: AuditEntry[] | null }>(
       `/audit?limit=${params.limit}&offset=${params.offset}`),
+
+  // Tenants. Only the platform role reaches these, and none of them returns customer
+  // content: a tenant's id, name and keys say who a customer of this service is, never what
+  // that customer's own customers said.
+  tenants: () => request<{ tenants: Tenant[] | null }>('/tenants'),
+  createTenant: (id: string, name: string) =>
+    request<Tenant>('/tenants', { method: 'POST', body: JSON.stringify({ id, name }) }),
+  setTenantDisabled: (id: string, disabled: boolean) =>
+    request<null>(`/tenants/${encodeURIComponent(id)}/disabled`, {
+      method: 'POST', body: JSON.stringify({ disabled }),
+    }),
+  tenantKeys: (id: string) =>
+    request<{ keys: TenantKey[] | null }>(`/tenants/${encodeURIComponent(id)}/keys`),
+  // The only response in this client that carries a credential. It exists once.
+  issueTenantKey: (id: string, label: string) =>
+    request<TenantKey>(`/tenants/${encodeURIComponent(id)}/keys`, {
+      method: 'POST', body: JSON.stringify({ label }),
+    }),
+  revokeTenantKey: (id: string, keyId: string) =>
+    request<null>(
+      `/tenants/${encodeURIComponent(id)}/keys/${encodeURIComponent(keyId)}`,
+      { method: 'DELETE' }),
 }
 
 function clean(params: Record<string, string | number | undefined>): Record<string, string> {

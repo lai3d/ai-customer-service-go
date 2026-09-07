@@ -8,6 +8,7 @@ import { TicketsPage } from './pages/Tickets'
 import { AuditPage } from './pages/Audit'
 import { KnowledgePage } from './pages/Knowledge'
 import { FeedbackPage } from './pages/Feedback'
+import { TenantsPage } from './pages/Tenants'
 
 export function App() {
   const [me, setMe] = useState<WhoAmI | null>(null)
@@ -104,16 +105,27 @@ function Signed({ me, onSignOut }: { me: WhoAmI; onSignOut: () => void }) {
         <Typography.Text strong>Operations</Typography.Text>
         <span>
           <Typography.Text type="secondary" style={{ marginRight: 12 }}>
+            {/* Whose data this is, next to who is looking at it. An operations surface that
+                does not say which tenant it is showing is one where the answer to "is this
+                the right customer" is the page's title bar. */}
             {me.name} · {me.role}
+            {me.tenantId && <> · <span className="mono">{me.tenantId}</span></>}
           </Typography.Text>
           <Button size="small" onClick={onSignOut}>Sign out</Button>
         </span>
       </Layout.Header>
       <Layout.Content style={{ padding: 20 }}>
         <Tabs
-          defaultActiveKey="overview"
+          defaultActiveKey={me.isPlatform ? 'tenants' : 'overview'}
           destroyInactiveTabPane
-          items={[
+          // A platform account is refused on every route below, reads included, so it is
+          // offered the one page it can use rather than six that each answer 403. The
+          // opposite is true too: a tenant operator has no Tenants tab, and asking for
+          // that route is a 403 whether the tab exists or not. The tabs follow the
+          // server's answer rather than reimplementing the rule.
+          items={me.isPlatform ? [
+            { key: 'tenants', label: 'Tenants', children: <TenantsPage /> },
+          ] : [
             { key: 'overview', label: 'Overview', children: <OverviewPage /> },
             { key: 'conversations', label: 'Conversations', children: <ConversationsPage canWrite={me.canWrite} /> },
             { key: 'tickets', label: 'Tickets', children: <TicketsPage canWrite={me.canWrite} /> },

@@ -6,12 +6,48 @@
 // at compile time. What it does check is that this file and every component agree, which
 // is the drift that actually happens once four views read the same payload.
 
-export type Role = 'viewer' | 'operator'
+export type Role = 'viewer' | 'operator' | 'platform'
 
 export interface WhoAmI {
   name: string
   role: Role
   canWrite: boolean
+  /** Whose customers this account can see. Empty for the platform role, which sees none. */
+  tenantId: string
+  /**
+   * The tenant-less role that creates tenants and issues their keys.
+   *
+   * Sent by the server rather than derived from `role` here: which roles are tenant-less is
+   * the server's decision, and a second copy of that rule in the page is a second place to
+   * change it. The server refuses a platform account on every customer-facing route, so the
+   * page hides those tabs rather than offering six that each answer 403.
+   */
+  isPlatform: boolean
+}
+
+/** A tenant of this service: one product, one corpus, one set of customers. */
+export interface Tenant {
+  id: string
+  name: string
+  disabled: boolean
+  createdAt: string
+  createdBy: string
+  disabledAt?: string
+}
+
+/**
+ * An API key. `secret` is present exactly once, in the response that issues it, and is not
+ * stored anywhere — so a page that loses it cannot ask for it again.
+ */
+export interface TenantKey {
+  keyId: string
+  tenantId: string
+  label: string
+  createdAt: string
+  createdBy: string
+  lastUsedAt?: string
+  revokedAt?: string
+  secret?: string
 }
 
 export interface Overview {

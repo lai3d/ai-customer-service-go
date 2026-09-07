@@ -150,6 +150,11 @@ func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 		"name":     operator.Name,
 		"role":     operator.Role,
 		"canWrite": operator.CanWrite(),
+		// The page needs both: which tenant's data it is about to show, and whether this
+		// account has one at all. A platform operator is refused on every customer-facing
+		// route, so a UI that offers those tabs is a UI whose every tab is a 403.
+		"tenantId":   operator.TenantID,
+		"isPlatform": operator.IsPlatform(),
 	})
 }
 

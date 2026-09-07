@@ -44,6 +44,59 @@ func TestTheUIsStateMachineMatchesTheServers(t *testing.T) {
 	}
 }
 
+// The roles are a second contract in two languages, and the third value arrived with the
+// platform role.
+//
+// A role the UI does not know renders as a bare string next to the operator's name and
+// decides nothing; a role the UI knows and the server does not is a tab offered to somebody
+// who will be refused. Neither fails anywhere near where it was introduced, which is what
+// makes this worth reading out of both sources rather than remembering to keep them equal.
+func TestTheUIKnowsExactlyTheRolesTheServerHas(t *testing.T) {
+	root := repoRoot(t)
+
+	goSrc := readFile(t, filepath.Join(root, "internal", "admin", "auth.go"))
+	goRoles := map[string]bool{}
+	for _, m := range regexp.MustCompile(`Role\w*\s+Role\s*=\s*"([a-z]+)"`).
+		FindAllStringSubmatch(goSrc, -1) {
+		goRoles[m[1]] = true
+	}
+	if len(goRoles) < 3 {
+		t.Fatalf("read %d roles out of internal/admin/auth.go (%v); the declaration has "+
+			"changed shape and this test is no longer reading it", len(goRoles), goRoles)
+	}
+
+	tsSrc := readFile(t, filepath.Join(root, "admin-ui", "src", "api", "types.ts"))
+	line := regexp.MustCompile(`export type Role = ([^
+]+)`).FindStringSubmatch(tsSrc)
+	if line == nil {
+		t.Fatal("the UI no longer declares `export type Role`; this test reads it")
+	}
+	uiRoles := map[string]bool{}
+	for _, m := range regexp.MustCompile(`'([a-z]+)'`).FindAllStringSubmatch(line[1], -1) {
+		uiRoles[m[1]] = true
+	}
+
+	for role := range goRoles {
+		if !uiRoles[role] {
+			t.Errorf("the server has the role %q and the UI does not know it", role)
+		}
+	}
+	for role := range uiRoles {
+		if !goRoles[role] {
+			t.Errorf("the UI knows the role %q, which the server does not have", role)
+		}
+	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
 // The equivalent of the markup check the embedded page carried. React escapes by default,
 // so the only way to put a model's words into the DOM as markup is to ask for it by name.
 func TestTheUINeverTurnsAStringIntoMarkup(t *testing.T) {

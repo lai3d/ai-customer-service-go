@@ -843,6 +843,13 @@ overview → 403; no key → 401. Disabling made the key 401 and re-enabling bro
 The meters came back labelled per tenant and the audit rows were filed under the tenant
 administered.
 
+**The operations UI has the page**, so creating a tenant and issuing its key is no longer
+something only `curl` can do. A platform account is offered the Tenants tab and none of the
+other six, because the server refuses it on all of them; a tenant operator has no Tenants
+tab. The header names the tenant beside the operator. Both directions of the tab rule are
+asserted in `App.test.tsx`, and the role list is now a third cross-language contract read
+out of `auth.go` and `types.ts` rather than kept equal by memory.
+
 **Reported back to the Java side**, which is what makes this a pair rather than two
 repositories: [ai-customer-service-java#74](https://github.com/lai3d/ai-customer-service-java/issues/74).
 Each finding was checked against their code before being written down, and **three of the

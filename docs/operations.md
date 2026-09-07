@@ -86,10 +86,38 @@ TypeScript:
   into the DOM as markup is to ask for it by name. A test walks every `.ts` and `.tsx` for
   `dangerouslySetInnerHTML` and friends, and for `localStorage`, since the token reads
   every conversation in the database and `localStorage` outlives the tab.
+- **The roles**, which gained a third value when the platform role arrived. A role the UI
+  does not know renders as a bare string next to the operator's name and decides nothing; a
+  role the UI knows and the server does not is a tab offered to somebody who will be
+  refused. Both are read out of `internal/admin/auth.go` and `types.ts` rather than kept
+  equal by memory, and both directions were seen red.
 
 The second test's first run failed on the *comment* in `Markdown.tsx` that explains why the
 prop is never used — the third detector in this repository to measure the prose instead of
 the code. It matches a use now.
+
+## The page a platform operator sees, and the five it does not
+
+`RolePlatform` creates tenants and issues their API keys, belongs to no tenant, and is
+refused on every customer-facing route — reads included. So the application shows it the
+**Tenants** tab and nothing else, and a tenant operator has no Tenants tab.
+
+That is not a security control and the page does not pretend it is: the server decides, and
+asking for a route the role cannot use is a 403 whether or not a tab exists. It is the
+difference between a surface somebody can use and one where every tab answers 403 and they
+have to learn which ones to avoid. `App.test.tsx` asserts both directions, and offering
+every tab to everybody makes it red.
+
+The header names the tenant next to the operator, and shows nothing where there is none. An
+operations surface that does not say which tenant it is showing makes *"is this the right
+customer"* a question about the title bar.
+
+**Issuing a key is the only response in this application that carries a credential**, and
+the page treats it as one: the secret is in the issue response and nowhere else, so the
+modal says to copy it now, and listing a tenant's keys afterwards returns ids and labels.
+Revoking keeps the row — which key was revoked, when, and what it was for is the question
+somebody asks after an incident — and a label is required at issue so that revoking the
+right one later is not a guess.
 
 ## Reading is an action
 
