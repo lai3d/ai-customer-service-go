@@ -49,6 +49,7 @@ services:
       # does not pass it into the container -- an undeclared variable is not injected,
       # and the symptom is a default quietly taking effect.
       CHAT_PROVIDER: ${CHAT_PROVIDER:-anthropic}
+      CHAT_FALLBACK_PROVIDER: ${CHAT_FALLBACK_PROVIDER:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_CHAT_MODEL: ${ANTHROPIC_CHAT_MODEL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

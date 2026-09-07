@@ -41,7 +41,7 @@ What is missing is almost entirely product, not scaffolding.
 | 8 | [Alerting and an SLO](#8-there-are-metrics-and-nothing-watches-them) | week 2 | Go | **done** 2026-09-07 | 2 h |
 | 9 | [A schema migration path](#9-the-first-change-to-a-live-schema-is-manual) | week 2 | Go | not started | 1–2 h |
 | 10 | [The admin list pages lie past one page](#10-the-admin-lists-lie-past-the-first-page) | week 2 | Go | **done** 2026-09-06 | 0.5 h |
-| 11 | [Provider failover](#11-three-providers-are-supported-and-one-runs) | scale | both | not started | 1–2 h |
+| 11 | [Provider failover](#11-three-providers-are-supported-and-one-runs) | scale | both | **done** 2026-09-07 | 1–2 h |
 | 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | not started | 4–6 h |
 | 13 | [The deployment is a demo deployment](#13-the-manifests-stop-where-a-real-cluster-starts) | scale | Go | not started | 2–3 h |
 | 14 | [Abuse and content safety](#14-the-system-prompt-is-the-whole-of-the-safety-story) | scale | both | not started | 2–3 h |
@@ -469,13 +469,68 @@ re-slicing what was on screen.
 
 ### 11. Three providers are supported and one runs
 
-Anthropic, OpenAI and xAI are all implemented and verified live. `CHAT_PROVIDER` picks
-one at start-up. If that provider is down, the service is down.
+**Done, 2026-09-07.** `CHAT_FALLBACK_PROVIDER`.
 
-**Done looks like:** a secondary provider, a health signal that decides when to use it,
-and an explicit answer to the question the failover raises — the two providers do not
-produce the same answers, so a conversation that switches mid-way changes voice. Deciding
-that is part of the work.
+Anthropic, OpenAI and xAI were all implemented and verified live, and `CHAT_PROVIDER`
+picked one at start-up. If that provider was down, the service was down — and a replica
+count does not help, because every pod calls the same API.
+
+`llm.Failover` is a `Client` wrapping two `Client`s, so nothing above it changed: the tool
+loop, the meters, the budget and the spans still talk to one client and still see one
+`Result` per `Stream` call. The secondary is configured in full and separately — its own
+key, model and base URL — and two things are start-up failures rather than warnings: a
+fallback whose key is missing, and a fallback naming the same provider as the primary.
+Both are only ever exercised while something else is already broken.
+
+The list of failures worth a second provider, the reasoning for each, and the two
+questions below are in [Chat providers](providers.md#failover-a-second-provider-and-when-it-is-used).
+The short version is that the default is **no**: 429 and 5xx after the client's own
+retries, a transport failure, and a stall are the exceptions. A customer's cancellation is
+not one, a 401 is not one, and neither is anything at all once a token has reached the
+customer.
+
+**The two questions this item said were part of the work, answered.**
+
+*What happens to the voice.* A turn picks a provider at its first model call and keeps it.
+The switch happens before the first byte reaches the customer or not at all — `onText` is
+watched and a single forwarded token settles it — and a tool round never switches, because
+its request carries the assistant turn the primary produced, including tool-call ids and
+the thinking blocks Anthropic requires echoed back unchanged. The cost is stated rather
+than hidden: a provider that dies half-way through an answer produces a failed turn with a
+working provider sitting right there. One visibly failed answer beats an answer in two
+voices, because the failure is legible and the seam is not. Restarting the turn at the
+secondary is the other defensible choice and is not built.
+
+*What happens to the money already spent.* The abandoned attempt has usually been billed —
+Anthropic reports the input count at `message_start`, before a single token, which is
+exactly the window a failover acts in. Both attempts' tokens therefore come back in one
+`Result`, because `chat.Service` sums `Result.Usage` and that is the only route to the
+budget. What that costs is attribution: one `Result` carries one model id, so the primary's
+tokens land in `chat_tokens_total` under the fallback's model and at its prices.
+`chat_failover_abandoned_tokens_total{provider,model,type}` records the same tokens at the
+model that really billed them, so the skew is a number rather than an assumption, and
+`chat_provider_failovers_total{from,to,reason}` counts the failovers themselves — a
+failover is otherwise a *silent success*, and the first sign of an outage would be an
+invoice from a provider nobody meant to use.
+
+**How it was checked.** Every rule is a test in `internal/llm/failover_test.go`, driving
+the two real clients against two `httptest` providers rather than a stub of `llm.Client` —
+the decision to spend money at a second provider is made *from* the error the first one
+returned, and a stub choosing that error would be choosing the answer. Twenty-four
+perturbations of the source were each observed red on the test that should catch them,
+including one that only reorders two guards: moving the caller-context check after the
+error check makes every timed-out turn call a second provider, and the test for that
+ordering exists because the first version of the cancellation test could not see the guard
+at all. That first version was left in place with a comment saying what it does and does
+not prove.
+
+**Not done, and known.** `chat_model_calls_total` counts one call per `Stream`, so it
+undercounts by one per failover — provider calls attempted is that plus
+`chat_provider_failovers_total`. Metering each attempt separately needs a change in
+`internal/chat`, which this work did not make. There is no health check and no circuit
+breaker, so every turn pays the primary's failure latency before falling over. And nothing
+has been exercised against two real providers in a real outage: the 529, the truncated
+stream and the stall are all `httptest`.
 
 ### 12. One corpus, one config, one price list
 

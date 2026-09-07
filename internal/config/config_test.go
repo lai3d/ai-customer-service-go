@@ -58,6 +58,107 @@ func TestOnlyTheSelectedProvidersKeyIsRequired(t *testing.T) {
 	}
 }
 
+// A failover is only ever exercised during an outage, which is the worst possible moment
+// to discover that its key was never set. Both of these refuse to start.
+func TestAFallbackProviderThatCannotWorkStopsStartup(t *testing.T) {
+	t.Run("no key", func(t *testing.T) {
+		t.Setenv("CHAT_PROVIDER", "anthropic")
+		t.Setenv("ANTHROPIC_API_KEY", "test-key")
+		t.Setenv("CHAT_FALLBACK_PROVIDER", "openai")
+		t.Setenv("OPENAI_API_KEY", "")
+
+		_, err := config.Load()
+		if err == nil {
+			t.Fatal("configuration loaded with a fallback provider and no key for it")
+		}
+		if !strings.Contains(err.Error(), "OPENAI_API_KEY") {
+			t.Errorf("error is %q; it should name the variable that is missing", err)
+		}
+	})
+
+	t.Run("unknown provider", func(t *testing.T) {
+		t.Setenv("CHAT_PROVIDER", "anthropic")
+		t.Setenv("ANTHROPIC_API_KEY", "test-key")
+		t.Setenv("CHAT_FALLBACK_PROVIDER", "gemini")
+
+		_, err := config.Load()
+		if err == nil {
+			t.Fatal("configuration loaded with an unknown fallback provider")
+		}
+		// The message has to name the variable that is wrong, not the one that is fine.
+		// Both resolve through the same function, and reporting a bad
+		// CHAT_FALLBACK_PROVIDER as a bad CHAT_PROVIDER sends whoever reads the log to
+		// the wrong line of the wrong file.
+		if !strings.Contains(err.Error(), "CHAT_FALLBACK_PROVIDER") ||
+			strings.Contains(err.Error(), "unknown CHAT_PROVIDER") {
+			t.Errorf("error is %q; it should name CHAT_FALLBACK_PROVIDER as the wrong one", err)
+		}
+	})
+}
+
+// Failing over to the provider that just failed is a retry, and the client has already
+// retried with backoff by the time it returns an error. Accepting it would double the
+// input tokens of a failing turn and count a failover that changed nothing.
+func TestAFallbackToThePrimaryIsRefused(t *testing.T) {
+	t.Setenv("CHAT_PROVIDER", "anthropic")
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv("CHAT_FALLBACK_PROVIDER", "anthropic")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("a fallback pointing at the primary was accepted")
+	}
+	if !strings.Contains(err.Error(), "CHAT_FALLBACK_PROVIDER") {
+		t.Errorf("error is %q; it should name the variable that is wrong", err)
+	}
+}
+
+// The secondary is configured in full and separately. Sharing the primary's credentials
+// would make CHAT_FALLBACK_PROVIDER=xai quietly send an Anthropic key to x.ai and fail
+// at the first outage.
+func TestTheFallbackCarriesItsOwnCredentialsModelAndBaseURL(t *testing.T) {
+	t.Setenv("CHAT_PROVIDER", "anthropic")
+	t.Setenv("ANTHROPIC_API_KEY", "primary-key")
+	t.Setenv("CHAT_FALLBACK_PROVIDER", "xai")
+	t.Setenv("XAI_API_KEY", "secondary-key")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Chat.FallbackAPIKey != "secondary-key" {
+		t.Errorf("the fallback key is %q, want the one XAI_API_KEY holds", cfg.Chat.FallbackAPIKey)
+	}
+	if cfg.Chat.APIKey == cfg.Chat.FallbackAPIKey {
+		t.Error("the two providers share a key")
+	}
+	if cfg.Chat.FallbackModel != "grok-4.6" {
+		t.Errorf("the fallback model is %q, want xai's own default", cfg.Chat.FallbackModel)
+	}
+	if !strings.Contains(cfg.Chat.FallbackBaseURL, "x.ai") {
+		t.Errorf("the fallback base URL is %q, want xai's own", cfg.Chat.FallbackBaseURL)
+	}
+}
+
+// The default, and the one that has to keep working: no second provider at all.
+func TestWithNoFallbackConfiguredNothingIsResolvedForOne(t *testing.T) {
+	t.Setenv("CHAT_PROVIDER", "anthropic")
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv("CHAT_FALLBACK_PROVIDER", "")
+	// Set, and deliberately not picked up: a key lying around in the environment is not
+	// a decision to spend money at a second provider.
+	t.Setenv("OPENAI_API_KEY", "an-unrelated-key")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Chat.FallbackProvider != "" || cfg.Chat.FallbackAPIKey != "" ||
+		cfg.Chat.FallbackModel != "" || cfg.Chat.FallbackBaseURL != "" {
+		t.Errorf("a fallback was configured without CHAT_FALLBACK_PROVIDER: %+v", cfg.Chat)
+	}
+}
+
 // Sampling parameters are absent on purpose, for every provider: Claude Opus 5 returns
 // HTTP 400 for temperature, top_p or top_k, and GPT-5 accepts only its own default.
 // There is no field to set one by accident, and this test says so out loud.
