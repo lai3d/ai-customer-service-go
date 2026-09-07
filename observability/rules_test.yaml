@@ -1,0 +1,230 @@
+# Unit tests for the alert rules, run by `scripts/check-rules.sh` with Prometheus's own
+# promtool against synthetic series.
+#
+# The Go test next door proves every alert names a series the application really emits.
+# It cannot prove the alert fires: an expression can be valid, name real metrics, and
+# still be wrong -- a threshold with the comparison the wrong way round, a `for` longer
+# than the range, a ratio that goes empty exactly when everything is broken. So each alert
+# here is shown firing on data that should trip it, and the ones where silence is the
+# interesting half are shown *not* firing on data that should not.
+#
+# Assertions are written against the synthetic `ALERTS` series rather than with
+# `alert_rule_test`, which compares annotations word for word and would make every
+# description in the rules a second copy living here.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+
+tests:
+  # 20% of turns failing: over the 14.4x fast-burn threshold and the 6x slow one.
+  - interval: 1m
+    name: turns failing well past the objective
+    input_series:
+      - series: 'chat_turns_total{outcome="completed"}'
+        values: "0+8x480"
+      - series: 'chat_turns_total{outcome="failed"}'
+        values: "0+2x480"
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="TurnFailureBudgetBurningFast", alertstate="firing"}'
+        eval_time: 90m
+        exp_samples:
+          - labels: 'ALERTS{alertname="TurnFailureBudgetBurningFast", alertstate="firing", severity="critical"}'
+            value: 1
+      - expr: 'ALERTS{alertname="TurnFailureBudgetBurningSlow", alertstate="firing"}'
+        eval_time: 7h
+        exp_samples:
+          - labels: 'ALERTS{alertname="TurnFailureBudgetBurningSlow", alertstate="firing", severity="warning"}'
+            value: 1
+
+  # The other half of the check: an alert that fires on healthy traffic is worse than
+  # none, because it is the one people learn to ignore.
+  #
+  # Healthy here means *not perfect*. About one turn in a hundred fails and one model call
+  # in a hundred errors, both well inside the objective, because a dataset with no
+  # failures at all cannot catch a threshold that is too low: the failure ratios go empty
+  # rather than small, and an empty expression fires nothing however wrong the comparison
+  # is. Forced red by loosening a threshold, which is what found that.
+  - interval: 1m
+    name: a healthy service raises nothing
+    input_series:
+      - series: 'chat_turns_total{outcome="completed"}'
+        values: "0+100x480"
+      - series: 'chat_turns_total{outcome="failed"}'
+        values: "0+1x480"
+      - series: 'chat_turn_duration_seconds_count{model="claude-opus-5"}'
+        values: "0+101x480"
+      - series: 'chat_turn_duration_seconds_bucket{model="claude-opus-5", le="16"}'
+        values: "0+100x480"
+      - series: 'chat_model_calls_total{model="claude-opus-5", outcome="success"}'
+        values: "0+120x480"
+      - series: 'chat_model_calls_total{model="claude-opus-5", outcome="error"}'
+        values: "0+1x480"
+      - series: 'chat_cost_usd_total{model="claude-opus-5"}'
+        values: "0+0.05x480"
+      - series: 'chat_handoff_notifications_total{type="ticket.created", outcome="delivered"}'
+        values: "0+1x480"
+      - series: 'up{job="ai-customer-service-go", instance="10.0.0.1:8081"}'
+        values: "1x480"
+    promql_expr_test:
+      - expr: "ALERTS"
+        eval_time: 7h
+        exp_samples: []
+
+  # Every turn failing, and none completing at all. This is the case the ratio is written
+  # backwards to survive: `1 - completed/all` is empty here, because the completed series
+  # does not exist, and an empty expression fires nothing.
+  - interval: 1m
+    name: total outage, with no completed turns to divide by
+    input_series:
+      - series: 'chat_turns_total{outcome="failed"}'
+        values: "0+10x480"
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="TurnFailureBudgetBurningFast", alertstate="firing"}'
+        eval_time: 90m
+        exp_samples:
+          - labels: 'ALERTS{alertname="TurnFailureBudgetBurningFast", alertstate="firing", severity="critical"}'
+            value: 1
+
+  # 20% of turns slower than 16 s: past the 10% objective miss, short of the 25% one.
+  - interval: 1m
+    name: a fifth of turns slower than the objective
+    input_series:
+      - series: 'chat_turn_duration_seconds_count{model="claude-opus-5"}'
+        values: "0+10x480"
+      - series: 'chat_turn_duration_seconds_bucket{model="claude-opus-5", le="16"}'
+        values: "0+8x480"
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="TurnsSlowerThanTheObjective", alertstate="firing"}'
+        eval_time: 90m
+        exp_samples:
+          - labels: 'ALERTS{alertname="TurnsSlowerThanTheObjective", alertstate="firing", severity="warning"}'
+            value: 1
+      - expr: 'ALERTS{alertname="TurnsFarSlowerThanTheObjective", alertstate="firing"}'
+        eval_time: 90m
+        exp_samples: []
+
+  # 40% slower than 16 s: the step-change rule as well.
+  - interval: 1m
+    name: two fifths of turns far slower than the objective
+    input_series:
+      - series: 'chat_turn_duration_seconds_count{model="claude-opus-5"}'
+        values: "0+10x480"
+      - series: 'chat_turn_duration_seconds_bucket{model="claude-opus-5", le="16"}'
+        values: "0+6x480"
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="TurnsFarSlowerThanTheObjective", alertstate="firing"}'
+        eval_time: 90m
+        exp_samples:
+          - labels: 'ALERTS{alertname="TurnsFarSlowerThanTheObjective", alertstate="firing", severity="critical"}'
+            value: 1
+
+  - interval: 1m
+    name: the target stops being scraped
+    input_series:
+      - series: 'up{job="ai-customer-service-go", instance="10.0.0.1:8081"}'
+        values: "1x10 0x30"
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="AppTargetDown", alertstate="firing"}'
+        eval_time: 30m
+        exp_samples:
+          - labels: 'ALERTS{alertname="AppTargetDown", alertstate="firing", instance="10.0.0.1:8081", job="ai-customer-service-go", severity="critical"}'
+            value: 1
+
+  # One model call that could not be priced. It fires on one, and the model id rides on
+  # the alert so the price table can be fixed without going looking.
+  - interval: 1m
+    name: a model with no price entry
+    input_series:
+      - series: 'chat_unpriced_model_calls_total{model="gpt-5-2025-08-07"}'
+        values: "0x10 1x30"
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="UnpricedModelCalls", alertstate="firing"}'
+        eval_time: 30m
+        exp_samples:
+          - labels: 'ALERTS{alertname="UnpricedModelCalls", alertstate="firing", model="gpt-5-2025-08-07", severity="warning"}'
+            value: 1
+
+  - interval: 1m
+    name: one model call in ten failing at the provider
+    input_series:
+      - series: 'chat_model_calls_total{model="claude-opus-5", outcome="success"}'
+        values: "0+9x60"
+      - series: 'chat_model_calls_total{model="claude-opus-5", outcome="error"}'
+        values: "0+1x60"
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="ProviderCallsFailing", alertstate="firing"}'
+        eval_time: 40m
+        exp_samples:
+          - labels: 'ALERTS{alertname="ProviderCallsFailing", alertstate="firing", severity="warning"}'
+            value: 1
+
+  # Four conversations cut off in fifteen minutes, against a threshold of three: the rule
+  # tolerates the budget doing its job and notices it doing it constantly.
+  - interval: 1m
+    name: conversations cut off by the token budget
+    input_series:
+      - series: 'chat_turns_total{outcome="budget_exceeded"}'
+        values: "0+1x60"
+      - series: 'chat_turns_total{outcome="completed"}'
+        values: "0+50x60"
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="BudgetExceededTurns", alertstate="firing"}'
+        eval_time: 40m
+        exp_samples:
+          - labels: 'ALERTS{alertname="BudgetExceededTurns", alertstate="firing", outcome="budget_exceeded", severity="warning"}'
+            value: 1
+
+  - interval: 1m
+    name: one conversation cut off is not an alert
+    input_series:
+      - series: 'chat_turns_total{outcome="budget_exceeded"}'
+        values: "0x20 1x40"
+      - series: 'chat_turns_total{outcome="completed"}'
+        values: "0+50x60"
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="BudgetExceededTurns", alertstate="firing"}'
+        eval_time: 40m
+        exp_samples: []
+
+  - interval: 1m
+    name: a turn hits the tool-round cap
+    input_series:
+      - series: 'chat_turns_total{outcome="tool_limit"}'
+        values: "0x10 1x60"
+      - series: 'chat_turns_total{outcome="completed"}'
+        values: "0+50x70"
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="TurnsHittingTheToolRoundCap", alertstate="firing"}'
+        eval_time: 30m
+        exp_samples:
+          - labels: 'ALERTS{alertname="TurnsHittingTheToolRoundCap", alertstate="firing", outcome="tool_limit", severity="warning"}'
+            value: 1
+
+  # The event type is on the alert, because "a ticket was raised and nobody was told" and
+  # "an operator answered and nobody was told" are different things to go and fix.
+  - interval: 1m
+    name: a handoff notification that never arrived
+    input_series:
+      - series: 'chat_handoff_notifications_total{type="ticket.created", outcome="failed"}'
+        values: "0x10 1x30"
+      - series: 'chat_handoff_notifications_total{type="ticket.created", outcome="delivered"}'
+        values: "0+1x40"
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="HandoffNotificationsUndelivered", alertstate="firing"}'
+        eval_time: 20m
+        exp_samples:
+          - labels: 'ALERTS{alertname="HandoffNotificationsUndelivered", alertstate="firing", outcome="failed", type="ticket.created", severity="warning"}'
+            value: 1
+
+  # $12/hour against a $5 threshold.
+  - interval: 1m
+    name: spending faster than the ceiling
+    input_series:
+      - series: 'chat_cost_usd_total{model="claude-opus-5"}'
+        values: "0+0.2x120"
+    promql_expr_test:
+      - expr: 'ALERTS{alertname="CostBurnRate", alertstate="firing"}'
+        eval_time: 90m
+        exp_samples:
+          - labels: 'ALERTS{alertname="CostBurnRate", alertstate="firing", severity="warning"}'
+            value: 1

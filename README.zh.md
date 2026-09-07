@@ -301,6 +301,7 @@ reply      关于你的两个问题：
 ```
 ├── Dockerfile            # 4 个阶段；模型烤进镜像，运行时不下载任何东西
 ├── k8s/                  # 清单 + 一个在 kind 上验证它们的脚本
+├── observability/        # 告警规则与 ServiceMonitor，会对照代码真正吐出的指标做校验
 ├── docker-compose.yml    # Postgres、Jaeger、应用；运营界面在 --profile ops 下 —— 端口避开 Java 那套栈
 ├── admin-ui/             # 运营界面：React 18 + TypeScript + Vite，Ant Design；独立镜像
 │                         # （非特权 nginx）、独立源，跨域调用 /api/admin/v1/*

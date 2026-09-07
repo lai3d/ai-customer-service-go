@@ -5,7 +5,7 @@
 GO ?= go
 BIN := bin/server
 
-.PHONY: deps build run test test-race bench eval eval-control lint fmt clean
+.PHONY: deps build run test test-race bench eval eval-control lint fmt clean check-rules
 
 deps:
 	./scripts/fetch-deps.sh
@@ -46,6 +46,13 @@ bench:
 	BENCH_EMBEDDER=bounded $(GO) test -tags=benchmark -v -count=1 -timeout 20m -run TestConcurrencyUnderLoad ./internal/benchmark/
 	BENCH_EMBEDDER=varying $(GO) test -tags=benchmark -v -count=1 -timeout 20m -run TestConcurrencyUnderLoad ./internal/benchmark/
 	BENCH_EMBEDDER=stub $(GO) test -tags=benchmark -v -count=1 -timeout 20m -run TestConcurrencyUnderLoad ./internal/benchmark/
+
+# The alert rules, through Prometheus's own promtool in a container: PromQL that parses,
+# and every alert seen to fire on data that should trip it. `go test ./internal/deployment`
+# already checks them against the metrics the code emits; this is the half that needs
+# Prometheus itself, which is why it is opt-in rather than part of `make test`.
+check-rules:
+	./scripts/check-rules.sh
 
 lint:
 	$(GO) vet ./...

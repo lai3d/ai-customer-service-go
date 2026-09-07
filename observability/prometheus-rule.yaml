@@ -1,0 +1,235 @@
+# Alerts on the turn, as a PrometheusRule rather than as Grafana alerts, so they live in
+# git next to the code that emits the series they name.
+#
+# Every expression here is checked against the application by
+# internal/deployment/observability_test.go: a metric name, a label name, a label value or
+# a histogram bucket boundary that this file uses and the Go code does not emit fails the
+# build. An alert that names a series nobody produces never fires and looks exactly like a
+# healthy system, which is the failure this whole file exists to avoid having.
+#
+# The thresholds are a starting point and not a measurement. There is no production
+# traffic behind this repository, so nothing here was derived from a distribution --
+# docs/observability.md says which numbers came from where, and what has to be re-derived
+# once real traffic exists.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ai-customer-service-go
+  namespace: ai-customer-service-go
+  labels:
+    app.kubernetes.io/name: ai-customer-service-go
+    app.kubernetes.io/component: observability
+    # kube-prometheus-stack selects rules by a label. `release: <name>` is the convention
+    # its default `ruleSelector` uses; change it to whatever your operator selects on, and
+    # check with `kubectl -n <monitoring ns> get prometheus -o yaml | grep -A5 ruleSelector`
+    # rather than assuming -- a PrometheusRule the operator does not select is applied,
+    # healthy, and evaluated by nobody.
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: ai-customer-service-go.slo
+      rules:
+        # --- The service-level objective on a turn -------------------------------------
+        #
+        # 99% of turns end `completed`, and 95% of turns finish inside 16 seconds, both
+        # over 28 days. docs/observability.md has the reasoning, and is explicit that
+        # neither number is measured.
+        #
+        # Written with the failures in the numerator rather than as `1 - completed/all`,
+        # which is not the same expression when everything is broken: if no turn completes
+        # at all, `chat_turns_total{outcome="completed"}` has no series, the ratio is
+        # empty, and `1 - empty` is empty -- so the total-outage case is the one case that
+        # would not alert. Counting the failures instead has no such hole, and both forms
+        # stay empty (rather than firing) when there is no traffic.
+        - alert: TurnFailureBudgetBurningFast
+          expr: |
+            sum(rate(chat_turns_total{outcome!="completed"}[1h]))
+              /
+            sum(rate(chat_turns_total[1h])) > 0.144
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Turns are failing 14x faster than the 99% objective allows"
+            description: >-
+              More than 14.4% of turns in the last hour ended as something other than
+              `completed`. At that rate a 28-day error budget is gone in two days. Split by
+              outcome first -- `budget_exceeded` and `tool_limit` are the service refusing
+              or giving up, `failed` is everything else -- then look at
+              chat_model_calls_total{outcome="error"} for the provider.
+        - alert: TurnFailureBudgetBurningSlow
+          expr: |
+            sum(rate(chat_turns_total{outcome!="completed"}[6h]))
+              /
+            sum(rate(chat_turns_total[6h])) > 0.06
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Turns are failing 6x faster than the 99% objective allows"
+            description: >-
+              Six hours at 6% failures spends the 28-day budget in under five days. Slower
+              than the critical rule and older than a blip, so this is the one that catches
+              a provider degrading rather than falling over.
+
+        # The latency SLI is the share of turns inside a bucket boundary, not a
+        # histogram_quantile: 16 is an actual edge of the histogram in internal/obs, so
+        # this counts observations rather than interpolating between edges. The test
+        # asserts that the `le` used here is a boundary the code configures -- `le="15"`
+        # would select no series at all, and an alert that selects nothing is silent.
+        - alert: TurnsSlowerThanTheObjective
+          expr: |
+            1 - (
+              sum(rate(chat_turn_duration_seconds_bucket{le="16"}[30m]))
+                /
+              sum(rate(chat_turn_duration_seconds_count[30m]))
+            ) > 0.10
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "More than 10% of turns took longer than 16 seconds"
+            description: >-
+              The objective is 95% inside 16 s. A persistent 10% miss is usually the
+              provider rather than this service: retrieval is single-digit milliseconds of a
+              turn (docs/observability.md), so compare chat_turn_duration_seconds against
+              the model spans in Jaeger before looking anywhere else.
+        - alert: TurnsFarSlowerThanTheObjective
+          expr: |
+            1 - (
+              sum(rate(chat_turn_duration_seconds_bucket{le="16"}[10m]))
+                /
+              sum(rate(chat_turn_duration_seconds_count[10m]))
+            ) > 0.25
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "A quarter of turns are taking longer than 16 seconds"
+            description: >-
+              A step change rather than a drift. Check the provider's status page, then
+              whether a tool call is hanging -- a turn holds a per-conversation lock for its
+              whole length, so one slow dependency serialises everything on that
+              conversation.
+
+    - name: ai-customer-service-go.faults
+      rules:
+        # `up` and its `job` label come from Prometheus, not from this application. The job
+        # value is the Service's app.kubernetes.io/name, because that is the label
+        # observability/servicemonitor.yaml names in `jobLabel`; the test asserts those two
+        # files agree, since a wrong job here makes this rule permanently silent while
+        # looking perfectly reasonable.
+        - alert: AppTargetDown
+          expr: up{job="ai-customer-service-go"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.instance }} is not being scraped"
+            description: >-
+              No metrics for five minutes. Readiness may still be fine -- /readyz pings
+              Postgres and this does not -- so this is about the process being reachable at
+              all, and about every other rule in this file having no data to evaluate.
+
+        # The quiet version of a billing bug, and the reason the counter exists at all.
+        # Prices key on the model id the provider *reports*: asking for gpt-5 yields
+        # gpt-5-2025-08-07, a price table keyed on the requested id never matches, tokens
+        # keep counting, and chat_cost_usd_total stays at zero. A flat cost meter is
+        # indistinguishable from a cheap month, so this fires on the first call rather than
+        # on a rate.
+        - alert: UnpricedModelCalls
+          expr: increase(chat_unpriced_model_calls_total[1h]) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Model {{ $labels.model }} has no price entry, so its calls cost $0.00"
+            description: >-
+              Add it to the price table in internal/cost, keyed on the id in this alert's
+              label -- the one the provider reported -- not the one the configuration asks
+              for. Until then chat_cost_usd_total under-reports, and the token budgets are
+              the only ceilings that still work.
+
+        # The provider, seen from this side of the call. `error` covers a refused request,
+        # a bad key and a stream that ended badly; a turn can survive one of these and still
+        # complete, which is why this is separate from the turn objective above.
+        - alert: ProviderCallsFailing
+          expr: |
+            sum(rate(chat_model_calls_total{outcome="error"}[10m]))
+              /
+            sum(rate(chat_model_calls_total[10m])) > 0.05
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "More than 5% of model calls are failing"
+            description: >-
+              A 5xx or a rejected request from the provider. There is no failover
+              (docs/production-readiness.md item 11): if this is the provider being down
+              rather than a bad request, the service is down with it, and CHAT_PROVIDER is
+              the only lever.
+
+        # The per-conversation token budget refusing a turn. One is a long conversation
+        # doing what the budget is for; a rate of them is the budget set too low, or one
+        # client looping.
+        - alert: BudgetExceededTurns
+          expr: increase(chat_turns_total{outcome="budget_exceeded"}[15m]) > 3
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Conversations are being cut off by the per-conversation token budget"
+            description: >-
+              More than three turns refused in fifteen minutes. Each one is a customer told
+              the conversation has reached its limit. Check CONVERSATION_TOKEN_BUDGET
+              against what a real conversation costs before raising it. This does NOT cover
+              the service-wide daily budget, which refuses at the HTTP edge and emits no
+              metric at all -- see docs/observability.md.
+
+        # The model still wanted a tool and the cap said no, so the customer got whatever
+        # text had accumulated -- possibly nothing at all, which looks exactly like a
+        # completed turn from outside.
+        - alert: TurnsHittingTheToolRoundCap
+          expr: increase(chat_turns_total{outcome="tool_limit"}[1h]) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "A turn hit the tool-round cap with the model still asking for tools"
+            description: >-
+              Either a tool is returning something the model cannot use and it keeps
+              retrying, or the cap is too low for a legitimate multi-step answer. Read the
+              turn record in the operations UI before changing the cap: what the customer
+              actually got is in it.
+
+        # A notification's failure mode is silence. handoff_delivery keeps the row and the
+        # operations overview shows the count in red, but both need somebody to look; this
+        # is the same events where an alert can reach them. It fires on one, because one
+        # undelivered notification is one ticket nobody has been told about.
+        - alert: HandoffNotificationsUndelivered
+          expr: increase(chat_handoff_notifications_total{outcome="failed"}[15m]) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "A handoff notification did not arrive ({{ $labels.type }})"
+            description: >-
+              The model promised a customer a human and the destination was not told. Both
+              attempts failed and nothing retries after that. The rows in handoff_delivery
+              say which tickets, and the operations UI is where they can be picked up by
+              hand. Check HANDOFF_WEBHOOK_URL and whatever is behind it.
+
+        # Dollars per hour across every model. The threshold is a placeholder: set it from
+        # the invoice you are prepared to explain. Per-conversation budgets bound one
+        # conversation and the daily budget bounds a day; this is the only signal that
+        # arrives while the money is being spent.
+        - alert: CostBurnRate
+          expr: sum(rate(chat_cost_usd_total[1h])) * 3600 > 5
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Model spend is above $5/hour"
+            description: >-
+              Sustained for fifteen minutes. If UnpricedModelCalls is also firing, this
+              number is an under-estimate rather than the whole bill.

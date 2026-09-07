@@ -15,8 +15,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lai3d/ai-customer-service-go/internal/chat"
 	"github.com/lai3d/ai-customer-service-go/internal/handoff"
+	"github.com/lai3d/ai-customer-service-go/internal/obs"
 	"github.com/lai3d/ai-customer-service-go/internal/testsupport"
 	"github.com/lai3d/ai-customer-service-go/internal/ticket"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 var pool *pgxpool.Pool
@@ -254,6 +256,51 @@ func TestWithNoWebhookNothingIsSentAndNothingBreaks(t *testing.T) {
 	}
 	if deliveries != 0 {
 		t.Errorf("%d deliveries were recorded with no destination configured", deliveries)
+	}
+}
+
+// The row is the record and the counter is the smoke detector, and the counter is the
+// half an alert can reach. `handoff_delivery` has always held every outcome, but a row
+// waits for somebody to open the operations UI and notice a number in red.
+//
+// Asserted through the real Notifier against destinations that refuse and accept, rather
+// than by calling the counter directly: the increment lives on the same path that writes
+// the row, and a test that drove the metric itself would prove only that a counter counts.
+func TestAnUndeliveredNotificationIsCountedAsWellAsRecorded(t *testing.T) {
+	ctx := context.Background()
+	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no", http.StatusInternalServerError)
+	}))
+	defer refusing.Close()
+	accepting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer accepting.Close()
+
+	metrics := obs.NewMetrics()
+	count := func(outcome string) float64 {
+		return testutil.ToFloat64(metrics.Handoffs.WithLabelValues("ticket.replied", outcome))
+	}
+
+	conversation := "metered-" + fmt.Sprint(time.Now().UnixNano())
+	number := newTicket(t, conversation)
+	failing := handoff.NewNotifier(pool, refusing.URL, time.Second).Meter(metrics)
+	if err := store(failing).Reply(ctx, number, "alex", "we are on it"); err != nil {
+		t.Fatalf("a failing webhook failed the reply: %v", err)
+	}
+	waitFor(t, func() bool { return count("failed") > 0 })
+	if got := count("delivered"); got != 0 {
+		t.Errorf("a refused notification counted %v deliveries", got)
+	}
+
+	working := handoff.NewNotifier(pool, accepting.URL, time.Second).Meter(metrics)
+	if err := store(working).Reply(ctx, number, "alex", "and it is done"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return count("delivered") > 0 })
+	if got := count("failed"); got != 1 {
+		t.Errorf("the failure count moved to %v while a delivery succeeded; two attempts "+
+			"against one destination are one outcome, not two", got)
 	}
 }
 
