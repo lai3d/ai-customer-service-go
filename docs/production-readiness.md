@@ -334,6 +334,11 @@ corpus left out** (`make eval-control`). A suite that scores 100% has said nothi
 same harness is shown to produce a bad number; a 57-point collapse is what "grounded in this
 corpus" looks like as a measurement.
 
+Both numbers above are as measured on 2026-09-06. **Re-measured after multi-tenancy:** 36/36
+on each of three runs and 16/35 (45.7%) for the control — and the re-run found three broken
+assertions on the way, one of which was marking the behaviour the system prompt asks for as
+a defect. [Measuring the answers](evaluation.md) has all three.
+
 It is opt-in rather than in CI, for the same reason `make bench` is: $0.52 a run is cheap
 for a person about to change a prompt and expensive for a job that fires on every push. The
 runner refuses to start if the corpus version has moved.

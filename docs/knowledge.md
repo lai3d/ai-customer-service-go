@@ -103,7 +103,7 @@ which can ask the index for more — but that is a hypothesis, and it is written
 Unchanged, which is the point:
 
 - Retrieval: 20/20 paraphrases, 4/4 cross-lingual, every language of every entry indexed.
-- Answers: 35–36 of 36, the same rate as before versioning, measured through the
+- Answers: 36 of 36 on three consecutive runs, the same rate as before versioning, measured through the
   **versioned** read path rather than the unversioned fallback. The extra case is the
   injection one the editor made necessary.
 

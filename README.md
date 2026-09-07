@@ -277,7 +277,7 @@ out. See [Retrieval](docs/retrieval.md#retrieval-quality).
 | [The operations surface](docs/operations.md) | Two applications across an origin: why the API does not exist unless you configure it, what the CORS allowlist actually permits, and why reading a conversation is an audited action |
 | [Knowledge that can be edited](docs/knowledge.md) | Corpus versions, an atomic switch, and why the bundled corpus is adopted rather than rebuilt |
 | [The loop back to a human](docs/handoff.md) | Telling somebody a ticket exists, and getting a person's reply back to the customer who asked |
-| [Measuring the answers](docs/evaluation.md) | 35 cases against the real model, and the control run that makes the score mean something |
+| [Measuring the answers](docs/evaluation.md) | 36 cases against the real model, the control run that makes the score mean something, and three assertions that were measuring the wrong thing |
 | [Deleting customer data](docs/retention.md) | Expiry by age and erasure on request — and the harder half, which is what survives an erasure and why |
 | [Changing a schema that has data in it](docs/schema.md) | Versioned migrations with a ledger, a baseline that is applied rather than assumed, and two tests that are not the same test |
 | [Deployment](docs/deployment.md) | Getting an image somewhere a real cluster can pull it, pinning it by digest, and the three things the kind harness cannot verify at all |

@@ -214,8 +214,8 @@ that show why it is not needed here.
   rejected rows is the margin. Two separate sessions reached wrong conclusions here by
   reading the result count — one because the planner had quietly chosen a sequential scan.
 - **A score is not a measurement until the harness has been seen to produce a bad one.**
-  `make eval` scores 35/35; `make eval-control` runs the same cases with no corpus and
-  scores 15/35. Without the second number the first says only that a large model sounds
+  `make eval` scores 36/36; `make eval-control` runs the same cases with no corpus and
+  scores 16/35. Without the second number the first says only that a large model sounds
   plausible. Keep the control working when adding cases.
 - **Never `git checkout <file>` to undo a temporary edit.** It discards *everything*
   uncommitted in that file, not the perturbation you just made. It ate uncommitted work
@@ -447,7 +447,7 @@ not edit the number.** The tests that carry measurements are:
 | Both native libraries are concurrency-safe | `TestONNXEmbedderIsConcurrencySafe` (run with `-race`) |
 | The ticket cap holds under concurrency | `TestTheCapHoldsUnderConcurrentCalls` |
 | Throughput, latency and OS threads | `make bench` |
-| Answer quality: 35–36/36 over ten runs, and 15/35 with no corpus | `make eval` and `make eval-control` |
+| Answer quality: 36/36 on three consecutive runs, and 16/35 with no corpus | `make eval` and `make eval-control` |
 
 `app.rag.similarity-threshold` is **0**, and that is a measurement, not an omission:
 relevant, off-topic and degenerate inputs all score in an overlapping band. If you change
