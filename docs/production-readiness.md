@@ -32,7 +32,7 @@ What is missing is almost entirely product, not scaffolding.
 | # | Item | Blocks | Scope | Status | Estimate |
 | --- | --- | --- | --- | --- | --- |
 | 1 | [Identity, session ownership, rate limiting, global budget](#1-anyone-can-read-anyone-elses-conversation) | launch | both | **done** 2026-09-06 | 3–4 h |
-| 2 | [Knowledge as a knowledge base, not a fixture](#2-the-corpus-is-a-test-fixture) | launch | both | **core done** 2026-09-06, editor next | 4–6 h |
+| 2 | [Knowledge as a knowledge base, not a fixture](#2-the-corpus-is-a-test-fixture) | launch | both | **done** 2026-09-07 | 4–6 h |
 | 3 | [The loop back to a human](#3-a-ticket-is-a-row-and-nothing-else-happens) | launch | both | **done** 2026-09-06 | 3–5 h |
 | 4 | [Real tools instead of the mock](#4-the-tools-are-fiction) | week 1 | both | **seam done** 2026-09-07, integration blocked on access | 2–3 h (0.5 h left) |
 | 5 | [Retention and deletion of customer data](#5-there-is-no-way-to-delete-a-customer) | week 1 | both | **done** 2026-09-06 | 2–3 h |
@@ -200,10 +200,16 @@ nothing and the failure is silent, and the test written to justify it now says i
 comment that it does not. Why the two stacks differ is written down as an open question
 rather than a conclusion.
 
-**Still to do:** the editing surface. `knowledge_entry` exists; the operations UI has no
-editor, and publication is a store method rather than a button. Ordinary CRUD on a tested
-core — and the injection question above lands with it, because that is the moment retrieved
-text becomes attacker-influenced.
+**Done, 2026-09-07.** The editor is in the operations UI: drafts, a publication with a
+note, a version history with rollback, and every edit audited with *what* changed. Saving
+and publishing are visibly different actions, because they have different consequences.
+
+The injection question landed with it, and is measured rather than claimed:
+`injection-in-a-corpus-entry` in `make eval` writes an entry that orders the assistant to
+ignore its instructions and call a tool. `withPassages` labels retrieved text as documents
+rather than instructions — **argued, not evidenced**, since the case passes with and without
+it; the probe is too weak to discriminate. The real constraint, tool calls bounded by the
+caller's identity rather than the model's judgement, is still not built.
 
 ### 3. A ticket is a row, and nothing else happens
 

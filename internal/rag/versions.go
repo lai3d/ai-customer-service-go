@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pgvector/pgvector-go"
 )
 
@@ -167,10 +168,24 @@ func (s *Store) Publish(ctx context.Context, version string, docs []Document, ve
 		return err
 	}
 
-	tag, err := tx.Exec(ctx, `
-		UPDATE corpus_active SET version = $1, activated_at = now(), activated_by = $2,
-		       revision = revision + 1
-		WHERE only_one AND revision = $3`, version, actor, expectedRevision)
+	// expectedRevision 0 means "there was no active version when I read the state", which
+	// is the first publication on a database that has never had one.
+	//
+	// Without this branch that database can never get a version at all: AdoptBundled needs
+	// documents to stamp, and a service started with IngestOnStartup off against an empty
+	// database has none. The insert is still a race that exactly one publication wins --
+	// ON CONFLICT DO NOTHING, then a check that this one did the inserting.
+	var tag pgconn.CommandTag
+	if expectedRevision <= 0 {
+		tag, err = tx.Exec(ctx, `
+			INSERT INTO corpus_active (only_one, version, activated_by)
+			VALUES (true, $1, $2) ON CONFLICT (only_one) DO NOTHING`, version, actor)
+	} else {
+		tag, err = tx.Exec(ctx, `
+			UPDATE corpus_active SET version = $1, activated_at = now(), activated_by = $2,
+			       revision = revision + 1
+			WHERE only_one AND revision = $3`, version, actor, expectedRevision)
+	}
 	if err != nil {
 		return err
 	}

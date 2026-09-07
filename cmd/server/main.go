@@ -19,6 +19,7 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/handoff"
 	"github.com/lai3d/ai-customer-service-go/internal/httpapi"
 	"github.com/lai3d/ai-customer-service-go/internal/identity"
+	"github.com/lai3d/ai-customer-service-go/internal/knowledge"
 	"github.com/lai3d/ai-customer-service-go/internal/llm"
 	"github.com/lai3d/ai-customer-service-go/internal/obs"
 	"github.com/lai3d/ai-customer-service-go/internal/rag"
@@ -182,6 +183,18 @@ func run() error {
 		slog.Info("adopted the bundled corpus as the first managed version",
 			"version", corpus.Version)
 	}
+	// The drafts operators edit. Seeded from the bundled corpus once, because an editor
+	// that opens on an empty list turns the first publication into "replace the knowledge
+	// base with whatever one person just typed" -- and nobody would find out until
+	// customers stopped being answered.
+	knowledgeStore := knowledge.NewStore(pool, vectors, embedder)
+	if seeded, err := knowledgeStore.SeedFromCorpus(startupCtx, corpus); err != nil {
+		return fmt.Errorf("seed the knowledge base: %w", err)
+	} else if seeded > 0 {
+		slog.Info("seeded the editable knowledge base from the bundled corpus",
+			"entries", seeded)
+	}
+
 	if active, _, err := vectors.Active(startupCtx); err == nil {
 		slog.Info("retrieval reads one corpus version", "active", active)
 	} else if errors.Is(err, rag.ErrNoActiveVersion) {
@@ -283,7 +296,8 @@ func run() error {
 	}
 	if operators.Enabled() {
 		admin.NewServer(admin.NewStore(pool), tickets, operators,
-			admin.ParseCORS(cfg.Admin.CORSOrigins), retention.NewStore(pool), handoffs).Routes(mux)
+			admin.ParseCORS(cfg.Admin.CORSOrigins), retention.NewStore(pool), handoffs,
+			knowledgeStore).Routes(mux)
 		slog.Info("operations API mounted at /api/admin/v1; the UI is admin-ui/, served separately",
 			"operators", operators.Names(), "cors_origins", cfg.Admin.CORSOrigins)
 	} else {

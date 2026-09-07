@@ -6,6 +6,7 @@ import { OverviewPage } from './pages/Overview'
 import { ConversationsPage } from './pages/Conversations'
 import { TicketsPage } from './pages/Tickets'
 import { AuditPage } from './pages/Audit'
+import { KnowledgePage } from './pages/Knowledge'
 
 export function App() {
   const [me, setMe] = useState<WhoAmI | null>(null)
@@ -115,6 +116,7 @@ function Signed({ me, onSignOut }: { me: WhoAmI; onSignOut: () => void }) {
             { key: 'overview', label: 'Overview', children: <OverviewPage /> },
             { key: 'conversations', label: 'Conversations', children: <ConversationsPage /> },
             { key: 'tickets', label: 'Tickets', children: <TicketsPage canWrite={me.canWrite} /> },
+            { key: 'knowledge', label: 'Knowledge', children: <KnowledgePage canWrite={me.canWrite} /> },
             { key: 'audit', label: 'Audit', children: <AuditPage /> },
           ]}
         />

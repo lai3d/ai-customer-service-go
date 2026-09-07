@@ -10,6 +10,8 @@ package knowledge
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -226,9 +228,67 @@ func (s *Store) Publish(ctx context.Context, actor, note string, expectedRevisio
 		return "", fmt.Errorf("embed the knowledge base: %w", err)
 	}
 
-	version := time.Now().UTC().Format("2006-01-02T15-04-05Z")
+	// A timestamp for a human plus randomness for uniqueness.
+	//
+	// The timestamp alone is not a name: two publications inside the same second produce
+	// the same one and collide on the document primary key with a raw constraint
+	// violation. That is not hypothetical -- it is a double-clicked Publish button, and
+	// the first version of this hit it in a test within a minute of being written.
+	// Relying on the clock's resolution for uniqueness is the same mistake as relying on
+	// a process-local counter, which this repository has already made once.
+	suffix := make([]byte, 3)
+	if _, err := rand.Read(suffix); err != nil {
+		return "", err
+	}
+	version := fmt.Sprintf("%s-%s",
+		time.Now().UTC().Format("2006-01-02T15-04-05Z"), hex.EncodeToString(suffix))
 	if err := s.corpus.Publish(ctx, version, docs, vectors, actor, note, expectedRevision); err != nil {
 		return "", err
 	}
 	return version, nil
+}
+
+// Versions and Activate are pass-throughs to internal/rag.
+//
+// They exist so the admin surface talks to one package about knowledge rather than two,
+// and so nothing in internal/admin has to know that a corpus version is a rag concept.
+func (s *Store) Versions(ctx context.Context) ([]rag.Version, error) {
+	return s.corpus.Versions(ctx)
+}
+
+func (s *Store) Activate(ctx context.Context, version, actor string, expectedRevision int) error {
+	return s.corpus.Activate(ctx, version, actor, expectedRevision)
+}
+
+// State is what the editor needs before it can publish: which version is live, and the
+// revision to hand back so a stale page loses the race instead of winning it.
+func (s *Store) State(ctx context.Context) (version string, revision int, err error) {
+	version, revision, err = s.corpus.Active(ctx)
+	if errors.Is(err, rag.ErrNoActiveVersion) {
+		// Reachable before the first ingestion. The editor shows it rather than failing:
+		// "no version is active" is a state an operator can act on.
+		return "", 0, nil
+	}
+	return version, revision, err
+}
+
+// HasUnpublishedChanges reports whether any draft is newer than the active version.
+//
+// True after an ordinary edit, and also after a *rollback*, which is the case worth having
+// it for: rolling back changes what customers are told and leaves the drafts untouched, so
+// the editor shows text that is not live and nothing else would say so.
+//
+// A timestamp comparison rather than a content diff. It over-reports -- saving an entry
+// unchanged sets updated_at -- and over-reporting is the safe direction: it says "publish
+// to be sure", never "nothing to do" when there is.
+func (s *Store) HasUnpublishedChanges(ctx context.Context) (bool, error) {
+	var newer bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM knowledge_entry k
+			WHERE k.updated_at > coalesce(
+				(SELECT v.created_at FROM corpus_version v
+				 JOIN corpus_active a ON a.version = v.version AND a.only_one),
+				'-infinity'::timestamptz))`).Scan(&newer)
+	return newer, err
 }

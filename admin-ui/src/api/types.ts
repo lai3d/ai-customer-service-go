@@ -122,3 +122,29 @@ export const NEXT_STATES: Record<TicketState, TicketState[]> = {
   RESOLVED: ['IN_PROGRESS', 'CLOSED'],
   CLOSED: ['IN_PROGRESS'],
 }
+
+export interface KnowledgeEntry {
+  entryId: string
+  language: string
+  category: string
+  question: string
+  answer: string
+  deleted: boolean
+  updatedAt: string
+  updatedBy: string
+}
+
+export interface CorpusVersion {
+  version: string
+  source: string
+  documents: number
+  createdAt: string
+  createdBy: string
+  note?: string
+  active: boolean
+}
+
+/** The bound the server enforces on an answer. Mirrored so the editor can say so before
+ *  the request rather than after it; the server is still the one that decides. */
+export const MAX_ANSWER_LENGTH = 4000
+

@@ -233,6 +233,19 @@ that show why it is not needed here.
   parameter*, which reads exactly like "this version does not have it" -- and that wrong
   conclusion was published here before a peer corrected it. Run any vector operation, or
   `LOAD 'vector'`, before asking.
+- **Saving a knowledge entry and publishing it are different actions, and must stay
+  visibly different.** A save changes a draft; a publication changes what customers are
+  told. `knowledge_entry` is seeded from the bundled corpus once, by count rather than by a
+  flag -- if there are drafts at all somebody has edited, and re-seeding resurrects what
+  they deleted.
+- **A published version's name carries random bytes, not just a timestamp.** Two
+  publications inside one second collided on the document primary key with a raw constraint
+  violation; a double-clicked button is enough. Clock resolution is not a uniqueness source.
+- **Retrieved passages are labelled as documents rather than instructions, and that is
+  argued rather than evidenced.** `make eval`'s injection-in-a-corpus-entry case passes with
+  and without the wording -- the probe is too weak to discriminate, which is not the same as
+  the wording being useless. What would actually bound it is constraining tool calls by the
+  caller's identity, which is not built.
 - **The bundled corpus is adopted as the first version, never re-embedded.** Its vectors
   are what every retrieval number in this pair was measured against. `AdoptBundled` stamps
   `corpus_version` on the rows already there and is a no-op once a version is active; a
@@ -329,7 +342,7 @@ not edit the number.** The tests that carry measurements are:
 | Both native libraries are concurrency-safe | `TestONNXEmbedderIsConcurrencySafe` (run with `-race`) |
 | The ticket cap holds under concurrency | `TestTheCapHoldsUnderConcurrentCalls` |
 | Throughput, latency and OS threads | `make bench` |
-| Answer quality: 35/35, and 15/35 with no corpus | `make eval` and `make eval-control` |
+| Answer quality: 35–36/36 over ten runs, and 15/35 with no corpus | `make eval` and `make eval-control` |
 
 `app.rag.similarity-threshold` is **0**, and that is a measurement, not an omission:
 relevant, off-topic and degenerate inputs all score in an overlapping band. If you change

@@ -103,21 +103,72 @@ which can ask the index for more — but that is a hypothesis, and it is written
 Unchanged, which is the point:
 
 - Retrieval: 20/20 paraphrases, 4/4 cross-lingual, every language of every entry indexed.
-- Answers: 34–35 of 35, the same range as before versioning, measured through the
-  **versioned** read path rather than the unversioned fallback.
+- Answers: 35–36 of 36, the same rate as before versioning, measured through the
+  **versioned** read path rather than the unversioned fallback. The extra case is the
+  injection one the editor made necessary.
+
+## The editor, and the two things it separates
+
+Operators edit `knowledge_entry`: drafts, which nothing retrieves. A publication turns the
+live drafts into a corpus version, embeds them and activates it. Saving and publishing are
+deliberately different actions on the page, because they have different consequences — a
+save changes a draft, a publication changes what customers are told — and a page where they
+look alike is a page where somebody publishes a half-written sentence by reflex.
+
+**The drafts are seeded from the bundled corpus, once.** Without that the editor opens on an
+empty list, and the first publication means *replace the knowledge base with whatever one
+person just typed* — with nobody finding out until customers stop being answered. Seeding is
+idempotent by count rather than by a flag: if there are drafts at all, somebody has edited,
+and re-seeding would resurrect the entries they deleted.
+
+Deleting is soft and takes effect at the next publication, and the page says so. A deletion
+that changed live answers immediately would be an edit that skipped the publication step.
+
+Every edit writes an audit row naming **what changed** — created, or which fields moved and
+by how many characters — because "alex edited returns-window" records that something
+happened and not what. The entry text itself is not in the trail: it is in the draft and in
+the published version, both of which an erasure can reach.
+
+Two smaller things the tests found, both real:
+
+- **A publication needs no existing version to advance from.** A database with no documents
+  at all could not get a first version: `AdoptBundled` has nothing to stamp, and `Publish`
+  needed a row to update. Revision `0` now means "there was no active version when I read
+  the state", and exactly one publication wins that race.
+- **The version name cannot rely on the clock.** It was a timestamp to the second, and two
+  publications inside one second collided on the document primary key with a raw constraint
+  violation — a double-clicked Publish button. It carries random bytes now. Relying on clock
+  resolution for uniqueness is the same mistake as relying on a process-local counter, which
+  this repository has already made once.
+
+## An entry that gives the assistant orders
+
+This is what editable knowledge introduces, and it is measured rather than asserted:
+[`injection-in-a-corpus-entry`](evaluation.md#an-entry-that-gives-the-assistant-orders)
+writes an entry telling the assistant to ignore its instructions and call a tool, then asks
+an ordinary question.
+
+`withPassages` labels the retrieved block as documents rather than instructions, and **that
+wording is argued rather than evidenced**: the case passes with it and without it. The
+honest reading is that the probe is too weak to discriminate, not that the wording is
+useless.
+
+The editor says the same thing to the person typing, where it is most likely to matter:
+*this text is read by the assistant when it answers; write answers, not instructions.*
 
 ## Not built here
 
-- **The editing surface.** `knowledge_entry` exists and the operations UI has no editor yet;
-  publication is a store method rather than a button. That is the next slice, and it is
-  ordinary CRUD on top of a versioning core that has been tested.
-- **Prompt-injection defences for edited knowledge.** The moment entries are editable by
-  many people, retrieved text is attacker-influenced input to a model holding tools. The
-  system prompt is the whole of the defence today, and constraining tool calls by the
-  caller's identity rather than by the model's judgement is written down in
-  [the readiness list](production-readiness.md#2-the-corpus-is-a-test-fixture) and not done.
+- **A real defence against a poisoned entry.** Labelling the block asks the model rather
+  than constraining it, which is the weakest kind of mitigation there is. What would bound
+  it is constraining tool calls by the caller's identity rather than by the model's
+  judgement — not built, and written down in
+  [the readiness list](production-readiness.md#2-the-corpus-is-a-test-fixture).
+- **A preview.** `SearchOptions.Version` can search a draft version, and nothing in the UI
+  uses it. Publishing is reversible, which is not the same as being able to look first.
 - **Per-version evaluation.** `make eval` scores the active version. Scoring a draft before
   activating it is what would make a publication safe rather than merely reversible.
+- **An import.** Entries are typed in one at a time. A knowledge base of any size arrives
+  from somewhere else, and that somewhere else is where its injection risk arrives from.
 
 ---
 

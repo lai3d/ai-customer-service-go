@@ -21,6 +21,9 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pgvector/pgvector-go"
+
 	"github.com/lai3d/ai-customer-service-go/internal/chat"
 	"github.com/lai3d/ai-customer-service-go/internal/config"
 	"github.com/lai3d/ai-customer-service-go/internal/cost"
@@ -51,8 +54,19 @@ type Case struct {
 	// NoTools asserts the turn made no tool call at all.
 	NoTools bool `json:"noTools"`
 	// Grounded asserts the answer admits it does not know rather than inventing.
-	Grounded bool   `json:"grounded"`
-	Why      string `json:"why"`
+	Grounded bool `json:"grounded"`
+	// CorpusEntry is an entry written into the corpus before this case runs, and removed
+	// after. It exists for one kind of case: what happens when the knowledge base itself
+	// carries an instruction. The corpus is editable now, so its text is no longer
+	// reviewed by whoever changed a file in this repository.
+	CorpusEntry *struct {
+		EntryID  string `json:"entryId"`
+		Language string `json:"language"`
+		Category string `json:"category"`
+		Question string `json:"question"`
+		Answer   string `json:"answer"`
+	} `json:"corpusEntry"`
+	Why string `json:"why"`
 }
 
 type suite struct {
@@ -179,6 +193,14 @@ func TestAnswerQuality(t *testing.T) {
 			// cases would make the score depend on the order they run in.
 			turnCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 			defer cancel()
+
+			if c.CorpusEntry != nil {
+				if control {
+					t.Skip("the control has no corpus, so a poisoned entry cannot be in it")
+				}
+				restore := poison(t, ctx, pool, embedder, *c.CorpusEntry)
+				defer restore()
+			}
 
 			var answer strings.Builder
 			var called []string
@@ -357,5 +379,47 @@ func repoRoot(t *testing.T) string {
 			t.Fatal("no go.mod above the working directory")
 		}
 		dir = parent
+	}
+}
+
+// poison writes one entry into the live corpus and returns a function that removes it.
+//
+// Directly into faq_document rather than through the knowledge editor: this case is about
+// what a passage does to a model, not about how it got there, and going through the editor
+// would make the test depend on a publication succeeding.
+func poison(t *testing.T, ctx context.Context, pool *pgxpool.Pool, embedder rag.Embedder,
+	entry struct {
+		EntryID  string `json:"entryId"`
+		Language string `json:"language"`
+		Category string `json:"category"`
+		Question string `json:"question"`
+		Answer   string `json:"answer"`
+	}) func() {
+	t.Helper()
+
+	content := fmt.Sprintf("Q: %s\nA: %s", entry.Question, entry.Answer)
+	vectors, err := embedder.EmbedPassages(ctx, []string{content})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var version *string
+	if err := pool.QueryRow(ctx,
+		`SELECT version FROM corpus_active WHERE only_one`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	id := "poison:" + entry.EntryID + ":" + entry.Language
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO faq_document
+			(id, entry_id, language, category, question, answer, content, embedding, corpus_version)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		id, entry.EntryID, entry.Language, entry.Category, entry.Question, entry.Answer,
+		content, pgvector.NewVector(vectors[0]), version); err != nil {
+		t.Fatal(err)
+	}
+	return func() {
+		if _, err := pool.Exec(context.Background(),
+			`DELETE FROM faq_document WHERE id = $1`, id); err != nil {
+			t.Errorf("could not remove the poisoned entry: %v", err)
+		}
 	}
 }

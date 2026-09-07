@@ -1,5 +1,6 @@
 import type {
-  AuditEntry, ConversationSummary, Overview, Ticket, TicketEvent, TicketPatch, Turn, WhoAmI,
+  AuditEntry, ConversationSummary, CorpusVersion, KnowledgeEntry, Overview, Ticket,
+  TicketEvent, TicketPatch, Turn, WhoAmI,
 } from './types'
 
 // Written by the container at start-up (public/config.js). Reading it through a function
@@ -104,6 +105,28 @@ export const api = {
     request<null>(`/tickets/${encodeURIComponent(number)}/reply`, {
       method: 'POST',
       body: JSON.stringify({ text }),
+    }),
+  knowledge: () =>
+    request<{
+      entries: KnowledgeEntry[] | null; activeVersion: string; revision: number
+      unpublishedChanges: boolean
+    }>('/knowledge'),
+  saveEntry: (entry: KnowledgeEntry) =>
+    request<null>(
+      `/knowledge/${encodeURIComponent(entry.entryId)}/${encodeURIComponent(entry.language)}`,
+      { method: 'PUT', body: JSON.stringify(entry) }),
+  deleteEntry: (entryId: string, language: string) =>
+    request<null>(
+      `/knowledge/${encodeURIComponent(entryId)}/${encodeURIComponent(language)}`,
+      { method: 'DELETE' }),
+  corpusVersions: () => request<{ versions: CorpusVersion[] | null }>('/knowledge/versions'),
+  publish: (note: string, revision: number) =>
+    request<{ version: string }>('/knowledge/publish', {
+      method: 'POST', body: JSON.stringify({ note, revision }),
+    }),
+  activateVersion: (version: string, revision: number) =>
+    request<null>(`/knowledge/versions/${encodeURIComponent(version)}/activate`, {
+      method: 'POST', body: JSON.stringify({ revision }),
     }),
   audit: (params: { limit: number; offset: number }) =>
     request<{ total: number; entries: AuditEntry[] | null }>(
