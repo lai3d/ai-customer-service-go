@@ -184,3 +184,60 @@ func TestASessionTokenIsNotStoredAndAnExpiredOneDoesNotWork(t *testing.T) {
 		t.Error("the sweep removed nothing though an expired session exists")
 	}
 }
+
+// The rows nobody reads again actually go.
+//
+// This test exists because `SweepWindows` and `Sessions.Sweep` were both written, both
+// tested, and called by nothing: `rate_window` grew for ever while two correct sweepers
+// sat there. "The function exists" and "the work happens" are different claims, and only
+// the first had a test.
+func TestExpiredSessionsAndClosedWindowsAreActuallySwept(t *testing.T) {
+	ctx := context.Background()
+	sessions := identity.NewSessions(pool, time.Hour)
+	limits := identity.NewLimits(pool)
+
+	token, _, _, err := sessions.Issue(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE chat_session SET expires_at = now() - interval '2 days'
+		WHERE token_hash = sha256($1::bytea)`, []byte(token)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO rate_window (bucket, subject, window_start, count)
+		VALUES ('turn', 'swept-subject', now() - interval '3 days', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	// And rows that are still in use must survive the same sweep.
+	live, _, _, err := sessions.Issue(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO rate_window (bucket, subject, window_start, count)
+		VALUES ('turn', 'live-subject', now(), 1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	sweptSessions, sweptWindows, err := identity.NewHygiene(sessions, limits, time.Hour).Once(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sweptSessions == 0 {
+		t.Error("the expired session survived")
+	}
+	if sweptWindows == 0 {
+		t.Error("the closed rate window survived, which is the table that grew for ever")
+	}
+
+	if _, err := sessions.Verify(ctx, live); err != nil {
+		t.Errorf("a live session was swept: %v", err)
+	}
+	var liveWindows int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM rate_window WHERE subject = 'live-subject'`).Scan(&liveWindows); err != nil {
+		t.Fatal(err)
+	}
+	if liveWindows == 0 {
+		t.Error("the current rate window was swept, so a request at a boundary loses its count")
+	}
+}

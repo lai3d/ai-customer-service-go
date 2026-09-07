@@ -361,6 +361,13 @@ func run() error {
 			"Erasure on request is available to operators; expiry by age is not running.")
 	}
 
+	// Closed rate windows and expired sessions. Not retention -- that is about customer
+	// data and a promise, and it is off by default; this is hygiene for rows nothing reads
+	// again, and it always runs.
+	if ident != nil {
+		go identity.NewHygiene(ident.Sessions, ident.Limits, time.Hour).Run(ctx)
+	}
+
 	// A turn whose process died stays in flight for ever otherwise, and the overview counts
 	// it under "not completed" as though the customer had walked away. A crash and a closed
 	// tab are the two things that record exists to tell apart.

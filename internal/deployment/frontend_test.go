@@ -153,3 +153,44 @@ func stateConstant(suffix string) string {
 	}
 	return fmt.Sprintf("UNKNOWN(%s)", suffix)
 }
+
+// Every background job this service depends on is actually started.
+//
+// Written because two of them were not. `Limits.SweepWindows` and `Sessions.Sweep` were
+// both implemented, both unit-tested, and called from nothing, so `rate_window` grew for
+// ever behind two correct sweepers — found by another agent reading the code rather than
+// by anything here. A unit test proves a function works; only this kind proves it runs.
+//
+// A source-level check, which is crude, and the crudeness is the point: the failure it
+// catches is a call that does not exist, and there is nothing subtler than absence.
+func TestEveryBackgroundJobIsStartedByTheServer(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "cmd", "server", "main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	main := string(raw)
+
+	// Each entry: what has to appear in main, and what silently grows or rots without it.
+	jobs := []struct{ call, consequence string }{
+		{"identity.NewHygiene", "expired sessions and closed rate windows accumulate for ever"},
+		{"retention.NewSweeper", "customer conversations are kept past the retention period that was promised"},
+		{"recorder.Sweep", "a turn whose process died stays in_flight for ever and is counted as abandoned by the customer"},
+	}
+	for _, job := range jobs {
+		if !strings.Contains(main, job.call) {
+			t.Errorf("cmd/server/main.go never calls %s, so %s", job.call, job.consequence)
+			continue
+		}
+		// Started, not merely constructed. `x := identity.NewHygiene(...)` with no `go`
+		// and no `Run` is the same defect wearing a constructor.
+		if !regexp.MustCompile(`go\s+[^\n]*`+regexp.QuoteMeta(job.call)).MatchString(main) &&
+			!regexp.MustCompile(regexp.QuoteMeta(job.call)+`[^\n]*\n?[^\n]*\.Run\(`).MatchString(main) &&
+			!regexp.MustCompile(`go func\(\)`).MatchString(main) {
+			t.Errorf("%s is constructed but never started", job.call)
+		}
+	}
+	if len(jobs) < 3 {
+		t.Error("the job list has shrunk; this test is no longer looking at anything")
+	}
+}
