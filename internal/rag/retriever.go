@@ -35,7 +35,14 @@ func NewRetriever(embedder Embedder, store *Store, topK int, threshold float64) 
 // With e5 the relevant and off-topic score distributions are about 0.006 apart, so no
 // threshold separates them; judging relevance is the model's job, and the system prompt
 // tells it that some of what it is given will be unrelated. See docs/retrieval.md.
-func (r *Retriever) Retrieve(ctx context.Context, question string) ([]Passage, error) {
+// The tenant is a per-call argument rather than part of the Retriever's options, because
+// one Retriever serves every tenant: a tenant baked in at construction would be a single
+// value shared by concurrent turns, which is the shape that answers one customer from
+// another's corpus under load and never in a test.
+func (r *Retriever) Retrieve(ctx context.Context, tenantID, question string) ([]Passage, error) {
+	if tenantID == "" {
+		return nil, fmt.Errorf("refusing to retrieve for no tenant")
+	}
 	ctx, span := obs.Tracer().Start(ctx, "retrieve")
 	defer span.End()
 
@@ -47,7 +54,9 @@ func (r *Retriever) Retrieve(ctx context.Context, question string) ([]Passage, e
 	}
 
 	_, searchSpan := obs.Tracer().Start(ctx, "pgvector similarity search")
-	passages, err := r.store.Search(ctx, vector, r.opts)
+	opts := r.opts
+	opts.TenantID = tenantID
+	passages, err := r.store.Search(ctx, vector, opts)
 	searchSpan.SetAttributes(obs.RetrievalAttributes(
 		r.opts.TopK, len(passages), r.opts.Threshold, r.embedder.Dimensions())...)
 	searchSpan.End()
@@ -62,12 +71,13 @@ func (r *Retriever) Retrieve(ctx context.Context, question string) ([]Passage, e
 }
 
 // RetrieveIn is Retrieve restricted to one language, for cross-lingual measurement.
-func (r *Retriever) RetrieveIn(ctx context.Context, question, language string) ([]Passage, error) {
+func (r *Retriever) RetrieveIn(ctx context.Context, tenantID, question, language string) ([]Passage, error) {
 	vector, err := r.embedder.EmbedQuery(ctx, question)
 	if err != nil {
 		return nil, fmt.Errorf("embed question: %w", err)
 	}
 	opts := r.opts
 	opts.Language = language
+	opts.TenantID = tenantID
 	return r.store.Search(ctx, vector, opts)
 }

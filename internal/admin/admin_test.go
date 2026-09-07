@@ -21,6 +21,7 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/knowledge"
 	"github.com/lai3d/ai-customer-service-go/internal/rag"
 	"github.com/lai3d/ai-customer-service-go/internal/retention"
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 	"github.com/lai3d/ai-customer-service-go/internal/testsupport"
 	"github.com/lai3d/ai-customer-service-go/internal/ticket"
 )
@@ -114,6 +115,7 @@ func TestTokensAreRejectedBeforeTheyCanBeWeak(t *testing.T) {
 		// This credential reads every customer conversation in the database.
 		{"short token", "alex:hunter2:operator", "16"},
 		{"unknown role", "alex:" + operatorToken + ":superuser", "unknown role"},
+		{"a fifth field", "alex:" + operatorToken + ":operator:acme:extra", "name:token"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -604,4 +606,56 @@ func (fixedEmbedder) EmbedPassages(_ context.Context, texts []string) ([][]float
 
 func knowledgeFor(pool *pgxpool.Pool) *knowledge.Store {
 	return knowledge.NewStore(pool, rag.NewStore(pool), fixedEmbedder{})
+}
+
+// whoami runs a request through the real Authenticate middleware and reports the operator
+// it landed as. Through the middleware rather than a lookup helper, because what matters is
+// the identity a handler actually receives.
+func whoami(t *testing.T, ops admin.Operators, token string) (admin.Operator, bool) {
+	t.Helper()
+	var got admin.Operator
+	var ok bool
+	handler := ops.Authenticate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, ok = admin.FromContext(r.Context())
+	}))
+	req := httptest.NewRequest("GET", "/api/admin/v1/overview", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	return got, ok
+}
+
+// One tenant per staff account, and no account sees two. An operations surface that can be
+// pointed at a neighbour's conversations by editing a query parameter is the
+// confidentiality hole this whole surface exists to avoid having.
+func TestAnOperatorBelongsToExactlyOneTenant(t *testing.T) {
+	ops, err := admin.ParseOperators(
+		"alex:" + operatorToken + ":operator,kim:" + viewerToken + ":viewer:acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, name := range ops.Names() {
+		got[name] = ""
+	}
+	if len(got) != 2 {
+		t.Fatalf("parsed %d operators", len(got))
+	}
+
+	// An omitted tenant is the default one, which is what every configuration written
+	// before tenancy means and keeps meaning.
+	alex, ok := whoami(t, ops, operatorToken)
+	if !ok {
+		t.Fatal("alex does not authenticate")
+	}
+	if alex.TenantID != tenant.Default {
+		t.Errorf("an operator with no tenant field belongs to %q, want %q",
+			alex.TenantID, tenant.Default)
+	}
+	kim, ok := whoami(t, ops, viewerToken)
+	if !ok {
+		t.Fatal("kim does not authenticate")
+	}
+	if kim.TenantID != "acme" {
+		t.Errorf("kim belongs to %q, want acme", kim.TenantID)
+	}
 }

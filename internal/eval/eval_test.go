@@ -30,6 +30,7 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/llm"
 	"github.com/lai3d/ai-customer-service-go/internal/obs"
 	"github.com/lai3d/ai-customer-service-go/internal/rag"
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 	"github.com/lai3d/ai-customer-service-go/internal/testsupport"
 	"github.com/lai3d/ai-customer-service-go/internal/tools"
 )
@@ -152,17 +153,17 @@ func TestAnswerQuality(t *testing.T) {
 	if control {
 		t.Log("EVAL_WITHOUT_RETRIEVAL: the corpus is not ingested; this run is the control")
 	} else {
-		if _, err := rag.Ingest(ctx, filepath.Join(root, "corpus", "faq.json"), embedder, vectors); err != nil {
+		if _, err := rag.Ingest(ctx, tenant.Default, filepath.Join(root, "corpus", "faq.json"), embedder, vectors); err != nil {
 			t.Fatal(err)
 		}
 		// Adopt the corpus as a managed version, because that is what production does and
 		// the versioned read path is a different query -- it filters on the active version.
 		// Running this eval against the unversioned fallback would measure the path no
 		// deployment uses and report it as the score.
-		if _, err := vectors.AdoptBundled(ctx, corpus.Version); err != nil {
+		if _, err := vectors.AdoptBundled(ctx, tenant.Default, corpus.Version); err != nil {
 			t.Fatal(err)
 		}
-		active, _, err := vectors.Active(ctx)
+		active, _, err := vectors.Active(ctx, tenant.Default)
 		if err != nil {
 			t.Fatal(err)
 		}

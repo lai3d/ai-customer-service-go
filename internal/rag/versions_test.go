@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/lai3d/ai-customer-service-go/internal/rag"
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 )
 
 // unit returns a distinguishable unit vector. Distinct vectors matter here: pgvector's
@@ -64,7 +65,7 @@ func TestTheBundledCorpusIsAdoptedWithoutReEmbedding(t *testing.T) {
 		t.Fatal("no corpus in the fixture")
 	}
 
-	adopted, err := f.store.AdoptBundled(ctx, "test-bundled-1")
+	adopted, err := f.store.AdoptBundled(ctx, tenant.Default, "test-bundled-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,14 +85,14 @@ func TestTheBundledCorpusIsAdoptedWithoutReEmbedding(t *testing.T) {
 		}
 	}
 
-	active, _, err := f.store.Active(ctx)
+	active, _, err := f.store.Active(ctx, tenant.Default)
 	if err != nil || active != "test-bundled-1" {
 		t.Errorf("active version is %q (%v)", active, err)
 	}
 
 	// Twice is a no-op. It runs at every start-up, and a second adoption would stamp
 	// published documents with the bundled version's name.
-	again, err := f.store.AdoptBundled(ctx, "test-bundled-2")
+	again, err := f.store.AdoptBundled(ctx, tenant.Default, "test-bundled-2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,21 +104,21 @@ func TestTheBundledCorpusIsAdoptedWithoutReEmbedding(t *testing.T) {
 func TestPublishingSwitchesInOneStepAndRefusesAStaleWriter(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
-	if _, err := f.store.AdoptBundled(ctx, "base"); err != nil {
+	if _, err := f.store.AdoptBundled(ctx, tenant.Default, "base"); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { resetVersions(t) })
 
-	_, revision, err := f.store.Active(ctx)
+	_, revision, err := f.store.Active(ctx, tenant.Default)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	docs, vectors := docsFor("v2", 12)
-	if err := f.store.Publish(ctx, "v2", docs, vectors, "alex", "first edit", revision); err != nil {
+	if err := f.store.Publish(ctx, tenant.Default, "v2", docs, vectors, "alex", "first edit", revision); err != nil {
 		t.Fatal(err)
 	}
-	active, newRevision, err := f.store.Active(ctx)
+	active, newRevision, err := f.store.Active(ctx, tenant.Default)
 	if err != nil || active != "v2" {
 		t.Fatalf("active is %q after publishing v2 (%v)", active, err)
 	}
@@ -127,16 +128,16 @@ func TestPublishingSwitchesInOneStepAndRefusesAStaleWriter(t *testing.T) {
 
 	// A second operator publishing from the page they loaded before v2 existed.
 	docs3, vectors3 := docsFor("v3", 12)
-	err = f.store.Publish(ctx, "v3", docs3, vectors3, "dana", "concurrent edit", revision)
+	err = f.store.Publish(ctx, tenant.Default, "v3", docs3, vectors3, "dana", "concurrent edit", revision)
 	if !errors.Is(err, rag.ErrStaleActivation) {
 		t.Errorf("a stale publication returned %v, want ErrStaleActivation", err)
 	}
-	if active, _, _ := f.store.Active(ctx); active != "v2" {
+	if active, _, _ := f.store.Active(ctx, tenant.Default); active != "v2" {
 		t.Errorf("the stale publication switched the active version to %q anyway", active)
 	}
 
 	// An empty publication would activate a corpus that answers nothing.
-	if err := f.store.Publish(ctx, "v4", nil, nil, "alex", "", newRevision); err == nil {
+	if err := f.store.Publish(ctx, tenant.Default, "v4", nil, nil, "alex", "", newRevision); err == nil {
 		t.Error("an empty corpus was published")
 	}
 }
@@ -144,23 +145,23 @@ func TestPublishingSwitchesInOneStepAndRefusesAStaleWriter(t *testing.T) {
 func TestRetrievalReadsOnlyTheActiveVersion(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
-	if _, err := f.store.AdoptBundled(ctx, "base"); err != nil {
+	if _, err := f.store.AdoptBundled(ctx, tenant.Default, "base"); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { resetVersions(t) })
 
-	_, revision, err := f.store.Active(ctx)
+	_, revision, err := f.store.Active(ctx, tenant.Default)
 	if err != nil {
 		t.Fatal(err)
 	}
 	docs, vectors := docsFor("only-here", 12)
-	if err := f.store.Publish(ctx, "vnew", docs, vectors, "alex", "", revision); err != nil {
+	if err := f.store.Publish(ctx, tenant.Default, "vnew", docs, vectors, "alex", "", revision); err != nil {
 		t.Fatal(err)
 	}
 
 	// A question the bundled corpus answers well. With vnew active, the bundled documents
 	// must not come back at all -- they are a retired version, not a fallback.
-	passages, err := f.retriever.Retrieve(ctx, "How long do I have to return an item?")
+	passages, err := f.retriever.Retrieve(ctx, tenant.Default, "How long do I have to return an item?")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,14 +176,14 @@ func TestRetrievalReadsOnlyTheActiveVersion(t *testing.T) {
 	}
 
 	// Rolling back restores the previous corpus exactly.
-	_, revision, err = f.store.Active(ctx)
+	_, revision, err = f.store.Active(ctx, tenant.Default)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.store.Activate(ctx, "base", "alex", revision); err != nil {
+	if err := f.store.Activate(ctx, tenant.Default, "base", "alex", revision); err != nil {
 		t.Fatal(err)
 	}
-	passages, err = f.retriever.Retrieve(ctx, "How long do I have to return an item?")
+	passages, err = f.retriever.Retrieve(ctx, tenant.Default, "How long do I have to return an item?")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,18 +197,18 @@ func TestRetrievalReadsOnlyTheActiveVersion(t *testing.T) {
 func TestRetentionNeverStrandsTheActiveVersionOrAllowsAnEmptyRollback(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
-	if _, err := f.store.AdoptBundled(ctx, "base"); err != nil {
+	if _, err := f.store.AdoptBundled(ctx, tenant.Default, "base"); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { resetVersions(t) })
 
 	for _, v := range []string{"v2", "v3", "v4"} {
-		_, revision, err := f.store.Active(ctx)
+		_, revision, err := f.store.Active(ctx, tenant.Default)
 		if err != nil {
 			t.Fatal(err)
 		}
 		docs, vectors := docsFor(v, 8)
-		if err := f.store.Publish(ctx, v, docs, vectors, "alex", "", revision); err != nil {
+		if err := f.store.Publish(ctx, tenant.Default, v, docs, vectors, "alex", "", revision); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -217,11 +218,11 @@ func TestRetentionNeverStrandsTheActiveVersionOrAllowsAnEmptyRollback(t *testing
 	}
 
 	// The active version keeps its documents whatever the retention count says.
-	active, revision, err := f.store.Active(ctx)
+	active, revision, err := f.store.Active(ctx, tenant.Default)
 	if err != nil {
 		t.Fatal(err)
 	}
-	passages, err := f.retriever.Retrieve(ctx, "question 1 in v4")
+	passages, err := f.retriever.Retrieve(ctx, tenant.Default, "question 1 in v4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,11 +231,11 @@ func TestRetentionNeverStrandsTheActiveVersionOrAllowsAnEmptyRollback(t *testing
 	}
 
 	// And rolling back to a swept version is refused rather than activated empty.
-	err = f.store.Activate(ctx, "base", "alex", revision)
+	err = f.store.Activate(ctx, tenant.Default, "base", "alex", revision)
 	if err == nil {
 		t.Error("rolled back to a version whose documents were swept")
 	}
-	if got, _, _ := f.store.Active(ctx); got != active {
+	if got, _, _ := f.store.Active(ctx, tenant.Default); got != active {
 		t.Errorf("the refused rollback switched the active version to %q", got)
 	}
 }
@@ -292,7 +293,7 @@ func resetVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	if documents != 36 {
-		if _, err := rag.Ingest(ctx, corpusPath, embedder, sharedStore); err != nil {
+		if _, err := rag.Ingest(ctx, tenant.Default, corpusPath, embedder, sharedStore); err != nil {
 			t.Fatalf("could not restore the shared corpus: %v", err)
 		}
 	}
@@ -313,7 +314,7 @@ func resetVersions(t *testing.T) {
 func TestAFilteredSearchStillReturnsAFullPageWithManyRetiredVersions(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
-	if _, err := f.store.AdoptBundled(ctx, "base"); err != nil {
+	if _, err := f.store.AdoptBundled(ctx, tenant.Default, "base"); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { resetVersions(t) })
@@ -322,7 +323,7 @@ func TestAFilteredSearchStillReturnsAFullPageWithManyRetiredVersions(t *testing.
 	// implementation measured at 1 of 8 with the setting off.
 	const versions, perVersion = 20, 36
 	for v := 0; v < versions; v++ {
-		_, revision, err := f.store.Active(ctx)
+		_, revision, err := f.store.Active(ctx, tenant.Default)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -340,7 +341,7 @@ func TestAFilteredSearchStillReturnsAFullPageWithManyRetiredVersions(t *testing.
 			// Distinct per version as well as per entry: an entry whose text changed.
 			vectors[i] = unit(v*1000+i, 384)
 		}
-		if err := f.store.Publish(ctx, name, docs, vectors, "alex", "", revision); err != nil {
+		if err := f.store.Publish(ctx, tenant.Default, name, docs, vectors, "alex", "", revision); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -367,7 +368,7 @@ func TestAFilteredSearchStillReturnsAFullPageWithManyRetiredVersions(t *testing.
 	if err := sharedPool.QueryRow(ctx, `SELECT count(*) FROM faq_document`).Scan(&total); err != nil {
 		t.Fatal(err)
 	}
-	active, _, err := f.store.Active(ctx)
+	active, _, err := f.store.Active(ctx, tenant.Default)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +378,7 @@ func TestAFilteredSearchStillReturnsAFullPageWithManyRetiredVersions(t *testing.
 	}
 
 	// The search a customer makes: top 8 from the active version.
-	passages, err := f.store.Search(ctx, unit(19*1000+3, 384), rag.SearchOptions{TopK: 8})
+	passages, err := f.store.Search(ctx, unit(19*1000+3, 384), rag.SearchOptions{TopK: 8, TenantID: tenant.Default})
 	if err != nil {
 		t.Fatal(err)
 	}

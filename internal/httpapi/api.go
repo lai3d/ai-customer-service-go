@@ -56,7 +56,7 @@ type problem struct {
 // here rather than a concrete type so the edge -- validation, status codes, SSE framing
 // -- can be tested without a database, a model, or an embedding model.
 type Turner interface {
-	Turn(ctx context.Context, conversationID, message string, emit func(chat.Event)) error
+	Turn(ctx context.Context, tenantID, conversationID, message string, emit func(chat.Event)) error
 }
 
 type Server struct {
@@ -166,7 +166,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	reply := Reply{ConversationID: id}
 	var text strings.Builder
-	err := s.chat.Turn(r.Context(), id, message, func(e chat.Event) {
+	err := s.chat.Turn(r.Context(), subject.TenantID, id, message, func(e chat.Event) {
 		switch e.Type {
 		case chat.EventMessage:
 			text.WriteString(e.Text)

@@ -100,7 +100,7 @@ func NewService(memory *Memory, retriever *rag.Retriever, client llm.Client,
 // passages, composed the wrong way round -- every retrieved passage lands in the
 // customer's stored history and is re-sent on every later turn. Nothing fails; the
 // prompt just grows.
-func (s *Service) Turn(ctx context.Context, conversationID, message string, emit func(Event)) error {
+func (s *Service) Turn(ctx context.Context, tenantID, conversationID, message string, emit func(Event)) error {
 	started := time.Now()
 
 	// The conversation id is on the span; the customer's message is not, here or
@@ -108,7 +108,11 @@ func (s *Service) Turn(ctx context.Context, conversationID, message string, emit
 	// and traces are retained and read far more widely than a database is.
 	ctx, span := obs.Tracer().Start(ctx, "chat turn")
 	defer span.End()
-	span.SetAttributes(attribute.String("conversation.id", conversationID))
+	// The tenant is on the span and is safe to be: it is a bounded, operator-chosen name,
+	// unlike the subject and the conversation. It is the first thing somebody needs when a
+	// trace is one of several customers' in the same backend.
+	span.SetAttributes(attribute.String("conversation.id", conversationID),
+		attribute.String("tenant.id", tenantID))
 
 	// One turn at a time per conversation. Everything below reads and writes the same
 	// history, and the budget check only means anything if it is atomic with the spend
@@ -214,7 +218,7 @@ func (s *Service) Turn(ctx context.Context, conversationID, message string, emit
 	}
 
 	retrievalStart := time.Now()
-	passages, err := s.retriever.Retrieve(ctx, message)
+	passages, err := s.retriever.Retrieve(ctx, tenantID, message)
 	if err != nil {
 		span.SetStatus(codes.Error, "retrieval failed")
 		outcome = classify("retrieval_failed", err)

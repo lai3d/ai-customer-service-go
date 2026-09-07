@@ -181,8 +181,13 @@ func run() error {
 	embedder := rag.NewBounded(onnx, cfg.RAG.MaxConcurrentEmbeddings)
 
 	vectors := rag.NewStore(pool)
+	// The bundled corpus belongs to the default tenant, and is not a template for others.
+	// A new tenant starts with nothing and gets grounded refusals until somebody publishes
+	// to it, which is the correct default: this corpus is one company's returns policy.
+	// It is also what keeps the parity fixtures comparable -- they run as this tenant.
 	if cfg.RAG.IngestOnStartup {
-		if _, err := rag.Ingest(startupCtx, cfg.RAG.CorpusPath, embedder, vectors); err != nil {
+		if _, err := rag.Ingest(startupCtx, tenant.Default, cfg.RAG.CorpusPath,
+			embedder, vectors); err != nil {
 			return err
 		}
 	}
@@ -201,7 +206,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if adopted, err := vectors.AdoptBundled(startupCtx, corpus.Version); err != nil {
+	if adopted, err := vectors.AdoptBundled(startupCtx, tenant.Default, corpus.Version); err != nil {
 		return fmt.Errorf("adopt the bundled corpus: %w", err)
 	} else if adopted {
 		slog.Info("adopted the bundled corpus as the first managed version",
@@ -212,14 +217,14 @@ func run() error {
 	// base with whatever one person just typed" -- and nobody would find out until
 	// customers stopped being answered.
 	knowledgeStore := knowledge.NewStore(pool, vectors, embedder)
-	if seeded, err := knowledgeStore.SeedFromCorpus(startupCtx, corpus); err != nil {
+	if seeded, err := knowledgeStore.SeedFromCorpus(startupCtx, tenant.Default, corpus); err != nil {
 		return fmt.Errorf("seed the knowledge base: %w", err)
 	} else if seeded > 0 {
 		slog.Info("seeded the editable knowledge base from the bundled corpus",
 			"entries", seeded)
 	}
 
-	if active, _, err := vectors.Active(startupCtx); err == nil {
+	if active, _, err := vectors.Active(startupCtx, tenant.Default); err == nil {
 		slog.Info("retrieval reads one corpus version", "active", active)
 	} else if errors.Is(err, rag.ErrNoActiveVersion) {
 		// Reachable with IngestOnStartup off against an empty database, and the warning is

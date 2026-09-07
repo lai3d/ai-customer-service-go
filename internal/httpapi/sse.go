@@ -64,7 +64,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		// blocking endpoint is a budget that counts the traffic nobody sends.
 		var usage *chat.UsageEvent
 		defer func() { s.charge(usage) }()
-		err := s.chat.Turn(r.Context(), id, message, func(e chat.Event) {
+		err := s.chat.Turn(r.Context(), subject.TenantID, id, message, func(e chat.Event) {
 			if e.Type == chat.EventUsage {
 				usage = e.Usage
 			}

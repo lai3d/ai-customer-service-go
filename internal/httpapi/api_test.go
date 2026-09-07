@@ -27,7 +27,7 @@ type fakeTurner struct {
 	delay  time.Duration
 }
 
-func (f *fakeTurner) Turn(ctx context.Context, _, _ string, emit func(chat.Event)) error {
+func (f *fakeTurner) Turn(ctx context.Context, _, _, _ string, emit func(chat.Event)) error {
 	f.calls.Add(1)
 	if f.delay > 0 {
 		select {

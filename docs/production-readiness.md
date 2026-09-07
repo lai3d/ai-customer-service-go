@@ -42,7 +42,7 @@ What is missing is almost entirely product, not scaffolding.
 | 9 | [A schema migration path](#9-the-first-change-to-a-live-schema-is-manual) | week 2 | Go | **done** 2026-09-07 | 1–2 h |
 | 10 | [The admin list pages lie past one page](#10-the-admin-lists-lie-past-the-first-page) | week 2 | Go | **done** 2026-09-06 | 0.5 h |
 | 11 | [Provider failover](#11-three-providers-are-supported-and-one-runs) | scale | both | **done** 2026-09-07 | 1–2 h |
-| 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | **in progress** 2026-09-07: tenants, keys, and the chat edge | 4–6 h |
+| 12 | [Multi-tenancy](#12-one-corpus-one-config-one-price-list) | scale | both | **in progress** 2026-09-07: tenants, keys, the chat edge, the corpus | 4–6 h |
 | 13 | [The deployment is a demo deployment](#13-the-manifests-stop-where-a-real-cluster-starts) | scale | Go | **manifests done** 2026-09-07; secrets and digest pinning remain | 2–3 h (0.5 h left) |
 | 14 | [Abuse and content safety](#14-the-system-prompt-is-the-whole-of-the-safety-story) | scale | both | **partly done** 2026-09-07 | 2–3 h (moderation not built, deliberately) |
 | 15 | [A turn a dead process left behind stays in_flight for ever](#15-a-turn-a-dead-process-left-behind-stays-in_flight-for-ever) | week 2 | Go | **done** 2026-09-07 | 1 h |
@@ -714,9 +714,54 @@ value takes the lock, waits, and returns the winner. The deterministic test uses
 visibility rather than timing, the same construction `internal/store` used for the
 `CREATE EXTENSION` race.
 
-**Not yet:** the corpus, knowledge, tickets, feedback, turns and the operations surface are
-all still single-tenant. `corpus_active`'s primary key on a constant is unchanged, and
-`admin_audit` has no tenant column yet.
+**Third stage done: the corpus and the knowledge base.** Migration `0004_tenant_corpus.sql`
+changes the two primary keys this item flagged before any of it was built. `corpus_active`'s
+primary key on a constant becomes a primary key on `tenant_id` — one active version per
+tenant, and the key is what says so — and `only_one` goes, because a boolean column that is
+always true next to a real key is a thing somebody eventually filters on.
+`knowledge_entry` becomes `(tenant_id, entry_id, language)`, so two tenants can both have a
+`returns-window` and they are different entries.
+
+`faq_document`'s key becomes `(tenant_id, id)`. It would have *worked* on `id` alone —
+published ids carry a globally unique version name — but that is an argument about how ids
+happen to be built, made in a different file, and it stops being true the day somebody
+shortens a version name.
+
+Retention keeps the newest N **per tenant**. `Search` and `Retrieve` refuse a call with no
+tenant rather than defaulting: a defaulted search reads whichever documents the rest of the
+predicate matched, across every customer, and looks exactly like a search that found
+nothing relevant. The retriever takes the tenant per call rather than holding it, because
+one retriever serves every tenant and a field would be a value shared by concurrent turns.
+
+**The bundled corpus belongs to `default` and is not a template.** A new tenant starts with
+nothing and gets grounded refusals until somebody publishes to it, which is correct — this
+corpus is one company's returns policy. And the parity fixtures run as `default`, so every
+retrieval number in this pair still refers to the same vectors.
+
+`Ingest`/`Replace` now **refuses** to run once another tenant has documents. TRUNCATE is not
+tenant-scoped, and the `DELETE` that would be reintroduces the measured HNSW dead-tuple
+failure it exists to avoid — so rather than choosing between destroying a neighbour's corpus
+and silently degrading retrieval, it stops and names what is in the way. A multi-tenant
+deployment publishes rather than re-ingests.
+
+Operators gained a tenant: `ADMIN_TOKENS` is now `name:token[:role[:tenant]]`, an omitted
+tenant is `default`, and names stay globally unique because the name is the audit actor.
+
+**A second test that proved the wrong thing.** The retention test published once for the
+quiet tenant and asserted it could still be searched — which passes under a deliberately
+*global* retention, because a tenant's active version is protected by a separate clause that
+has nothing to do with tenancy. It now publishes twice and asserts the *older* version
+survives: this tenant's second-newest and the service's sixth.
+
+**And a scare that was not a finding.** The first isolation test returned 3 of 6 documents
+and looked exactly like the HNSW post-filter starvation this repository has been unable to
+reproduce. It was the similarity threshold at 0 discarding negative scores. Measured with
+`EXPLAIN (ANALYZE)` before believing either story: at this size the planner picks the b-tree
+on `(tenant_id, corpus_version)` and returns every matching row, with `iterative_scan` off,
+`strict_order` and `relaxed_order` alike.
+
+**Not yet:** turns, tickets, feedback, handoff and the operations surface's own queries are
+still single-tenant, and `admin_audit` has no tenant column.
 
 Two things this settles that were open here. `corpus_active`'s primary key on a constant —
 flagged above as the shape that does not survive tenancy — becomes a primary key on

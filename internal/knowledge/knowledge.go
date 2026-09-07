@@ -86,9 +86,13 @@ func NewStore(pool *pgxpool.Pool, corpus *rag.Store, embedder Embedder) *Store {
 //
 // Idempotent by count rather than by flag: if there are any drafts, somebody has edited,
 // and re-seeding would resurrect entries they deleted.
-func (s *Store) SeedFromCorpus(ctx context.Context, corpus rag.Corpus) (int, error) {
+func (s *Store) SeedFromCorpus(ctx context.Context, tenantID string, corpus rag.Corpus) (int, error) {
+	// Per tenant, so the count that makes this idempotent is this tenant's count. A global
+	// count would mean the second tenant to exist is never seeded, and its editor would
+	// open empty for a reason nobody could find.
 	var existing int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM knowledge_entry`).Scan(&existing); err != nil {
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM knowledge_entry WHERE tenant_id = $1`, tenantID).Scan(&existing); err != nil {
 		return 0, err
 	}
 	if existing > 0 {
@@ -100,10 +104,10 @@ func (s *Store) SeedFromCorpus(ctx context.Context, corpus rag.Corpus) (int, err
 		for _, l := range entry.Localized {
 			batch.Queue(`
 				INSERT INTO knowledge_entry
-					(entry_id, language, category, question, answer, updated_by)
-				VALUES ($1,$2,$3,$4,$5,'system')
-				ON CONFLICT (entry_id, language) DO NOTHING`,
-				entry.ID, l.Language, entry.Category, l.Question, l.Answer)
+					(tenant_id, entry_id, language, category, question, answer, updated_by)
+				VALUES ($6,$1,$2,$3,$4,$5,'system')
+				ON CONFLICT (tenant_id, entry_id, language) DO NOTHING`,
+				entry.ID, l.Language, entry.Category, l.Question, l.Answer, tenantID)
 		}
 	}
 	if batch.Len() == 0 {
@@ -118,10 +122,10 @@ func (s *Store) SeedFromCorpus(ctx context.Context, corpus rag.Corpus) (int, err
 // List returns the drafts. Deleted entries are included, marked: an operator needs to see
 // that an entry is gone in order to bring it back, and a list that hides them makes a
 // deletion look like the entry never existed.
-func (s *Store) List(ctx context.Context) ([]Entry, error) {
+func (s *Store) List(ctx context.Context, tenantID string) ([]Entry, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT entry_id, language, category, question, answer, deleted, updated_at, updated_by
-		FROM knowledge_entry ORDER BY entry_id, language`)
+		FROM knowledge_entry WHERE tenant_id = $1 ORDER BY entry_id, language`, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -141,9 +145,12 @@ func (s *Store) List(ctx context.Context) ([]Entry, error) {
 // Save creates or replaces one draft entry. Returns what the entry looked like before, so
 // the caller can put the change in the audit trail: "alex edited returns-window" records
 // that something happened, and not what.
-func (s *Store) Save(ctx context.Context, e Entry, actor string) (before *Entry, err error) {
+func (s *Store) Save(ctx context.Context, tenantID string, e Entry, actor string) (before *Entry, err error) {
 	if err := e.validate(); err != nil {
 		return nil, err
+	}
+	if tenantID == "" {
+		return nil, errors.New("refusing to save an entry for no tenant")
 	}
 	if strings.TrimSpace(actor) == "" {
 		return nil, errors.New("an edit needs an author")
@@ -152,7 +159,8 @@ func (s *Store) Save(ctx context.Context, e Entry, actor string) (before *Entry,
 	var prev Entry
 	err = s.pool.QueryRow(ctx, `
 		SELECT entry_id, language, category, question, answer, deleted, updated_at, updated_by
-		FROM knowledge_entry WHERE entry_id = $1 AND language = $2`, e.EntryID, e.Language).
+		FROM knowledge_entry WHERE tenant_id = $3 AND entry_id = $1 AND language = $2`,
+		e.EntryID, e.Language, tenantID).
 		Scan(&prev.EntryID, &prev.Language, &prev.Category, &prev.Question, &prev.Answer,
 			&prev.Deleted, &prev.UpdatedAt, &prev.UpdatedBy)
 	switch {
@@ -164,13 +172,13 @@ func (s *Store) Save(ctx context.Context, e Entry, actor string) (before *Entry,
 
 	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO knowledge_entry
-			(entry_id, language, category, question, answer, deleted, updated_at, updated_by)
-		VALUES ($1,$2,$3,$4,$5,false,now(),$6)
-		ON CONFLICT (entry_id, language) DO UPDATE SET
+			(tenant_id, entry_id, language, category, question, answer, deleted, updated_at, updated_by)
+		VALUES ($7,$1,$2,$3,$4,$5,false,now(),$6)
+		ON CONFLICT (tenant_id, entry_id, language) DO UPDATE SET
 			category = EXCLUDED.category, question = EXCLUDED.question,
 			answer = EXCLUDED.answer, deleted = false,
 			updated_at = now(), updated_by = EXCLUDED.updated_by`,
-		e.EntryID, e.Language, e.Category, e.Question, e.Answer, actor); err != nil {
+		e.EntryID, e.Language, e.Category, e.Question, e.Answer, actor, tenantID); err != nil {
 		return nil, err
 	}
 	return before, nil
@@ -178,10 +186,11 @@ func (s *Store) Save(ctx context.Context, e Entry, actor string) (before *Entry,
 
 // Delete marks an entry deleted. Soft, because a published version was built from it and a
 // hard delete would make the record of what shipped incomplete.
-func (s *Store) Delete(ctx context.Context, entryID, language, actor string) error {
+func (s *Store) Delete(ctx context.Context, tenantID, entryID, language, actor string) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE knowledge_entry SET deleted = true, updated_at = now(), updated_by = $3
-		WHERE entry_id = $1 AND language = $2 AND NOT deleted`, entryID, language, actor)
+		WHERE tenant_id = $4 AND entry_id = $1 AND language = $2 AND NOT deleted`,
+		entryID, language, actor, tenantID)
 	if err != nil {
 		return err
 	}
@@ -195,8 +204,8 @@ func (s *Store) Delete(ctx context.Context, entryID, language, actor string) err
 //
 // The version name is a timestamp rather than a counter: a counter needs a source of truth
 // for "the last one", and two replicas publishing at once would each believe they had it.
-func (s *Store) Publish(ctx context.Context, actor, note string, expectedRevision int) (string, error) {
-	entries, err := s.List(ctx)
+func (s *Store) Publish(ctx context.Context, tenantID, actor, note string, expectedRevision int) (string, error) {
+	entries, err := s.List(ctx, tenantID)
 	if err != nil {
 		return "", err
 	}
@@ -242,7 +251,7 @@ func (s *Store) Publish(ctx context.Context, actor, note string, expectedRevisio
 	}
 	version := fmt.Sprintf("%s-%s",
 		time.Now().UTC().Format("2006-01-02T15-04-05Z"), hex.EncodeToString(suffix))
-	if err := s.corpus.Publish(ctx, version, docs, vectors, actor, note, expectedRevision); err != nil {
+	if err := s.corpus.Publish(ctx, tenantID, version, docs, vectors, actor, note, expectedRevision); err != nil {
 		return "", err
 	}
 	return version, nil
@@ -252,18 +261,18 @@ func (s *Store) Publish(ctx context.Context, actor, note string, expectedRevisio
 //
 // They exist so the admin surface talks to one package about knowledge rather than two,
 // and so nothing in internal/admin has to know that a corpus version is a rag concept.
-func (s *Store) Versions(ctx context.Context) ([]rag.Version, error) {
-	return s.corpus.Versions(ctx)
+func (s *Store) Versions(ctx context.Context, tenantID string) ([]rag.Version, error) {
+	return s.corpus.Versions(ctx, tenantID)
 }
 
-func (s *Store) Activate(ctx context.Context, version, actor string, expectedRevision int) error {
-	return s.corpus.Activate(ctx, version, actor, expectedRevision)
+func (s *Store) Activate(ctx context.Context, tenantID, version, actor string, expectedRevision int) error {
+	return s.corpus.Activate(ctx, tenantID, version, actor, expectedRevision)
 }
 
 // State is what the editor needs before it can publish: which version is live, and the
 // revision to hand back so a stale page loses the race instead of winning it.
-func (s *Store) State(ctx context.Context) (version string, revision int, err error) {
-	version, revision, err = s.corpus.Active(ctx)
+func (s *Store) State(ctx context.Context, tenantID string) (version string, revision int, err error) {
+	version, revision, err = s.corpus.Active(ctx, tenantID)
 	if errors.Is(err, rag.ErrNoActiveVersion) {
 		// Reachable before the first ingestion. The editor shows it rather than failing:
 		// "no version is active" is a state an operator can act on.
@@ -281,14 +290,16 @@ func (s *Store) State(ctx context.Context) (version string, revision int, err er
 // A timestamp comparison rather than a content diff. It over-reports -- saving an entry
 // unchanged sets updated_at -- and over-reporting is the safe direction: it says "publish
 // to be sure", never "nothing to do" when there is.
-func (s *Store) HasUnpublishedChanges(ctx context.Context) (bool, error) {
+func (s *Store) HasUnpublishedChanges(ctx context.Context, tenantID string) (bool, error) {
 	var newer bool
 	err := s.pool.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM knowledge_entry k
-			WHERE k.updated_at > coalesce(
+			WHERE k.tenant_id = $1
+			  AND k.updated_at > coalesce(
 				(SELECT v.created_at FROM corpus_version v
-				 JOIN corpus_active a ON a.version = v.version AND a.only_one),
-				'-infinity'::timestamptz))`).Scan(&newer)
+				 JOIN corpus_active a ON a.version = v.version AND a.tenant_id = v.tenant_id
+				 WHERE a.tenant_id = $1),
+				'-infinity'::timestamptz))`, tenantID).Scan(&newer)
 	return newer, err
 }

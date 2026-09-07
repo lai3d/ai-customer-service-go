@@ -25,6 +25,10 @@ import (
 
 var (
 	ErrNoActiveVersion = errors.New("no active corpus version")
+	// ErrWouldClearOtherTenants is the bundled-corpus load meeting a second tenant. See
+	// the comment on Replace: TRUNCATE is not tenant-scoped, and the DELETE that would be
+	// is the statement whose measured failure the TRUNCATE exists to avoid.
+	ErrWouldClearOtherTenants = errors.New("loading the bundled corpus would clear another tenant's")
 	// ErrStaleActivation means somebody else activated a version since this caller read
 	// which one was active. They publish again from a fresh read; nothing is overwritten.
 	ErrStaleActivation = errors.New("the active version changed while this was being published")
@@ -42,22 +46,24 @@ type Version struct {
 
 // Active returns the version live retrieval reads, and the revision to hand back when
 // activating something else.
-func (s *Store) Active(ctx context.Context) (version string, revision int, err error) {
+func (s *Store) Active(ctx context.Context, tenantID string) (version string, revision int, err error) {
 	err = s.pool.QueryRow(ctx,
-		`SELECT version, revision FROM corpus_active WHERE only_one`).Scan(&version, &revision)
+		`SELECT version, revision FROM corpus_active WHERE tenant_id = $1`,
+		tenantID).Scan(&version, &revision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", 0, ErrNoActiveVersion
 	}
 	return version, revision, err
 }
 
-func (s *Store) Versions(ctx context.Context) ([]Version, error) {
+func (s *Store) Versions(ctx context.Context, tenantID string) ([]Version, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT v.version, v.source, v.documents, v.created_at, v.created_by,
 		       coalesce(v.note,''), (a.version IS NOT NULL)
 		FROM corpus_version v
-		LEFT JOIN corpus_active a ON a.version = v.version
-		ORDER BY v.created_at DESC`)
+		LEFT JOIN corpus_active a ON a.version = v.version AND a.tenant_id = v.tenant_id
+		WHERE v.tenant_id = $1
+		ORDER BY v.created_at DESC`, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +86,7 @@ func (s *Store) Versions(ctx context.Context) ([]Version, error) {
 // Idempotent, and it has to be: it runs at every start-up. On a database that already has
 // an active version it does nothing at all -- a second adoption would stamp published
 // documents with the bundled version's name.
-func (s *Store) AdoptBundled(ctx context.Context, version string) (adopted bool, err error) {
+func (s *Store) AdoptBundled(ctx context.Context, tenantID, version string) (adopted bool, err error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -88,7 +94,8 @@ func (s *Store) AdoptBundled(ctx context.Context, version string) (adopted bool,
 	defer tx.Rollback(ctx)
 
 	var active string
-	err = tx.QueryRow(ctx, `SELECT version FROM corpus_active WHERE only_one`).Scan(&active)
+	err = tx.QueryRow(ctx,
+		`SELECT version FROM corpus_active WHERE tenant_id = $1`, tenantID).Scan(&active)
 	if err == nil {
 		return false, nil // already versioned; nothing to adopt
 	}
@@ -97,7 +104,8 @@ func (s *Store) AdoptBundled(ctx context.Context, version string) (adopted bool,
 	}
 
 	tag, err := tx.Exec(ctx,
-		`UPDATE faq_document SET corpus_version = $1 WHERE corpus_version IS NULL`, version)
+		`UPDATE faq_document SET corpus_version = $1
+		 WHERE corpus_version IS NULL AND tenant_id = $2`, version, tenantID)
 	if err != nil {
 		return false, fmt.Errorf("stamp the bundled corpus: %w", err)
 	}
@@ -109,15 +117,15 @@ func (s *Store) AdoptBundled(ctx context.Context, version string) (adopted bool,
 	}
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO corpus_version (version, source, documents, created_by, note)
-		VALUES ($1, 'bundled', $2, 'system', 'the corpus shipped with this build, adopted without re-embedding')
+		INSERT INTO corpus_version (version, tenant_id, source, documents, created_by, note)
+		VALUES ($1, $3, 'bundled', $2, 'system', 'the corpus shipped with this build, adopted without re-embedding')
 		ON CONFLICT (version) DO UPDATE SET documents = EXCLUDED.documents`,
-		version, documents); err != nil {
+		version, documents, tenantID); err != nil {
 		return false, err
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO corpus_active (only_one, version, activated_by)
-		VALUES (true, $1, 'system')`, version); err != nil {
+		INSERT INTO corpus_active (tenant_id, version, activated_by)
+		VALUES ($2, $1, 'system')`, version, tenantID); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)
@@ -132,8 +140,12 @@ func (s *Store) AdoptBundled(ctx context.Context, version string) (adopted bool,
 // The documents are written before the switch and the switch is a single row: a customer
 // searching during a publication reads the old version completely, then the new version
 // completely, and never a mixture of the two.
-func (s *Store) Publish(ctx context.Context, version string, docs []Document, vectors [][]float32,
-	actor, note string, expectedRevision int) error {
+func (s *Store) Publish(ctx context.Context, tenantID, version string, docs []Document,
+	vectors [][]float32, actor, note string, expectedRevision int) error {
+
+	if tenantID == "" {
+		return errors.New("refusing to publish a corpus for no tenant")
+	}
 
 	if len(docs) != len(vectors) {
 		return fmt.Errorf("have %d documents and %d vectors", len(docs), len(vectors))
@@ -151,20 +163,20 @@ func (s *Store) Publish(ctx context.Context, version string, docs []Document, ve
 
 	rows := make([][]any, len(docs))
 	for i, d := range docs {
-		rows[i] = []any{version + ":" + d.ID, d.EntryID, d.Language, d.Category,
+		rows[i] = []any{tenantID, version + ":" + d.ID, d.EntryID, d.Language, d.Category,
 			d.Question, d.Answer, d.Content, pgvector.NewVector(vectors[i]), version}
 	}
 	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"faq_document"},
-		[]string{"id", "entry_id", "language", "category", "question", "answer",
-			"content", "embedding", "corpus_version"},
+		[]string{"tenant_id", "id", "entry_id", "language", "category", "question",
+			"answer", "content", "embedding", "corpus_version"},
 		pgx.CopyFromRows(rows)); err != nil {
 		return fmt.Errorf("write version %s: %w", version, err)
 	}
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO corpus_version (version, source, documents, created_by, note)
-		VALUES ($1, 'published', $2, $3, NULLIF($4,''))`,
-		version, len(docs), actor, note); err != nil {
+		INSERT INTO corpus_version (version, tenant_id, source, documents, created_by, note)
+		VALUES ($1, $5, 'published', $2, $3, NULLIF($4,''))`,
+		version, len(docs), actor, note, tenantID); err != nil {
 		return err
 	}
 
@@ -178,13 +190,13 @@ func (s *Store) Publish(ctx context.Context, version string, docs []Document, ve
 	var tag pgconn.CommandTag
 	if expectedRevision <= 0 {
 		tag, err = tx.Exec(ctx, `
-			INSERT INTO corpus_active (only_one, version, activated_by)
-			VALUES (true, $1, $2) ON CONFLICT (only_one) DO NOTHING`, version, actor)
+			INSERT INTO corpus_active (tenant_id, version, activated_by)
+			VALUES ($3, $1, $2) ON CONFLICT (tenant_id) DO NOTHING`, version, actor, tenantID)
 	} else {
 		tag, err = tx.Exec(ctx, `
 			UPDATE corpus_active SET version = $1, activated_at = now(), activated_by = $2,
 			       revision = revision + 1
-			WHERE only_one AND revision = $3`, version, actor, expectedRevision)
+			WHERE tenant_id = $4 AND revision = $3`, version, actor, expectedRevision, tenantID)
 	}
 	if err != nil {
 		return err
@@ -196,10 +208,11 @@ func (s *Store) Publish(ctx context.Context, version string, docs []Document, ve
 }
 
 // Activate switches to a version that already exists. Rollback is this, pointed backwards.
-func (s *Store) Activate(ctx context.Context, version, actor string, expectedRevision int) error {
+func (s *Store) Activate(ctx context.Context, tenantID, version, actor string, expectedRevision int) error {
 	var documents int
 	err := s.pool.QueryRow(ctx,
-		`SELECT documents FROM corpus_version WHERE version = $1`, version).Scan(&documents)
+		`SELECT documents FROM corpus_version WHERE version = $1 AND tenant_id = $2`,
+		version, tenantID).Scan(&documents)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("no version %q", version)
 	}
@@ -210,7 +223,8 @@ func (s *Store) Activate(ctx context.Context, version, actor string, expectedRev
 	// Activating it is how a rollback turns an incident into an outage.
 	var live int
 	if err := s.pool.QueryRow(ctx,
-		`SELECT count(*) FROM faq_document WHERE corpus_version = $1`, version).Scan(&live); err != nil {
+		`SELECT count(*) FROM faq_document WHERE corpus_version = $1 AND tenant_id = $2`,
+		version, tenantID).Scan(&live); err != nil {
 		return err
 	}
 	if live == 0 {
@@ -220,7 +234,7 @@ func (s *Store) Activate(ctx context.Context, version, actor string, expectedRev
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE corpus_active SET version = $1, activated_at = now(), activated_by = $2,
 		       revision = revision + 1
-		WHERE only_one AND revision = $3`, version, actor, expectedRevision)
+		WHERE tenant_id = $4 AND revision = $3`, version, actor, expectedRevision, tenantID)
 	if err != nil {
 		return err
 	}
@@ -236,16 +250,24 @@ func (s *Store) Activate(ctx context.Context, version, actor string, expectedRev
 // The version rows survive: a name with a date and an author is worth keeping after its
 // documents are gone, and Activate refuses one whose documents went with it rather than
 // silently activating an empty corpus.
+// Retain keeps the newest `keep` versions **per tenant**, which is the whole of the change
+// here and is not a detail: a global "newest N" would retire a neighbour's live corpus the
+// moment one tenant published N times in an afternoon.
 func (s *Store) Retain(ctx context.Context, keep int) (int64, error) {
 	if keep < 1 {
 		keep = 1
 	}
 	tag, err := s.pool.Exec(ctx, `
-		DELETE FROM faq_document
-		WHERE corpus_version IS NOT NULL
-		  AND corpus_version NOT IN (
-			SELECT version FROM corpus_version ORDER BY created_at DESC LIMIT $1)
-		  AND corpus_version <> (SELECT version FROM corpus_active WHERE only_one)`, keep)
+		DELETE FROM faq_document d
+		WHERE d.corpus_version IS NOT NULL
+		  AND d.corpus_version NOT IN (
+			SELECT version FROM (
+				SELECT version, row_number() OVER (
+					PARTITION BY tenant_id ORDER BY created_at DESC) AS rank
+				FROM corpus_version
+			) ranked WHERE rank <= $1)
+		  AND d.corpus_version <> coalesce(
+			(SELECT version FROM corpus_active WHERE tenant_id = d.tenant_id), '')`, keep)
 	if err != nil {
 		return 0, err
 	}

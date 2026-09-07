@@ -25,10 +25,16 @@ import (
 
 // answering records which conversation the chat service was asked to run a turn for, so
 // these tests can tell "refused" from "ran it anyway and returned an error afterwards".
-type answering struct{ conversations []string }
+type answering struct {
+	conversations []string
+	// tenants is what the edge said each turn was for. The turn itself is stubbed, so
+	// this is the only place a test can see that the tenant reached the service at all.
+	tenants []string
+}
 
-func (a *answering) Turn(_ context.Context, id, _ string, emit func(chat.Event)) error {
+func (a *answering) Turn(_ context.Context, tenantID, id, _ string, emit func(chat.Event)) error {
 	a.conversations = append(a.conversations, id)
+	a.tenants = append(a.tenants, tenantID)
 	emit(chat.Event{Type: chat.EventMessage, Text: "ok"})
 	// A real turn reports what it spent, and the day's ledger is fed from this event. A
 	// stub that stays silent would let the spend path be removed with every test still

@@ -17,6 +17,7 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/llm"
 	"github.com/lai3d/ai-customer-service-go/internal/obs"
 	"github.com/lai3d/ai-customer-service-go/internal/rag"
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 	"github.com/lai3d/ai-customer-service-go/internal/testsupport"
 	"github.com/lai3d/ai-customer-service-go/internal/tools"
 )
@@ -151,7 +152,7 @@ func newFixtureWithClient(t *testing.T, client llm.Client, budgetLimit int64) *f
 		Answer:  "Thirty days from delivery.",
 		Content: "Q: How long do I have to return an item?\nA: Thirty days from delivery.",
 	}}
-	if err := vectors.Replace(ctx, docs, [][]float32{unitVector()}); err != nil {
+	if err := vectors.Replace(ctx, tenant.Default, docs, [][]float32{unitVector()}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -172,7 +173,7 @@ func newFixtureWithClient(t *testing.T, client llm.Client, budgetLimit int64) *f
 }
 
 func (f *fixture) turn(ctx context.Context, conversationID, message string) error {
-	return f.service.Turn(ctx, conversationID, message, func(e chat.Event) {
+	return f.service.Turn(ctx, tenant.Default, conversationID, message, func(e chat.Event) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.events = append(f.events, e)
@@ -680,7 +681,7 @@ func TestOverlappingTurnsOnOneConversationDoNotInterleave(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = f.service.Turn(ctx, "shared", "question A", func(e chat.Event) {
+		_ = f.service.Turn(ctx, tenant.Default, "shared", "question A", func(e chat.Event) {
 			if e.Type == chat.EventRetrieval {
 				close(aInside)
 				<-bMayFinish
@@ -696,7 +697,7 @@ func TestOverlappingTurnsOnOneConversationDoNotInterleave(t *testing.T) {
 	bFinished := make(chan struct{})
 	go func() {
 		defer close(bFinished)
-		_ = f.service.Turn(ctx, "shared", "question B", func(chat.Event) {})
+		_ = f.service.Turn(ctx, tenant.Default, "shared", "question B", func(chat.Event) {})
 	}()
 
 	select {
@@ -732,7 +733,7 @@ func TestTheConversationLockTableEmpties(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_ = f.service.Turn(ctx, fmt.Sprintf("conversation-%d", i), "hello", func(chat.Event) {})
+			_ = f.service.Turn(ctx, tenant.Default, fmt.Sprintf("conversation-%d", i), "hello", func(chat.Event) {})
 		}(i)
 	}
 	wg.Wait()
@@ -754,7 +755,7 @@ func TestAWaitingTurnGivesUpWhenItsRequestIsCancelled(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = f.service.Turn(context.Background(), "shared", "first", func(e chat.Event) {
+		_ = f.service.Turn(context.Background(), tenant.Default, "shared", "first", func(e chat.Event) {
 			if e.Type == chat.EventRetrieval {
 				close(holding)
 				<-released
@@ -765,7 +766,7 @@ func TestAWaitingTurnGivesUpWhenItsRequestIsCancelled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := f.service.Turn(ctx, "shared", "second", func(chat.Event) {})
+	err := f.service.Turn(ctx, tenant.Default, "shared", "second", func(chat.Event) {})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("a cancelled request waiting for the lock returned %v, want context.Canceled", err)
 	}
@@ -875,7 +876,7 @@ func TestATurnWhoseClientDisconnectedStillGetsATerminalOutcome(t *testing.T) {
 	// for. The case this exists for is the customer who closes the tab while the model
 	// is talking, which is the most common mid-stream failure in production.
 	ctx, cancel := context.WithCancel(context.Background())
-	_ = f.service.Turn(ctx, "record-cancelled", "a question nobody waited for",
+	_ = f.service.Turn(ctx, tenant.Default, "record-cancelled", "a question nobody waited for",
 		func(e chat.Event) {
 			if e.Type == chat.EventRetrieval {
 				cancel()

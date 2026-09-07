@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lai3d/ai-customer-service-go/internal/rag"
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 	"github.com/lai3d/ai-customer-service-go/internal/testsupport"
 )
 
@@ -83,7 +84,7 @@ func TestMain(m *testing.M) {
 	sharedPool = pool
 	sharedStore = rag.NewStore(pool)
 	sharedRetrier = rag.NewRetriever(embedder, sharedStore, topK, threshold)
-	if _, err := rag.Ingest(ctx, corpusPath, embedder, sharedStore); err != nil {
+	if _, err := rag.Ingest(ctx, tenant.Default, corpusPath, embedder, sharedStore); err != nil {
 		fmt.Fprintf(os.Stderr, "ingest corpus: %v\n", err)
 		os.Exit(1)
 	}
@@ -154,7 +155,7 @@ func assertTopHits(t *testing.T, f fixture, cases []struct{ query, want string }
 	t.Helper()
 	for _, tc := range cases {
 		t.Run(tc.query, func(t *testing.T) {
-			passages, err := f.retriever.Retrieve(context.Background(), tc.query)
+			passages, err := f.retriever.Retrieve(context.Background(), tenant.Default, tc.query)
 			if err != nil {
 				t.Fatalf("retrieve: %v", err)
 			}
@@ -172,7 +173,7 @@ func assertTopHits(t *testing.T, f fixture, cases []struct{ query, want string }
 func TestChineseQuestionPrefersTheChinesePassage(t *testing.T) {
 	f := newFixture(t)
 	for _, query := range []string{"运费多少钱", "包裹到的时候是坏的", "密码忘了怎么办"} {
-		passages, err := f.retriever.Retrieve(context.Background(), query)
+		passages, err := f.retriever.Retrieve(context.Background(), tenant.Default, query)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -196,7 +197,7 @@ func TestChineseQuestionFindsTheEnglishPassageWhenOnlyEnglishExists(t *testing.T
 		{"能寄到国外吗", "shipping-international"},
 	}
 	for _, tc := range cases {
-		passages, err := f.retriever.RetrieveIn(context.Background(), tc.query, "en")
+		passages, err := f.retriever.RetrieveIn(context.Background(), tenant.Default, tc.query, "en")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -301,7 +302,7 @@ func TestReingestingReplacesRatherThanDuplicates(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if _, err := rag.Ingest(ctx, f.corpus, f.embedder, f.store); err != nil {
+		if _, err := rag.Ingest(ctx, tenant.Default, f.corpus, f.embedder, f.store); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -364,7 +365,7 @@ func (e errDivergent) Error() string {
 
 func topScore(t *testing.T, f fixture, query string) float64 {
 	t.Helper()
-	passages, err := f.retriever.Retrieve(context.Background(), query)
+	passages, err := f.retriever.Retrieve(context.Background(), tenant.Default, query)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/lai3d/ai-customer-service-go/internal/rag"
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 )
 
 // Reloading the corpus must not degrade retrieval, and with DELETE it did.
@@ -40,7 +41,7 @@ func TestRetrievalSurvivesManyCorpusReloads(t *testing.T) {
 			t.Errorf("could not re-enable autovacuum: %v", err)
 		}
 		// Leave the shared corpus as the other tests expect to find it.
-		if _, err := rag.Ingest(context.Background(), f.corpus, f.embedder, f.store); err != nil {
+		if _, err := rag.Ingest(context.Background(), tenant.Default, f.corpus, f.embedder, f.store); err != nil {
 			t.Errorf("could not restore the corpus: %v", err)
 		}
 	})
@@ -51,7 +52,7 @@ func TestRetrievalSurvivesManyCorpusReloads(t *testing.T) {
 	// psql and here. The real service ingests once per process start, so this is a month
 	// of ordinary rollouts between autovacuum runs, not an abusive loop.
 	for i := 0; i < 60; i++ {
-		if _, err := rag.Ingest(ctx, f.corpus, f.embedder, f.store); err != nil {
+		if _, err := rag.Ingest(ctx, tenant.Default, f.corpus, f.embedder, f.store); err != nil {
 			t.Fatalf("reload %d: %v", i, err)
 		}
 	}
@@ -60,7 +61,7 @@ func TestRetrievalSurvivesManyCorpusReloads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	passages, err := f.retriever.Retrieve(ctx, "How long do I have to return an item?")
+	passages, err := f.retriever.Retrieve(ctx, tenant.Default, "How long do I have to return an item?")
 	if err != nil {
 		t.Fatal(err)
 	}

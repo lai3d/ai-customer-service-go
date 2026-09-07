@@ -255,6 +255,20 @@ that show why it is not needed here.
   and without the wording -- the probe is too weak to discriminate, which is not the same as
   the wording being useless. What would actually bound it is constraining tool calls by the
   caller's identity, which is not built.
+- **A corpus search takes a tenant and refuses without one.** Unlike a conversation, which
+  is protected by its subject as well, a corpus is protected by the predicate and by nothing
+  else — a defaulted search reads every customer's documents and looks exactly like a search
+  that found nothing relevant. The retriever takes it per call rather than holding it: one
+  retriever serves every tenant, and a field would be shared by concurrent turns.
+- **`Ingest`/`Replace` refuses once another tenant has documents.** TRUNCATE is not
+  tenant-scoped, and the `DELETE` that would be reintroduces the HNSW dead-tuple failure
+  measured above. A multi-tenant deployment publishes rather than re-ingests; the bundled
+  corpus belongs to `default` and is not a template for new tenants.
+- **Retention keeps the newest N per tenant, and testing that needs a non-active version.**
+  A tenant's *active* version is protected by a separate clause, so a test that publishes
+  once and checks the tenant is still searchable passes under a deliberately global
+  retention — verified. The version that separates the two rules is this tenant's
+  second-newest and the whole service's sixth.
 - **The bundled corpus is adopted as the first version, never re-embedded.** Its vectors
   are what every retrieval number in this pair was measured against. `AdoptBundled` stamps
   `corpus_version` on the rows already there and is a no-op once a version is active; a

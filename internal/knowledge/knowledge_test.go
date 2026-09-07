@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lai3d/ai-customer-service-go/internal/knowledge"
 	"github.com/lai3d/ai-customer-service-go/internal/rag"
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 	"github.com/lai3d/ai-customer-service-go/internal/testsupport"
 )
 
@@ -71,7 +72,7 @@ func seed(t *testing.T, s *knowledge.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SeedFromCorpus(context.Background(), corpus); err != nil {
+	if _, err := s.SeedFromCorpus(context.Background(), tenant.Default, corpus); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -87,11 +88,11 @@ func TestTheDraftsStartAsTheBundledCorpusAndAreNotReseeded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seeded, err := s.SeedFromCorpus(ctx, corpus)
+	seeded, err := s.SeedFromCorpus(ctx, tenant.Default, corpus)
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := s.List(ctx)
+	entries, err := s.List(ctx, tenant.Default)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,17 +102,17 @@ func TestTheDraftsStartAsTheBundledCorpusAndAreNotReseeded(t *testing.T) {
 
 	// An operator deletes one, then the service restarts. Re-seeding would resurrect it,
 	// which is a deletion that undoes itself and looks like the operator imagining things.
-	if err := s.Delete(ctx, entries[0].EntryID, entries[0].Language, "alex"); err != nil {
+	if err := s.Delete(ctx, tenant.Default, entries[0].EntryID, entries[0].Language, "alex"); err != nil {
 		t.Fatal(err)
 	}
-	again, err := s.SeedFromCorpus(ctx, corpus)
+	again, err := s.SeedFromCorpus(ctx, tenant.Default, corpus)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if again != 0 {
 		t.Errorf("a restart re-seeded %d entries over an edited knowledge base", again)
 	}
-	after, err := s.List(ctx)
+	after, err := s.List(ctx, tenant.Default)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,16 +135,16 @@ func TestAnEditIsNotLiveUntilItIsPublished(t *testing.T) {
 	// IngestOnStartup off would take, and it did not exist until this test needed it --
 	// AdoptBundled has nothing to stamp when faq_document is empty, so without it such a
 	// database could never get a version at all.
-	if _, err := s.Publish(ctx, "alex", "the first one", 0); err != nil {
+	if _, err := s.Publish(ctx, tenant.Default, "alex", "the first one", 0); err != nil {
 		t.Fatal(err)
 	}
-	_, revision, err := s.State(ctx)
+	_, revision, err := s.State(ctx, tenant.Default)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	const marker = "wombats are dispatched on Thursdays"
-	if _, err := s.Save(ctx, knowledge.Entry{
+	if _, err := s.Save(ctx, tenant.Default, knowledge.Entry{
 		EntryID: "shipping-times", Language: "en", Category: "shipping",
 		Question: "when does it ship?", Answer: marker,
 	}, "alex"); err != nil {
@@ -158,7 +159,7 @@ func TestAnEditIsNotLiveUntilItIsPublished(t *testing.T) {
 		t.Error("an unpublished edit is already being retrieved")
 	}
 
-	version, err := s.Publish(ctx, "alex", "changed shipping", revision)
+	version, err := s.Publish(ctx, tenant.Default, "alex", "changed shipping", revision)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,18 +181,18 @@ func TestASecondPublicationFromAStalePageIsRefused(t *testing.T) {
 	ctx := context.Background()
 	s, _ := store(t)
 	seed(t, s)
-	if _, err := s.Publish(ctx, "alex", "the first one", 0); err != nil {
+	if _, err := s.Publish(ctx, tenant.Default, "alex", "the first one", 0); err != nil {
 		t.Fatal(err)
 	}
 
-	_, revision, err := s.State(ctx)
+	_, revision, err := s.State(ctx, tenant.Default)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Publish(ctx, "alex", "first", revision); err != nil {
+	if _, err := s.Publish(ctx, tenant.Default, "alex", "first", revision); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Publish(ctx, "dana", "from a page loaded before alex published", revision); !errors.Is(err, rag.ErrStaleActivation) {
+	if _, err := s.Publish(ctx, tenant.Default, "dana", "from a page loaded before alex published", revision); !errors.Is(err, rag.ErrStaleActivation) {
 		t.Errorf("a stale publication returned %v, want ErrStaleActivation", err)
 	}
 }
@@ -200,23 +201,23 @@ func TestAnEmptyKnowledgeBaseIsNotPublishable(t *testing.T) {
 	ctx := context.Background()
 	s, _ := store(t)
 	seed(t, s)
-	if _, err := s.Publish(ctx, "alex", "the first one", 0); err != nil {
+	if _, err := s.Publish(ctx, tenant.Default, "alex", "the first one", 0); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := s.List(ctx)
+	entries, err := s.List(ctx, tenant.Default)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if err := s.Delete(ctx, e.EntryID, e.Language, "alex"); err != nil {
+		if err := s.Delete(ctx, tenant.Default, e.EntryID, e.Language, "alex"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	_, revision, err := s.State(ctx)
+	_, revision, err := s.State(ctx, tenant.Default)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Publish(ctx, "alex", "everything deleted", revision); !errors.Is(err, knowledge.ErrEmptyDraft) {
+	if _, err := s.Publish(ctx, tenant.Default, "alex", "everything deleted", revision); !errors.Is(err, knowledge.ErrEmptyDraft) {
 		t.Errorf("publishing an empty knowledge base returned %v", err)
 	}
 }
@@ -239,11 +240,11 @@ func TestAnEntryIsBoundedAndValidated(t *testing.T) {
 			Question: "q", Answer: strings.Repeat("x", knowledge.MaxAnswerLength+1)}},
 	}
 	for _, c := range cases {
-		if _, err := s.Save(ctx, c.entry, "alex"); err == nil {
+		if _, err := s.Save(ctx, tenant.Default, c.entry, "alex"); err == nil {
 			t.Errorf("%s was accepted", c.name)
 		}
 	}
-	if _, err := s.Save(ctx, knowledge.Entry{EntryID: "e", Language: "en", Category: "c",
+	if _, err := s.Save(ctx, tenant.Default, knowledge.Entry{EntryID: "e", Language: "en", Category: "c",
 		Question: "q", Answer: "a"}, ""); err == nil {
 		t.Error("an edit with no author was accepted")
 	}
@@ -254,7 +255,8 @@ func TestAnEntryIsBoundedAndValidated(t *testing.T) {
 func activeAnswers(ctx context.Context, corpus *rag.Store) (string, error) {
 	rows, err := pool.Query(ctx, `
 		SELECT answer FROM faq_document
-		WHERE corpus_version = (SELECT version FROM corpus_active WHERE only_one)`)
+		WHERE corpus_version = (SELECT version FROM corpus_active WHERE tenant_id = $1)`,
+		tenant.Default)
 	if err != nil {
 		return "", err
 	}
@@ -269,4 +271,109 @@ func activeAnswers(ctx context.Context, corpus *rag.Store) (string, error) {
 		all.WriteString("\n")
 	}
 	return all.String(), rows.Err()
+}
+
+// Two tenants can both have an entry called `returns-window`, and they are different
+// entries. Without the tenant in the primary key the second save silently overwrites the
+// first, and the operator who typed it sees their own text back -- the failure that looks
+// most like everything working.
+func TestTwoTenantsCanBothHaveAnEntryWithTheSameId(t *testing.T) {
+	ctx := context.Background()
+	s, _ := store(t)
+	tenants := tenant.NewStore(pool)
+	a, err := tenants.Create(ctx, fmt.Sprintf("acme-%d", os.Getpid()), "Acme", "platform")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := tenants.Create(ctx, fmt.Sprintf("globex-%d", os.Getpid()), "Globex", "platform")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM knowledge_entry WHERE tenant_id = ANY($1)`,
+			[]string{a.ID, b.ID})
+		_, _ = pool.Exec(ctx, `DELETE FROM tenant WHERE tenant_id = ANY($1)`,
+			[]string{a.ID, b.ID})
+	})
+
+	entry := func(answer string) knowledge.Entry {
+		return knowledge.Entry{EntryID: "returns-window", Language: "en",
+			Category: "returns", Question: "how long?", Answer: answer}
+	}
+	if _, err := s.Save(ctx, a.ID, entry("thirty days"), "alex"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Save(ctx, b.ID, entry("fourteen days"), "dana"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range []struct{ id, want string }{{a.ID, "thirty days"}, {b.ID, "fourteen days"}} {
+		entries, err := s.List(ctx, c.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("%s has %d entries, want 1: a tenant is seeing another's drafts", c.id, len(entries))
+		}
+		if entries[0].Answer != c.want {
+			t.Errorf("%s reads %q, want %q", c.id, entries[0].Answer, c.want)
+		}
+	}
+
+	// And deleting one tenant's entry leaves the other's alone.
+	if err := s.Delete(ctx, a.ID, "returns-window", "en", "alex"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := s.List(ctx, b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Deleted {
+		t.Error("deleting one tenant's entry deleted another tenant's")
+	}
+}
+
+// Seeding is idempotent per tenant. A global count would mean the second tenant to exist is
+// never seeded, and its editor would open empty for a reason nobody could find.
+func TestSeedingIsIdempotentPerTenantRatherThanGlobally(t *testing.T) {
+	ctx := context.Background()
+	s, _ := store(t)
+	tenants := tenant.NewStore(pool)
+	b, err := tenants.Create(ctx, fmt.Sprintf("seed-%d", os.Getpid()), "Seeded", "platform")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM knowledge_entry WHERE tenant_id = $1`, b.ID)
+		_, _ = pool.Exec(ctx, `DELETE FROM tenant WHERE tenant_id = $1`, b.ID)
+	})
+
+	corpus := rag.Corpus{Entries: []rag.Entry{{
+		ID: "returns-window", Category: "returns",
+		Localized: []rag.Localized{{Language: "en", Question: "how long?", Answer: "thirty days"}},
+	}}}
+
+	if seeded, err := s.SeedFromCorpus(ctx, tenant.Default, corpus); err != nil || seeded == 0 {
+		t.Fatalf("the default tenant was not seeded: %d %v", seeded, err)
+	}
+	// The second tenant is empty and must be seeded, even though the table is not.
+	seeded, err := s.SeedFromCorpus(ctx, b.ID, corpus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seeded == 0 {
+		t.Fatal("a new tenant was not seeded because another tenant already had drafts; " +
+			"its editor would open empty and the first publication would replace its corpus")
+	}
+	entries, err := s.List(ctx, b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("the new tenant has %d entries", len(entries))
+	}
+	// And seeding it again does nothing, which is the property that survives a restart.
+	if again, err := s.SeedFromCorpus(ctx, b.ID, corpus); err != nil || again != 0 {
+		t.Errorf("re-seeding an edited tenant added %d entries (%v)", again, err)
+	}
 }

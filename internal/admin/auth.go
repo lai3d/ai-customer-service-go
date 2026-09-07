@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 )
 
 type Role string
@@ -30,6 +32,14 @@ const (
 type Operator struct {
 	Name string
 	Role Role
+	// TenantID is whose customers this account can see. One tenant per account and no
+	// account sees two: an operations surface that can be pointed at a neighbour's
+	// conversations by changing a query parameter is the confidentiality hole this whole
+	// surface exists to avoid having.
+	//
+	// Names stay globally unique across tenants, because the name is the audit actor and
+	// two people called `alex` in one trail is a trail that answers "who" with a guess.
+	TenantID string
 	// token is never logged, never returned, and never compared with ==.
 	token string
 }
@@ -40,13 +50,18 @@ func (o Operator) CanWrite() bool { return o.Role == RoleOperator }
 // at all -- see Enabled.
 type Operators struct{ byName []Operator }
 
-// ParseOperators reads `name:token[:role]` entries, comma separated.
+// ParseOperators reads `name:token[:role[:tenant]]` entries, comma separated.
 //
-//	ADMIN_TOKENS="alex:s3cret:operator,dana:othersecret"
+//	ADMIN_TOKENS="alex:s3cret:operator,dana:othersecret,kim:third:viewer:acme"
 //
 // The name is not decoration. An audit trail whose every entry says "admin" answers when
 // something happened and not who did it, which is most of the point of having one. A
 // missing role means viewer: least privilege is the safe direction for a typo.
+//
+// A missing tenant means `default`, which is what every existing configuration means and
+// keeps meaning. That is a deliberate exception to "least privilege for a typo": the
+// alternative is a fourth field everybody has to write before anything works, and a
+// default tenant with no data of its own is not a privilege.
 func ParseOperators(spec string) (Operators, error) {
 	var ops Operators
 	for _, entry := range strings.Split(spec, ",") {
@@ -76,7 +91,16 @@ func ParseOperators(spec string) (Operators, error) {
 				"credential for every customer conversation in the database, so 16 is the "+
 				"minimum and a generated one is better", parts[0], len(parts[1]))
 		}
-		ops.byName = append(ops.byName, Operator{Name: parts[0], Role: role, token: parts[1]})
+		tenantID := tenant.Default
+		if len(parts) > 3 && strings.TrimSpace(parts[3]) != "" {
+			tenantID = strings.TrimSpace(parts[3])
+		}
+		if len(parts) > 4 {
+			return Operators{}, fmt.Errorf("operator %q has %d fields; the form is "+
+				"name:token[:role[:tenant]]", parts[0], len(parts))
+		}
+		ops.byName = append(ops.byName, Operator{
+			Name: parts[0], Role: role, TenantID: tenantID, token: parts[1]})
 	}
 	return ops, nil
 }

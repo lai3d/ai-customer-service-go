@@ -14,6 +14,7 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/chat"
 	"github.com/lai3d/ai-customer-service-go/internal/handoff"
 	"github.com/lai3d/ai-customer-service-go/internal/identity"
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 )
 
 // Identity is what the edge needs to know who a request is from and whether the
@@ -45,7 +46,12 @@ type Transcripts interface {
 // page acts on that without needing to tell them apart.
 func (s *Server) resolve(r *http.Request) (identity.Subject, *problem) {
 	if s.identity == nil {
-		return identity.Subject{}, nil
+		// AUTH_MODE=off. There is no subject, and the tenant is the default one -- named
+		// here rather than left empty, because everything below this point needs a tenant
+		// and an empty one would reach a query as "match nothing" or "match everything"
+		// depending on which query it reached first. The configuration that would make
+		// this a hole (TENANCY=required with AUTH_MODE=off) is refused at start-up.
+		return identity.Subject{TenantID: tenant.Default}, nil
 	}
 	subject, err := s.identity.Sessions.Verify(r.Context(), identity.BearerToken(r))
 	switch {

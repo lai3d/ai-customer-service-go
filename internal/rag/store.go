@@ -2,6 +2,7 @@ package rag
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -28,15 +29,42 @@ func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 // Appending instead is the obvious bug and it is not merely wasteful: duplicates crowd
 // out distinct passages inside the top-k window, so the model sees one answer four
 // times instead of four different ones.
-func (s *Store) Replace(ctx context.Context, docs []Document, vectors [][]float32) error {
+//
+// # Why this refuses to run once a second tenant has documents
+//
+// TRUNCATE is not tenant-scoped and cannot be made so. The obvious alternative --
+// `DELETE ... WHERE tenant_id = $1` -- reintroduces the failure the TRUNCATE is here to
+// prevent, measured below, so the choice is not between two equally good statements.
+//
+// The way out is that this path is the *bootstrap*: it loads the corpus shipped with the
+// build, for the tenant that owns it. A multi-tenant deployment does not re-ingest, it
+// publishes -- and publication appends a new version rather than clearing anything, which
+// is why it has no such problem. So this refuses rather than choosing: destroying another
+// tenant's corpus and silently degrading retrieval are both worse than a start-up error
+// naming the tenant that is in the way.
+func (s *Store) Replace(ctx context.Context, tenantID string, docs []Document, vectors [][]float32) error {
 	if len(docs) != len(vectors) {
 		return fmt.Errorf("have %d documents and %d vectors", len(docs), len(vectors))
+	}
+	if tenantID == "" {
+		return errors.New("refusing to load a corpus for no tenant")
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+
+	var others int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM faq_document WHERE tenant_id <> $1`, tenantID).Scan(&others); err != nil {
+		return err
+	}
+	if others > 0 {
+		return fmt.Errorf("%w: %d documents belong to other tenants, and this load clears "+
+			"the whole table. Publish a version instead, or set FAQ_INGEST_ON_STARTUP=false",
+			ErrWouldClearOtherTenants, others)
+	}
 
 	// TRUNCATE, not DELETE, and this is a correctness fix rather than a speed one.
 	//
@@ -61,11 +89,12 @@ func (s *Store) Replace(ctx context.Context, docs []Document, vectors [][]float3
 	}
 	rows := make([][]any, len(docs))
 	for i, d := range docs {
-		rows[i] = []any{d.ID, d.EntryID, d.Language, d.Category, d.Question, d.Answer,
-			d.Content, pgvector.NewVector(vectors[i])}
+		rows[i] = []any{tenantID, d.ID, d.EntryID, d.Language, d.Category, d.Question,
+			d.Answer, d.Content, pgvector.NewVector(vectors[i])}
 	}
 	_, err = tx.CopyFrom(ctx, pgx.Identifier{"faq_document"},
-		[]string{"id", "entry_id", "language", "category", "question", "answer", "content", "embedding"},
+		[]string{"tenant_id", "id", "entry_id", "language", "category", "question",
+			"answer", "content", "embedding"},
 		pgx.CopyFromRows(rows))
 	if err != nil {
 		return fmt.Errorf("insert corpus: %w", err)
@@ -73,9 +102,19 @@ func (s *Store) Replace(ctx context.Context, docs []Document, vectors [][]float3
 	return tx.Commit(ctx)
 }
 
+// Count is every tenant's documents, and is the one place that is deliberately not scoped:
+// it answers "is there a corpus at all", which start-up asks before it knows whose.
 func (s *Store) Count(ctx context.Context) (int, error) {
 	var n int
 	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM faq_document`).Scan(&n)
+	return n, err
+}
+
+// CountFor is the same question asked about one tenant.
+func (s *Store) CountFor(ctx context.Context, tenantID string) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM faq_document WHERE tenant_id = $1`, tenantID).Scan(&n)
 	return n, err
 }
 
@@ -85,6 +124,11 @@ func (s *Store) Count(ctx context.Context) (int, error) {
 // is how you find out whether it works at all — which is what matters for an entry
 // nobody has translated yet.
 type SearchOptions struct {
+	// TenantID is required. It is not defaulted here: a search with no tenant would read
+	// whichever documents the rest of the predicate happened to match, across every
+	// customer of this service, and would look exactly like a search that found nothing
+	// relevant.
+	TenantID  string
 	TopK      int
 	Threshold float64
 	Language  string
@@ -107,14 +151,19 @@ type SearchOptions struct {
 // database whose corpus has not been adopted yet -- during a rollout, or in a test that
 // ingests without versioning -- keeps working exactly as before.
 func (s *Store) Search(ctx context.Context, query []float32, opts SearchOptions) ([]Passage, error) {
+	if opts.TenantID == "" {
+		return nil, errors.New("refusing to search the corpus with no tenant")
+	}
 	const sql = `
 		SELECT id, entry_id, language, category, question, answer, content,
 		       1 - (embedding <=> $1) AS score
 		FROM faq_document
-		WHERE ($2 = '' OR language = $2)
+		WHERE tenant_id = $6
+		  AND ($2 = '' OR language = $2)
 		  AND 1 - (embedding <=> $1) >= $3
 		  AND (corpus_version IS NULL
-		       OR corpus_version = coalesce($5, (SELECT version FROM corpus_active WHERE only_one)))
+		       OR corpus_version = coalesce($5,
+			       (SELECT version FROM corpus_active WHERE tenant_id = $6)))
 		ORDER BY embedding <=> $1
 		LIMIT $4`
 
@@ -123,7 +172,8 @@ func (s *Store) Search(ctx context.Context, query []float32, opts SearchOptions)
 		version = opts.Version
 	}
 	rows, err := s.pool.Query(ctx, sql,
-		pgvector.NewVector(query), opts.Language, opts.Threshold, opts.TopK, version)
+		pgvector.NewVector(query), opts.Language, opts.Threshold, opts.TopK, version,
+		opts.TenantID)
 	if err != nil {
 		return nil, fmt.Errorf("vector search: %w", err)
 	}

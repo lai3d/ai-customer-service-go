@@ -323,12 +323,13 @@ func (s *Server) feedbackHandle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) knowledgeList(w http.ResponseWriter, r *http.Request) {
-	entries, err := s.knowledge.List(r.Context())
+	operator, _ := FromContext(r.Context())
+	entries, err := s.knowledge.List(r.Context(), operator.TenantID)
 	if err != nil {
 		fail(w, r, "knowledge", err)
 		return
 	}
-	active, revision, err := s.knowledge.State(r.Context())
+	active, revision, err := s.knowledge.State(r.Context(), operator.TenantID)
 	if err != nil {
 		fail(w, r, "knowledge", err)
 		return
@@ -342,7 +343,7 @@ func (s *Server) knowledgeList(w http.ResponseWriter, r *http.Request) {
 	//
 	// Computed here rather than in the page because the server has both timestamps and the
 	// page would have to infer it from two responses that can disagree.
-	unpublished, err := s.knowledge.HasUnpublishedChanges(r.Context())
+	unpublished, err := s.knowledge.HasUnpublishedChanges(r.Context(), operator.TenantID)
 	if err != nil {
 		fail(w, r, "knowledge", err)
 		return
@@ -366,7 +367,7 @@ func (s *Server) knowledgeSave(w http.ResponseWriter, r *http.Request) {
 	// let one entry's edit land on another.
 	entry.EntryID, entry.Language = r.PathValue("entryId"), r.PathValue("language")
 
-	before, err := s.knowledge.Save(r.Context(), entry, operator.Name)
+	before, err := s.knowledge.Save(r.Context(), operator.TenantID, entry, operator.Name)
 	if err != nil {
 		s.record(r, "edit knowledge", knowledgeObject(entry.EntryID, entry.Language),
 			"rejected", err.Error())
@@ -383,7 +384,7 @@ func (s *Server) knowledgeSave(w http.ResponseWriter, r *http.Request) {
 func (s *Server) knowledgeDelete(w http.ResponseWriter, r *http.Request) {
 	operator, _ := FromContext(r.Context())
 	entryID, language := r.PathValue("entryId"), r.PathValue("language")
-	switch err := s.knowledge.Delete(r.Context(), entryID, language, operator.Name); {
+	switch err := s.knowledge.Delete(r.Context(), operator.TenantID, entryID, language, operator.Name); {
 	case errors.Is(err, knowledge.ErrNotFound):
 		s.record(r, "delete knowledge", knowledgeObject(entryID, language), "not_found", "")
 		http.Error(w, "no such entry", http.StatusNotFound)
@@ -400,7 +401,8 @@ func (s *Server) knowledgeDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) knowledgeVersions(w http.ResponseWriter, r *http.Request) {
-	versions, err := s.knowledge.Versions(r.Context())
+	operator, _ := FromContext(r.Context())
+	versions, err := s.knowledge.Versions(r.Context(), operator.TenantID)
 	if err != nil {
 		fail(w, r, "knowledge", err)
 		return
@@ -427,7 +429,8 @@ func (s *Server) knowledgePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	version, err := s.knowledge.Publish(r.Context(), operator.Name, body.Note, body.Revision)
+	version, err := s.knowledge.Publish(r.Context(), operator.TenantID, operator.Name,
+		body.Note, body.Revision)
 	switch {
 	case errors.Is(err, rag.ErrStaleActivation):
 		s.record(r, "publish knowledge", "corpus", "conflict", "someone else published first")
@@ -457,7 +460,8 @@ func (s *Server) knowledgeActivate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the request body is not valid JSON", http.StatusBadRequest)
 		return
 	}
-	switch err := s.knowledge.Activate(r.Context(), version, operator.Name, body.Revision); {
+	switch err := s.knowledge.Activate(r.Context(), operator.TenantID, version,
+		operator.Name, body.Revision); {
 	case errors.Is(err, rag.ErrStaleActivation):
 		s.record(r, "activate corpus", "corpus/"+version, "conflict", "")
 		http.Error(w, "someone else changed the active version; reload and try again",
