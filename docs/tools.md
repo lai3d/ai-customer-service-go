@@ -192,7 +192,11 @@ conversation. Without a guard, one frustrated customer becomes three tickets in 
 agents' queue. Asking twice returns the existing ticket flagged `alreadyExisted`, so the
 assistant says "I've already raised that" rather than inventing a second reference number.
 
-The cap is three, enforced in the tool, and the reasoning is in
+The cap is three, and it stopped being enforced in the tool: it is a transaction with an
+advisory lock and a unique index on `(conversation_id, dedupe_key)`, in `internal/ticket`.
+The tool's contract did not change; the guarantee behind it did. While it lived in a map in
+this process the cap was `replicas x 3` and deduplication held only within one replica —
+which is the whole reason this paragraph used to say something else. The reasoning is in
 [Cost and failure](reliability.md#bound-tool-side-effects-in-the-tool).
 
 ### Tools run in parallel, and their results go back together

@@ -33,6 +33,7 @@ kubectl -n ai-customer-service-go create secret generic ai-customer-service-go-s
   --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
   --from-literal=POSTGRES_USER='csagent' \
   --from-literal=POSTGRES_PASSWORD="$PGPASSWORD"
+  # --from-literal=ORDER_SERVICE_TOKEN="$ORDER_SERVICE_TOKEN"   # if ORDER_SERVICE_URL is set
 
 kubectl apply -f k8s/
 kubectl -n ai-customer-service-go rollout status deploy/ai-customer-service-go
