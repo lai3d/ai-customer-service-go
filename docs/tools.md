@@ -107,6 +107,13 @@ path-escaping test originally asserted on `r.URL.Path`, which is what net/http *
 It reported an escaped `%2F..%2F` as a traversal that had not happened. The assertion is on
 `r.RequestURI` now — what actually went on the wire.
 
+**One branch is not covered**, and naming it is cheaper than a flaky test: the case where
+the pause *between* retries would outrun the budget (`ORDER_SERVICE_ATTEMPTS` of 3 or more
+against a service failing fast). It returns `timed_out` rather than sleeping past the
+deadline and reporting a stale `unavailable`. Reaching it needs a test tuned to a 100 ms
+internal gap, which would be a timing assertion pretending to be a behavioural one. With
+the default of 2 attempts the branch is unreachable.
+
 ### A timeout, a 404 and a 500 are three different things
 
 They are three different things to a customer, and collapsing them is a single line of
