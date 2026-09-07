@@ -25,8 +25,12 @@ type Metrics struct {
 	Handoffs    *prometheus.CounterVec
 	Refusals    *prometheus.CounterVec
 	Offenders   prometheus.Gauge
-	Retrieval   prometheus.Histogram
-	Embedding   prometheus.Histogram
+	Failovers   *prometheus.CounterVec
+	// AbandonedTokens is tokens spent on a model call that was thrown away in favour of
+	// another provider. See the comment on it in NewMetrics.
+	AbandonedTokens *prometheus.CounterVec
+	Retrieval       prometheus.Histogram
+	Embedding       prometheus.Histogram
 }
 
 func NewMetrics() *Metrics {
@@ -111,6 +115,34 @@ func NewMetrics() *Metrics {
 				"windows recently: one client being throttled repeatedly rather than a " +
 				"crowd being throttled once.",
 		}),
+		// A failover is a silent success: the customer gets an answer, the turn is
+		// recorded as completed, and the only trace that the primary provider is down is
+		// this counter. Without it the first sign of an outage is the invoice from a
+		// provider nobody meant to be using.
+		//
+		// Labelled from/to/reason and never by conversation id -- the same rule as every
+		// other metric here. All three are bounded by configuration: two providers out of
+		// three, and a fixed set of reasons decided in internal/llm/failover.go.
+		Failovers: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "chat_provider_failovers_total",
+			Help: "Turns handed to the secondary provider, by provider pair and why.",
+		}, []string{"from", "to", "reason"}),
+		// The tokens of an attempt that was abandoned mid-flight in favour of another
+		// provider, at the model that actually spent them.
+		//
+		// It exists because those tokens are counted twice over, in two different senses.
+		// They reach chat_tokens_total, because llm.Failover adds them to the Result the
+		// caller sums and the caller must not lose money it spent -- but they arrive
+		// there labelled with the *fallback* model, since one Result carries one model
+		// id, so they are priced at the wrong provider's rate. This is the same tokens
+		// recorded against the model that really billed them, which makes that skew a
+		// number rather than an assumption. It is deliberately not part of
+		// chat_tokens_total: adding it there would double the count.
+		AbandonedTokens: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "chat_failover_abandoned_tokens_total",
+			Help: "Tokens billed by a provider whose call was abandoned for a failover, " +
+				"by the provider and model that billed them.",
+		}, []string{"provider", "model", "type"}),
 		Retrieval: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "chat_retrieval_duration_seconds",
 			Help:    "Query embedding plus vector search.",
@@ -124,8 +156,21 @@ func NewMetrics() *Metrics {
 	}
 	registry.MustRegister(m.Tokens, m.CostUSD, m.ModelCalls, m.Turns,
 		m.TurnSeconds, m.ToolCalls, m.Unpriced, m.Handoffs, m.Refusals, m.Offenders,
-		m.Retrieval, m.Embedding)
+		m.Failovers, m.AbandonedTokens, m.Retrieval, m.Embedding)
 	return m
+}
+
+// RecordFailover and RecordAbandonedAttempt are llm.FailoverMeter, which internal/llm
+// declares so that it does not have to import this package. The tokens are plain int64s
+// for the same reason: llm.Usage would be an import back the other way.
+
+func (m *Metrics) RecordFailover(from, to, reason string) {
+	m.Failovers.WithLabelValues(from, to, reason).Inc()
+}
+
+func (m *Metrics) RecordAbandonedAttempt(provider, model string, inputTokens, outputTokens int64) {
+	m.AbandonedTokens.WithLabelValues(provider, model, "input").Add(float64(inputTokens))
+	m.AbandonedTokens.WithLabelValues(provider, model, "output").Add(float64(outputTokens))
 }
 
 // RecordUsage meters one model call. The model is the one the provider reported.

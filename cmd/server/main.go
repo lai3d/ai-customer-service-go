@@ -80,6 +80,28 @@ func orderSource(cfg config.Orders) (tools.OrderSource, error) {
 	return source, nil
 }
 
+// announceProviders says out loud whether this deployment survives a provider outage.
+//
+// Same reasoning as the order source above, and the same shape: a property of the
+// deployment that is invisible from the outside until it matters. Nobody discovers "there
+// is no second provider" by reading configuration -- they discover it during the outage.
+//
+// Neither line is a warning. One provider is a legitimate choice and it is the default;
+// two is a second bill and a second voice. What is not legitimate is not knowing which.
+func announceProviders(cfg config.Chat) {
+	if cfg.FallbackProvider == "" {
+		slog.Info("one chat provider, no failover: CHAT_FALLBACK_PROVIDER is unset, so an "+
+			"outage at this provider is an outage of this service, whatever the replica count",
+			"provider", cfg.Provider, "model", cfg.Model)
+		return
+	}
+	// No keys here, and no line anywhere prints one.
+	slog.Info("a secondary chat provider is configured; a turn that cannot start at the "+
+		"primary is answered by it, and the two do not write the same answer",
+		"provider", cfg.Provider, "model", cfg.Model,
+		"fallback_provider", cfg.FallbackProvider, "fallback_model", cfg.FallbackModel)
+}
+
 // healthcheck asks the local server whether it is ready. Exit code 0 means yes.
 func healthcheck() int {
 	addr := os.Getenv("HTTP_ADDR")
@@ -210,6 +232,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// A failover that nothing counts is a provider outage nobody sees: the customer is
+	// answered, the turn completes, and the only evidence is an invoice from a provider
+	// this deployment did not mean to be using.
+	client = llm.MeterFailover(client, metrics)
+	announceProviders(cfg.Chat)
 
 	tickets := ticket.NewStore(pool)
 

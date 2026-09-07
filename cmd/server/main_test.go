@@ -87,3 +87,55 @@ func TestAnUnbuildableOrderSourceStopsStartup(t *testing.T) {
 		t.Error("a base URL with no scheme was accepted")
 	}
 }
+
+// Whether this deployment survives a provider outage is invisible from the outside. It
+// cannot be read off /healthz, it does not change any metric until it matters, and nobody
+// discovers it from configuration -- they discover it during the outage. So it is said at
+// every start-up, and the line is checked here for the same reason the order source's is.
+func TestASingleProviderDeploymentSaysThatItIsOne(t *testing.T) {
+	logged := capture(t)
+
+	announceProviders(config.Chat{Provider: "anthropic", Model: "claude-opus-5"})
+
+	line := logged.String()
+	for _, phrase := range []string{"CHAT_FALLBACK_PROVIDER", "outage of this service", "anthropic"} {
+		if !strings.Contains(line, phrase) {
+			t.Errorf("the start-up line does not say %q: %s", phrase, line)
+		}
+	}
+	// "replica count" is in the line because scaling out is the thing people reach for
+	// when told a dependency is a single point of failure, and it does not help here:
+	// every replica calls the same API.
+	if !strings.Contains(line, "replica count") {
+		t.Errorf("the line does not say that replicas do not help: %s", line)
+	}
+}
+
+// The other half, and the part that has to name both providers: an operator reading this
+// during an incident wants to know what the traffic can move to, and a key is not part of
+// the answer.
+func TestAConfiguredFallbackIsAnnouncedWithoutAnyCredential(t *testing.T) {
+	logged := capture(t)
+
+	announceProviders(config.Chat{
+		Provider: "anthropic", Model: "claude-opus-5", APIKey: "sk-primary-secret",
+		FallbackProvider: "openai", FallbackModel: "gpt-5", FallbackAPIKey: "sk-fallback-secret",
+	})
+
+	line := logged.String()
+	for _, phrase := range []string{"anthropic", "claude-opus-5", "openai", "gpt-5"} {
+		if !strings.Contains(line, phrase) {
+			t.Errorf("the start-up line does not name %q: %s", phrase, line)
+		}
+	}
+	for _, secret := range []string{"sk-primary-secret", "sk-fallback-secret"} {
+		if strings.Contains(line, secret) {
+			t.Errorf("an API key reached the log: %s", line)
+		}
+	}
+	// The voice question is not a footnote in a document somebody has to find. Turning
+	// this on changes what customers read during an outage.
+	if !strings.Contains(line, "do not write the same answer") {
+		t.Errorf("the line does not say the two providers differ: %s", line)
+	}
+}

@@ -20,6 +20,17 @@ data:
 
   CHAT_PROVIDER: "anthropic"
 
+  # The secondary provider. Empty means no failover: if the provider above is down, so is
+  # this service, and a replica count does not change that -- every pod calls the same API.
+  #
+  # Setting it to "openai" or "xai" needs that provider's key added to the Secret
+  # (k8s/examples/secret.yaml lists only the primary's), and the pod refuses to start
+  # without it. That refusal is the point: a failover discovered to be misconfigured
+  # during an outage is worse than no failover, because there is no capacity left to fix
+  # it. See docs/providers.md for exactly which failures it acts on -- notably not a
+  # customer's own cancellation.
+  CHAT_FALLBACK_PROVIDER: ""
+
   # Must stay below terminationGracePeriodSeconds in the Deployment, or the kubelet
   # SIGKILLs the container part-way through the drain it was promised. A streamed answer
   # is in flight for as long as the model keeps talking.

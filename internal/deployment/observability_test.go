@@ -56,10 +56,16 @@ func emitted(t *testing.T) map[string]family {
 
 	value := reflect.ValueOf(m).Elem()
 	exercised := 0
+	// field name -> the series that field produces, so the assertion below can name the
+	// Go field a reader has to go and fix.
+	fields := map[string][]string{}
 	for i := 0; i < value.NumField(); i++ {
 		name := value.Type().Field(i).Name
 		if name == "Registry" {
 			continue
+		}
+		if c, ok := value.Field(i).Interface().(prometheus.Collector); ok {
+			fields[name] = seriesOf(t, c)
 		}
 		switch c := value.Field(i).Interface().(type) {
 		case *prometheus.CounterVec:
@@ -127,6 +133,40 @@ func emitted(t *testing.T) map[string]family {
 	if len(described) < 40 || !described["chat_turns_total"] {
 		t.Fatalf("read %d descriptors from the registry; the description pass has stopped "+
 			"working", len(described))
+	}
+
+	// And the other direction, which is the one that actually went wrong. Every field of
+	// obs.Metrics is a metric some code path increments; a field left out of
+	// MustRegister is incremented for ever and scraped never, and the loop above cannot
+	// see it because it only walks what the registry already knows. Dropping
+	// chat_provider_failovers_total from the registration list passed the whole suite.
+	for field, names := range fields {
+		for _, name := range names {
+			if _, ok := out[name]; !ok {
+				t.Errorf("obs.Metrics.%s produces %s and the registry does not have it: "+
+					"add it to registry.MustRegister. Code that increments it will "+
+					"succeed and nothing will ever scrape it.", field, name)
+			}
+		}
+	}
+	return out
+}
+
+// seriesOf reads the fully-qualified names a collector describes. Desc has no accessor
+// for them either -- the same String() parse as dummies, asserted the same way.
+func seriesOf(t *testing.T, c prometheus.Collector) []string {
+	t.Helper()
+	descs := make(chan *prometheus.Desc, 8)
+	go func() { c.Describe(descs); close(descs) }()
+	fqName := regexp.MustCompile(`fqName: "([^"]+)"`)
+	var out []string
+	for d := range descs {
+		match := fqName.FindStringSubmatch(d.String())
+		if match == nil {
+			t.Fatalf("cannot read the fqName out of %q; client_golang has changed "+
+				"Desc.String() and this test needs rewriting", d.String())
+		}
+		out = append(out, match[1])
 	}
 	return out
 }

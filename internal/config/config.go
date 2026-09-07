@@ -68,6 +68,20 @@ type Chat struct {
 	APIKey   string
 	BaseURL  string
 
+	// The secondary provider, used when the primary fails in a way that retrying the
+	// primary will not fix. Empty means no failover at all, which is the default: a
+	// second provider is a second set of credentials, a second price list and a second
+	// voice answering customers, and none of that should switch itself on.
+	//
+	// It is configured in full and separately -- its own key, model and base URL --
+	// rather than sharing the primary's. Sharing would make CHAT_FALLBACK_PROVIDER=openai
+	// silently reuse ANTHROPIC_API_KEY and fail at the worst possible moment, which is
+	// the first outage.
+	FallbackProvider string
+	FallbackModel    string
+	FallbackAPIKey   string
+	FallbackBaseURL  string
+
 	MaxTokens int
 
 	// How many messages of history travel with each request. Every one is re-sent and
@@ -243,6 +257,7 @@ func Load() (Config, error) {
 		},
 		Chat: Chat{
 			Provider:                strings.ToLower(env("CHAT_PROVIDER", "anthropic")),
+			FallbackProvider:        strings.ToLower(env("CHAT_FALLBACK_PROVIDER", "")),
 			MaxTokens:               envInt("CHAT_MAX_TOKENS", 8192),
 			MaxHistoryMessages:      envInt("CHAT_MAX_HISTORY_MESSAGES", 40),
 			MaxConversationIDLength: 64,
@@ -323,7 +338,7 @@ func Load() (Config, error) {
 		},
 	}
 
-	provider, err := resolveProvider(c.Chat.Provider)
+	provider, err := resolveProvider("CHAT_PROVIDER", c.Chat.Provider)
 	if err != nil {
 		return Config{}, err
 	}
@@ -337,6 +352,10 @@ func Load() (Config, error) {
 		// ready and routes traffic to it.
 		return Config{}, fmt.Errorf("chat provider %q selected but %s is not set",
 			c.Chat.Provider, provider.keyVar)
+	}
+
+	if err := resolveFallback(&c.Chat); err != nil {
+		return Config{}, err
 	}
 
 	// A non-positive heartbeat panics time.NewTicker inside the SSE handler, so it takes
@@ -422,7 +441,44 @@ type providerDefaults struct {
 	model, apiKey, baseURL, keyVar string
 }
 
-func resolveProvider(name string) (providerDefaults, error) {
+// resolveFallback fills in the secondary provider, or refuses to start.
+//
+// Both refusals are start-up failures for the same reason the primary's missing key is
+// one: a failover that is configured and cannot work is worse than no failover, because
+// it is only ever exercised during an outage. A key that turns out to be absent, or a
+// fallback pointing at the provider that just went down, is discovered at the moment
+// there is no capacity left to discover anything.
+func resolveFallback(chat *Chat) error {
+	if chat.FallbackProvider == "" {
+		return nil
+	}
+	if chat.FallbackProvider == chat.Provider {
+		// Not a harmless no-op. The SDK has already retried this provider with backoff
+		// by the time the client returns an error, so a second identical call is a
+		// fourth attempt dressed up as resilience -- it doubles the input tokens of a
+		// failing turn and reports a failover that changed nothing.
+		return fmt.Errorf(
+			"CHAT_FALLBACK_PROVIDER is %q, which is also CHAT_PROVIDER: a fallback to the "+
+				"provider that just failed is a retry, and the client already retried",
+			chat.FallbackProvider)
+	}
+	fallback, err := resolveProvider("CHAT_FALLBACK_PROVIDER", chat.FallbackProvider)
+	if err != nil {
+		return err
+	}
+	chat.FallbackModel = fallback.model
+	chat.FallbackAPIKey = fallback.apiKey
+	chat.FallbackBaseURL = fallback.baseURL
+	if chat.FallbackAPIKey == "" {
+		return fmt.Errorf("fallback chat provider %q selected but %s is not set",
+			chat.FallbackProvider, fallback.keyVar)
+	}
+	return nil
+}
+
+// resolveProvider is given the name of the variable it is resolving so that an unknown
+// value in CHAT_FALLBACK_PROVIDER does not report itself as a bad CHAT_PROVIDER.
+func resolveProvider(variable, name string) (providerDefaults, error) {
 	switch name {
 	case "anthropic":
 		return providerDefaults{
@@ -455,7 +511,7 @@ func resolveProvider(name string) (providerDefaults, error) {
 		// Gemini is not here on purpose. A provider that config accepts and the client
 		// layer cannot build would fail later and less clearly than this does.
 		return providerDefaults{}, fmt.Errorf(
-			"unknown CHAT_PROVIDER %q: want anthropic, openai or xai", name)
+			"unknown %s %q: want anthropic, openai or xai", variable, name)
 	}
 }
 
