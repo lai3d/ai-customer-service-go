@@ -829,6 +829,15 @@ tenant's keys returns ids and labels. Revoking through another tenant's URL is a
 the same rule as reading a ticket by number. Every action is audited **against the tenant
 being administered** rather than against the platform account's, which has none.
 
+**Verified live**, with `TENANCY=required` against `claude-opus-5`: a platform account
+created a tenant and issued its key, the default tenant answered from the bundled corpus
+(four `returns-*` passages), and the new tenant retrieved **zero** passages and gave a
+grounded refusal offering a ticket. Cross-tenant conversation id → 404; a session with the
+other tenant's key → 401; a tenant operator on `/tenants` → 403; the platform account on the
+overview → 403; no key → 401. Disabling made the key 401 and re-enabling brought it back.
+The meters came back labelled per tenant and the audit rows were filed under the tenant
+administered.
+
 **Still open on this item:** per-tenant retention windows. Retention is still one window for
 the whole service; a tenant with a different contractual obligation would need its own, and
 that is a configuration surface rather than a predicate.

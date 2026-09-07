@@ -461,6 +461,17 @@ That run found the page was showing the model's markdown to the customer as lite
 asterisks and hyphens, which is fixed. **Still not covered:** the run was headless with a
 throwaway profile, so font fallback and anything gated on a real display are unverified.
 
+**Multi-tenancy, verified live on 2026-09-07** against `claude-opus-5` with
+`TENANCY=required`: a platform account created a tenant and issued its key; the default
+tenant answered *how long do I have to return an item?* from the bundled corpus with four
+`returns-*` passages, and the new tenant retrieved **zero** passages and produced a grounded
+refusal offering a ticket — rather than the other tenant's answer. Cross-tenant conversation
+id → 404, a session presented with the other tenant's key → 401, a tenant operator on
+`/tenants` → 403, the platform account on the overview → 403, no key at all → 401.
+Disabling the tenant made its key 401 and re-enabling brought it back.
+`chat_turns_total` and `chat_cost_usd_total` came back labelled per tenant, and the audit
+rows for creating, keying and disabling were filed under the tenant administered.
+
 **The customer rating, driven in headless Chrome on 2026-09-07** against `claude-opus-5`
 and a real Postgres: the three buttons appear on the usage card, clicking one writes the
 row — read back out of the database, `customer/wrong`, attributed to the session's subject
