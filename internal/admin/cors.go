@@ -56,6 +56,22 @@ func (c CORS) allows(origin string) bool {
 
 const preflightMaxAge = 10 * time.Minute
 
+// allowedMethods is every method this API's routes are registered with.
+//
+// It said "GET, PATCH, OPTIONS" for as long as it existed, and that was wrong for every
+// POST, PUT and DELETE on the surface: replying to a ticket, saving or deleting a knowledge
+// entry, publishing, activating a version, judging an answer, clearing feedback, erasing a
+// conversation, and every tenant action. A browser preflights all of those -- they carry
+// Content-Type: application/json -- and refuses the real request when the method is missing
+// from this header. The whole write half of the operations UI was blocked from a browser.
+//
+// Nothing noticed because the CORS tests asserted the *origin* rules, six of them, each
+// forced red; and the browser run that would have caught it exercised GET and PATCH.
+// TestEveryMethodTheRoutesUseIsAllowedByThePreflight reads the methods off the registered
+// routes rather than off this string, so a route added with a method missing here fails
+// rather than working everywhere except in a browser.
+const allowedMethods = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+
 // Wrap answers preflights and adds the response headers. It wraps the whole admin API,
 // outside authentication.
 func (c CORS) Wrap(next http.Handler) http.Handler {
@@ -82,7 +98,7 @@ func (c CORS) Wrap(next http.Handler) http.Handler {
 				http.Error(w, "origin not allowed", http.StatusForbidden)
 				return
 			}
-			w.Header().Set("Access-Control-Allow-Methods", "GET, PATCH, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", allowedMethods)
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 			w.Header().Set("Access-Control-Max-Age", strconv.Itoa(int(preflightMaxAge.Seconds())))
 			w.WriteHeader(http.StatusNoContent)

@@ -135,16 +135,25 @@ func (s *Store) Conversations(ctx context.Context, f ConversationFilter) ([]Conv
 	// The tenant is on the outer query *and* on the outcome subquery. One without the
 	// other is the shape that lists this tenant's conversations and filters them by
 	// whether some *other* tenant had a turn with that outcome.
+	// The tenant is $3, and the page's limit and offset come after it. Numbering it $5 and
+	// padding the count query's arguments to reach it gives Postgres two parameters no
+	// statement references, and it answers `could not determine data type of parameter $3`:
+	// every conversation list was a 500 until a browser asked for one.
 	const where = `
-		WHERE t.tenant_id = $5
+		WHERE t.tenant_id = $3
 		  AND ($1 = '' OR t.conversation_id IN
-		         (SELECT conversation_id FROM turn WHERE outcome = $1 AND tenant_id = $5))
+		         (SELECT conversation_id FROM turn WHERE outcome = $1 AND tenant_id = $3))
 		  AND ($2 = '' OR t.conversation_id ILIKE '%' || $2 || '%')`
 
+	// The count query takes only the parameters `where` names. Passing the page's limit and
+	// offset here too -- which is what padding the positions to reach $5 did -- gives
+	// Postgres two parameters no statement references, and it answers `could not determine
+	// data type of parameter $3`. Every conversation list was a 500 until a browser asked
+	// for one.
 	var total int
 	if err := s.pool.QueryRow(ctx,
 		`SELECT count(DISTINCT t.conversation_id) FROM turn t`+where,
-		f.Outcome, f.Search, f.Limit, f.Offset, f.TenantID).Scan(&total); err != nil {
+		f.Outcome, f.Search, f.TenantID).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
@@ -153,11 +162,11 @@ func (s *Store) Conversations(ctx context.Context, f ConversationFilter) ([]Conv
 		       array_agg(DISTINCT t.outcome),
 		       coalesce(sum(t.input_tokens),0), coalesce(sum(t.output_tokens),0),
 		       (SELECT count(*) FROM support_ticket s
-		        WHERE s.conversation_id = t.conversation_id AND s.tenant_id = $5)
+		        WHERE s.conversation_id = t.conversation_id AND s.tenant_id = $3)
 		FROM turn t`+where+`
 		GROUP BY t.conversation_id
 		ORDER BY max(t.started_at) DESC
-		LIMIT $3 OFFSET $4`, f.Outcome, f.Search, f.Limit, f.Offset, f.TenantID)
+		LIMIT $4 OFFSET $5`, f.Outcome, f.Search, f.TenantID, f.Limit, f.Offset)
 	if err != nil {
 		return nil, 0, err
 	}

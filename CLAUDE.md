@@ -177,6 +177,18 @@ that show why it is not needed here.
   when the question is "does this exist anywhere", and remember that the filesystem is not
   the repository: `TestEveryPathTheKubernetesReadmeDrawsIsInTheRepository` asks git,
   because an `os.Stat` would have passed the whole time.
+- **The preflight's `Access-Control-Allow-Methods` must list every method the routes use.**
+  It said `GET, PATCH, OPTIONS` for as long as it existed, which blocked every POST, PUT and
+  DELETE on the operations surface from a browser — the entire write half — while every Go
+  test passed, because a Go client does not preflight and the CORS tests assert the *origin*
+  rules. `TestEveryMethodTheRoutesUseIsAllowedByThePreflight` reads the methods off the
+  route table and sends a real preflight for each.
+- **A count query must not be handed the page's limit and offset.** Numbering the tenant
+  after them left the count with two parameters no statement referenced, and Postgres
+  answers `could not determine data type of parameter $3` rather than ignoring them. Both
+  admin list endpoints were 500 until a browser asked for one — and the scope test stayed
+  green because "the body does not contain the other tenant's id" is also true of an error
+  body. Assert the status before the content.
 - **`ADMIN_CORS_ORIGINS` has no wildcard, and must not grow one.** It permits *other
   pages reading the support inbox*. Origins match whole (a prefix match accepts
   `ops.example.com.evil.test`), `Vary: Origin` goes on every response that could have

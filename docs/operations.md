@@ -240,6 +240,44 @@ by a test that was written after the copy went wrong once. That is a weaker guar
 not having the copy, and it is recorded here rather than quietly evened out, because a pair
 of implementations that converge on every decision stops being able to show anything.
 
+## Three more that only a browser could find
+
+Driven again on 2026-09-07 after multi-tenancy and the Tenants page, as both roles. Three
+defects, and none of them was visible to any test in the repository.
+
+**Every POST, PUT and DELETE was blocked by CORS.** The preflight answered
+`Access-Control-Allow-Methods: GET, PATCH, OPTIONS`, and it had said that for as long as it
+existed. A browser preflights any request carrying `Content-Type: application/json` and
+refuses the real one when the method is missing — so replying to a ticket, saving or
+deleting a knowledge entry, publishing, activating a version, judging an answer, clearing
+feedback and erasing a conversation were **all** blocked from a browser. The whole write
+half of this surface.
+
+Nothing caught it because the six CORS assertions are about the *origin* rules, and the API
+tests are Go clients, which do not preflight. The earlier browser run exercised GET and
+PATCH, which are the two methods the header happened to allow.
+`TestEveryMethodTheRoutesUseIsAllowedByThePreflight` now reads the methods off the route
+table in `api.go` and sends a real preflight for each — a list written in the test would
+have been a third copy of the same thing, written from the same reading that produced the
+bug.
+
+**Both list endpoints returned 500.** `could not determine data type of parameter $3`: the
+tenant was numbered after the page's limit and offset, so the count query — which does not
+paginate — was given two parameters no statement referenced. Postgres refuses that rather
+than ignoring it.
+
+And the reason the tenant-scope test stayed green through it is worth more than the fix:
+it asserted that one operator's conversation list **does not contain** the other's id, and
+an error body does not contain it either. The assertion now checks the status first.
+
+**A `fetch` whose 204 body is never read is reported as `net::ERR_ABORTED`**, the same as
+on the demo page, so revoking a key looked like a failed request while working perfectly.
+The client drains it now.
+
+Two smaller ones from the same run: antd's `destroyInactiveTabPane` warns on every render,
+and there was no favicon, so every operator's console carried a permanent 404. A console
+somebody has learned to ignore is where the next real warning goes.
+
 ## Two defects that only a browser could find
 
 The page was driven in a real Chrome on 2026-09-05, signed in as an operator, through

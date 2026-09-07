@@ -59,22 +59,26 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Ticket, int, error) {
 	if f.TenantID == "" {
 		return nil, 0, errors.New("refusing to list tickets for no tenant")
 	}
+	// The tenant is $4, before the page's limit and offset. Numbering it last and padding
+	// the count query's arguments to reach it leaves that query with two parameters it
+	// never references, and Postgres refuses: `could not determine data type of parameter
+	// $4`. Every ticket list was a 500 until a browser asked for one.
 	const where = `
-		WHERE tenant_id = $6
+		WHERE tenant_id = $4
 		  AND ($1 = '' OR state = $1)
 		  AND ($2 = '' OR assignee = $2)
 		  AND ($3 = '' OR conversation_id = $3)`
 
 	var total int
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM support_ticket`+where,
-		string(f.State), f.Assignee, f.ConversationID, f.Limit, f.Offset, f.TenantID).
+		string(f.State), f.Assignee, f.ConversationID, f.TenantID).
 		Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	rows, err := s.pool.Query(ctx, selectColumns+` FROM support_ticket`+where+`
-		ORDER BY updated_at DESC, ticket_number DESC LIMIT $4 OFFSET $5`,
-		string(f.State), f.Assignee, f.ConversationID, f.Limit, f.Offset, f.TenantID)
+		ORDER BY updated_at DESC, ticket_number DESC LIMIT $5 OFFSET $6`,
+		string(f.State), f.Assignee, f.ConversationID, f.TenantID, f.Limit, f.Offset)
 	if err != nil {
 		return nil, 0, err
 	}

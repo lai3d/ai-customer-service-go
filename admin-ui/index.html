@@ -8,6 +8,10 @@
          be deployed against any environment. A build-time value would mean rebuilding the
          image to point it somewhere else, which is how a "static" frontend acquires a
          per-environment build. -->
+    <!-- Inline rather than a file: the only thing it has to do is stop every operator's
+         console carrying a 404 for a favicon nobody shipped, and a console with a
+         permanent error in it is a console people stop reading. -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230f766e'/%3E%3Cpath d='M4 8.5h8M4 5.5h8M4 11.5h5' stroke='white' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E" />
     <script src="/config.js"></script>
   </head>
   <body>

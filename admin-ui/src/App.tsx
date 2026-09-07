@@ -117,7 +117,9 @@ function Signed({ me, onSignOut }: { me: WhoAmI; onSignOut: () => void }) {
       <Layout.Content style={{ padding: 20 }}>
         <Tabs
           defaultActiveKey={me.isPlatform ? 'tenants' : 'overview'}
-          destroyInactiveTabPane
+          // antd renamed this; the old name warns on every render in the console, and a
+          // console anybody has learned to ignore is where the next real warning goes.
+          destroyOnHidden
           // A platform account is refused on every route below, reads included, so it is
           // offered the one page it can use rather than six that each answer 403. The
           // opposite is true too: a tenant operator has no Tenants tab, and asking for

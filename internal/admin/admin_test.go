@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -718,6 +719,12 @@ func TestAnOperatorSeesOnlyTheirOwnTenant(t *testing.T) {
 		made[id] = struct{ conversation, ticketNumber string }{conversation, tk.Number}
 	}
 
+	// The status is asserted, not just the body.
+	//
+	// Without it every `doesNotContain` below passes on a 500, because an error body
+	// contains nobody's conversation id. That is not hypothetical: the tenancy work left
+	// both list queries returning `could not determine data type of parameter $3`, this
+	// test stayed green, and a browser found it.
 	read := func(token, path string) string {
 		t.Helper()
 		resp := do(t, server, "GET", path, token, "")
@@ -725,6 +732,9 @@ func TestAnOperatorSeesOnlyTheirOwnTenant(t *testing.T) {
 		resp.Body.Close()
 		if err != nil {
 			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s returned %d: %s", path, resp.StatusCode, body)
 		}
 		return string(body)
 	}
@@ -924,5 +934,73 @@ func TestAPlatformOperatorCannotAlsoBelongToATenant(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "platform") {
 		t.Errorf("the error does not say why: %v", err)
+	}
+}
+
+// Every method the routes are registered with has to be in the preflight's
+// Access-Control-Allow-Methods, or the browser refuses the real request.
+//
+// The header said "GET, PATCH, OPTIONS" for as long as it existed. Replying to a ticket,
+// saving or deleting a knowledge entry, publishing, activating a version, judging an
+// answer, clearing feedback, erasing a conversation and every tenant action were all
+// blocked from a browser — and none of it showed up here, because the CORS tests assert the
+// *origin* rules and the API tests are Go clients that do not preflight.
+//
+// Read off the route table rather than compared against a list written here: a list written
+// here is a third copy of the same thing, and it would have been written from the same
+// reading of the code that produced the bug.
+func TestEveryMethodTheRoutesUseIsAllowedByThePreflight(t *testing.T) {
+	raw, err := os.ReadFile("api.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := regexp.MustCompile(`mux\.Handle\("([A-Z]+) `).FindAllStringSubmatch(string(raw), -1)
+	if len(routes) < 10 {
+		t.Fatalf("read %d routes out of api.go; this test is no longer reading the table",
+			len(routes))
+	}
+
+	ops, err := admin.ParseOperators("alex:" + operatorToken + ":operator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	admin.NewServer(admin.NewStore(pool), ticket.NewStore(pool), ops, corsFor(t),
+		retention.NewStore(pool), handoffFor(pool), knowledgeFor(pool),
+		feedback.NewStore(pool), tenant.NewStore(pool)).Routes(mux)
+	live := httptest.NewServer(mux)
+	t.Cleanup(live.Close)
+
+	seen := map[string]bool{}
+	for _, m := range routes {
+		method := m[1]
+		if method == "OPTIONS" || seen[method] {
+			continue
+		}
+		seen[method] = true
+
+		// The preflight the browser would send before the real request.
+		req, err := http.NewRequest("OPTIONS", live.URL+"/api/admin/v1/overview", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Origin", uiOrigin)
+		req.Header.Set("Access-Control-Request-Method", method)
+		req.Header.Set("Access-Control-Request-Headers", "authorization, content-type")
+		resp, err := live.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		allow := resp.Header.Get("Access-Control-Allow-Methods")
+		resp.Body.Close()
+
+		if !strings.Contains(allow, method) {
+			t.Errorf("routes are registered with %s and the preflight allows %q; a browser "+
+				"refuses every one of those requests", method, allow)
+		}
+	}
+	if len(seen) < 4 {
+		t.Errorf("only %d distinct methods found in the route table (%v); the surface has "+
+			"fewer verbs than it did, or this test has stopped reading them", len(seen), seen)
 	}
 }

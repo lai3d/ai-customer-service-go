@@ -77,7 +77,17 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!res.ok) {
     throw new ApiError(res.status, (await res.text()).trim() || `HTTP ${res.status}`)
   }
-  return res.status === 204 ? (null as T) : ((await res.json()) as T)
+  if (res.status === 204) {
+    // Drained even though there is nothing in it. Chrome reports a fetch whose body is
+    // never read as net::ERR_ABORTED: the request succeeded, the row changed, and the page
+    // said so, while the browser logged a failed request. The script that drives this page
+    // fails on any failed request, and a check that cries wolf is a check somebody turns
+    // off. Measured on the demo page first, by calling one 204 endpoint twice from one page
+    // -- read and unread -- and only the unread one was reported failed.
+    await res.text()
+    return null as T
+  }
+  return (await res.json()) as T
 }
 
 export const api = {
