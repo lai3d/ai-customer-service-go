@@ -35,6 +35,7 @@ import (
 	"github.com/lai3d/ai-customer-service-go/internal/llm"
 	"github.com/lai3d/ai-customer-service-go/internal/obs"
 	"github.com/lai3d/ai-customer-service-go/internal/rag"
+	"github.com/lai3d/ai-customer-service-go/internal/tenant"
 	"github.com/lai3d/ai-customer-service-go/internal/testsupport"
 	"github.com/lai3d/ai-customer-service-go/internal/tools"
 )
@@ -204,7 +205,7 @@ func runWith(t *testing.T, name string, newEmbedder func() rag.Embedder, model l
 	defer embedder.Close()
 
 	vectors := rag.NewStore(pool)
-	if _, err := rag.Ingest(ctx, filepath.Join(repoRoot(t), "corpus/faq.json"), embedder, vectors); err != nil {
+	if _, err := rag.Ingest(ctx, tenant.Default, filepath.Join(repoRoot(t), "corpus/faq.json"), embedder, vectors); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM chat_memory`); err != nil {

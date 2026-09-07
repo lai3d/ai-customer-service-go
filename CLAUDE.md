@@ -306,6 +306,12 @@ that show why it is not needed here.
   eight — measured at 2 of 8 after 60 reloads with autovacuum off. `TRUNCATE` rebuilds the
   index empty. `TestRetrievalSurvivesManyCorpusReloads` pins it and needs sixty cycles:
   thirty passed either way.
+- **A build tag hides a package from `go test ./...`, `go vet ./...` and CI.**
+  `internal/eval` and `internal/benchmark` produce the answer-quality and throughput numbers
+  this repository publishes, and both were left uncompilable by a signature change for five
+  commits and a green pipeline. `make lint` now vets them explicitly; adding a third tag
+  means adding a third line. Verified by reverting one fix: `go build ./...` clean,
+  `go vet ./...` clean, `make lint` red.
 - **A check that cannot be seen to fail is a claim, not a check.** `k8s/README.md` keeps an
   inventory of which harness assertions have actually been observed red. Three separate
   detectors in this repository have been silently blind — a `CREATE EXTENSION` check whose

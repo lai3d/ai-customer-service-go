@@ -56,6 +56,18 @@ check-rules:
 
 lint:
 	$(GO) vet ./...
+	# The build-tagged packages, which `./...` does not reach.
+	#
+	# `make eval` and `make bench` produce the answer-quality and throughput numbers this
+	# repository publishes, and they are excluded from every ordinary build -- so a
+	# signature change elsewhere breaks them and nothing says so. That happened: both were
+	# left uncompilable by the multi-tenancy work through five commits and a green CI,
+	# because go test, go vet and the pipeline all skip a file behind a tag.
+	#
+	# Vetting them costs a second and is the only thing standing between a measurement
+	# harness and bit rot.
+	$(GO) vet -tags=eval ./internal/eval/
+	$(GO) vet -tags=benchmark ./internal/benchmark/
 	gofmt -l . | grep -v '^third_party/' | (! grep .) || (echo "gofmt -w the files above"; exit 1)
 
 fmt:

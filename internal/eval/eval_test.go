@@ -205,7 +205,7 @@ func TestAnswerQuality(t *testing.T) {
 
 			var answer strings.Builder
 			var called []string
-			err := service.Turn(turnCtx, "eval-"+c.ID, c.Question, func(e chat.Event) {
+			err := service.Turn(turnCtx, tenant.Default, "eval-"+c.ID, c.Question, func(e chat.Event) {
 				switch e.Type {
 				case chat.EventMessage:
 					answer.WriteString(e.Text)
