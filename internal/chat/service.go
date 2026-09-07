@@ -290,7 +290,7 @@ func (s *Service) Turn(ctx context.Context, conversationID, message string, emit
 
 		if callErr != nil {
 			outcome = classify("failed", callErr)
-			s.recordTurnSpend(ctx, conversationID, reportedModel, usage, modelCalls, started, emit)
+			s.recordTurnSpend(ctx, conversationID, record.ID, reportedModel, usage, modelCalls, started, emit)
 			return callErr
 		}
 
@@ -321,7 +321,7 @@ func (s *Service) Turn(ctx context.Context, conversationID, message string, emit
 		})
 	}
 
-	s.recordTurnSpend(ctx, conversationID, reportedModel, usage, modelCalls, started, emit)
+	s.recordTurnSpend(ctx, conversationID, record.ID, reportedModel, usage, modelCalls, started, emit)
 	return nil
 }
 
@@ -335,12 +335,13 @@ func (s *Service) recordCall(model string, usage llm.Usage, callErr error) {
 	s.metrics.RecordUsage(model, usage.InputTokens, usage.OutputTokens, usd, priced)
 }
 
-func (s *Service) recordTurnSpend(ctx context.Context, conversationID, model string,
+func (s *Service) recordTurnSpend(ctx context.Context, conversationID, turnID, model string,
 	usage llm.Usage, modelCalls int, started time.Time, emit func(Event)) {
 
 	s.budget.Record(conversationID, usage.Total())
 	usd, _ := cost.USD(model, usage.InputTokens, usage.OutputTokens)
 	emit(Event{Type: EventUsage, Usage: &UsageEvent{
+		TurnID:       turnID,
 		Model:        model,
 		ModelCalls:   modelCalls,
 		InputTokens:  usage.InputTokens,

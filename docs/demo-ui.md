@@ -160,6 +160,40 @@ needs a browser and what keeps it fixed does not.
 reproduced here before it was fixed. Third defect this page has given up to a browser, after
 the literal markdown asterisks and the errors that were dispatched on the wrong field.
 
+## Three buttons, and a fetch whose body nobody read
+
+The page can now say the answer was wrong. Three buttons rather than a comment box: what a
+customer can answer reliably is *did this help me*, not *was this correct* — and a box asks
+for effort from somebody who has already decided not to spend any. An operator records the
+other half of the same judgement, and the two are stored separately and never averaged.
+
+It needs something to point at, so the usage event carries `turnId`. That is a
+server-issued uuid and it is deliberately **not** the authorisation: the endpoint checks
+that the turn is in a conversation this session owns, and a turn that is not yours gets the
+same 404 as a turn that does not exist.
+
+**Fourth defect this page has given up to a browser, and the smallest.** The rating
+succeeded, the row was written, the page said *Recorded* — and Chrome logged
+`net::ERR_ABORTED` for the request. The cause is the 204: a `fetch` whose response body is
+never read is reported as a failed request. Measured rather than guessed, by calling the
+same endpoint twice from one page with everything else identical:
+
+| Call | Body | Reported |
+| --- | --- | --- |
+| `POST …/feedback?read=yes` | `await res.text()` | nothing |
+| `POST …/feedback?unread=yes` | not read | `net::ERR_ABORTED` |
+
+Nothing was broken, which is exactly why it is worth fixing. The script that drives this
+page fails on any failed request, and a check that cries wolf is a check somebody turns
+off — the same reasoning as the alert thresholds and the `k8s/README.md` inventory of
+assertions that have been seen red.
+
+One more thing that run found and that was **not** a defect: reading the answer with
+`textContent` runs the two paragraphs together, because `textContent` has no block
+boundaries. The page's markup is two `<p>` elements and the browser renders them correctly.
+A driving script should read `innerText`. This repository has now twice built a detector
+that measured its own reading rather than the page.
+
 ---
 
 [← Back to the README](../README.md)

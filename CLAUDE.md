@@ -299,6 +299,21 @@ that show why it is not needed here.
   passes.
 - **The ticket table and the budget table are both bounded LRUs.** A map keyed by
   conversation id that nothing removes from is a memory leak with a long fuse.
+- **A customer's rating is scoped by the turn's conversation, not by the turn id.** The id
+  is in the usage event and reaches the browser; what refuses somebody else's turn is
+  resolving it to a conversation and checking the session owns that. A turn that is not
+  yours and a turn that does not exist return the same 404, on the same rule as the
+  conversation endpoints. Ratings have their own rate-limit bucket at the turn limit's
+  number: sharing the bucket lets a rating spend a turn the customer has not had.
+- **A `fetch` whose response body is never read is reported by Chrome as
+  `net::ERR_ABORTED`.** The request succeeded and the row was written; only the report was
+  wrong. Measured by calling one 204 endpoint twice from one page, read and unread. Drain
+  the body — the script that drives a page fails on any failed request, and a check that
+  cries wolf is a check somebody turns off.
+- **Read a page with `innerText`, not `textContent`.** `textContent` has no block
+  boundaries, so two correctly rendered `<p>` elements come back run together and look
+  exactly like the two-model-calls-run-together defect this repository already had. That is
+  the second detector here to measure its own reading rather than the page.
 - **`README.md` and `README.zh.md` are a pair.** Adding, removing or moving a section in
   one without the other fails `TestBothReadmesHaveTheSameSectionStructure`. Nothing
   re-derives a translation, so the test compares heading-level sequences -- the drift that
@@ -378,6 +393,11 @@ That run found the page was showing the model's markdown to the customer as lite
 asterisks and hyphens, which is fixed. **Still not covered:** the run was headless with a
 throwaway profile, so font fallback and anything gated on a real display are unverified.
 
+**The customer rating, driven in headless Chrome on 2026-09-07** against `claude-opus-5`
+and a real Postgres: the three buttons appear on the usage card, clicking one writes the
+row — read back out of the database, `customer/wrong`, attributed to the session's subject
+— and the page says so. That run found the `ERR_ABORTED` above.
+
 ## Driving a page in a browser
 
 Neither the claude-in-chrome extension nor the MCP Playwright server attaches in this
@@ -414,10 +434,12 @@ guard": a guard can be misconfigured and an absent route cannot. It is the one s
 that displays customer text on purpose, which is why reading a conversation writes an
 audit row and why refused actions do too.
 
-**Knowledge editing and publication are deliberately not built.** They change the corpus,
-which is the fixture that makes every retrieval number in this pair comparable. Do not
-wire a Publish button to the startup importer — that is the shape that looks finished and
-is not. It needs a versioned index and an atomic switch that live retrieval filters on.
+**Knowledge editing and publication are built, and the corpus is still the fixture.** The
+bundled `corpus/faq.json` is *adopted* as the first version rather than re-embedded, so
+every retrieval number in this pair still refers to the same vectors; a publication writes
+a new version and switches one row. Do not wire a Publish button to the startup importer —
+that was the shape that looked finished and was not, and `docs/knowledge.md` says what
+replaced it.
 
 `k8s/` exists and every number in it was measured on kind by `k8s/kind/verify.sh` before
 being committed — the Java repository's manifests were committed unapplied and two were

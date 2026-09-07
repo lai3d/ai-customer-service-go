@@ -321,8 +321,14 @@ func run() error {
 			"history. Use AUTH_MODE=session outside a benchmark or a demo.")
 	}
 
+	// One store, two doors. The operations API records an operator's judgement through
+	// it and the chat API records a customer's rating, and they are the same rows on
+	// purpose: the queue an operator clears has to contain both, or the half that scales
+	// is the half nobody sees.
+	feedbackStore := feedback.NewStore(pool)
+
 	mux := http.NewServeMux()
-	httpapi.NewServer(service, cfg.Chat, metrics, ident, handoffs).Routes(mux)
+	httpapi.NewServer(service, cfg.Chat, metrics, ident, handoffs, feedbackStore).Routes(mux)
 
 	// The operations surface, or nothing at all.
 	//
@@ -336,7 +342,7 @@ func run() error {
 	if operators.Enabled() {
 		admin.NewServer(admin.NewStore(pool), tickets, operators,
 			admin.ParseCORS(cfg.Admin.CORSOrigins), retention.NewStore(pool), handoffs,
-			knowledgeStore, feedback.NewStore(pool)).Routes(mux)
+			knowledgeStore, feedbackStore).Routes(mux)
 		slog.Info("operations API mounted at /api/admin/v1; the UI is admin-ui/, served separately",
 			"operators", operators.Names(), "cors_origins", cfg.Admin.CORSOrigins)
 	} else {

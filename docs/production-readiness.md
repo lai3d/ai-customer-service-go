@@ -37,7 +37,7 @@ What is missing is almost entirely product, not scaffolding.
 | 4 | [Real tools instead of the mock](#4-the-tools-are-fiction) | week 1 | both | **seam done** 2026-09-07, integration blocked on access | 2–3 h (0.5 h left) |
 | 5 | [Retention and deletion of customer data](#5-there-is-no-way-to-delete-a-customer) | week 1 | both | **done** 2026-09-06 | 2–3 h |
 | 6 | [An answer-quality regression set](#6-nothing-tells-you-a-prompt-change-made-it-worse) | week 1 | both | **done** 2026-09-06 | 3–4 h |
-| 7 | [Feedback from customers and operators](#7-nothing-comes-back) | week 2 | both | **operator half done** 2026-09-07; customer half open | 2–3 h |
+| 7 | [Feedback from customers and operators](#7-nothing-comes-back) | week 2 | both | **done** 2026-09-07 | 2–3 h |
 | 8 | [Alerting and an SLO](#8-there-are-metrics-and-nothing-watches-them) | week 2 | Go | **done** 2026-09-07 | 2 h |
 | 9 | [A schema migration path](#9-the-first-change-to-a-live-schema-is-manual) | week 2 | Go | not started | 1–2 h |
 | 10 | [The admin list pages lie past one page](#10-the-admin-lists-lie-past-the-first-page) | week 2 | Go | **done** 2026-09-06 | 0.5 h |
@@ -364,9 +364,27 @@ sources are stored separately and never averaged: a customer knows whether they 
 helped and nothing about correctness, an operator knows the opposite, and one number would
 lose the distinction that decides what to do.
 
-**The customer half is open.** There is no rating on the demo page and no session-scoped
-`POST /api/v1/turns/{id}/feedback`, so the only verdicts in the queue are operators'. That
-is the half that scales: operators read a sample, customers read everything.
+**The customer half is done, 2026-09-07.** `POST /api/v1/turns/{id}/feedback` takes one
+verdict from the session that owns the turn, and the demo page has three buttons on the
+answer. That is the half that scales: operators read a sample, customers read everything.
+
+Everything interesting about the endpoint is the check the operator one does not make. A
+rating names a turn, and a turn belongs to somebody, so the turn is resolved to its
+conversation and the conversation is checked against the session — with the *same* 404 for
+a turn that is not yours and a turn that does not exist, because a status code that
+separates them is an oracle for which turns exist. Four perturbations were each seen red:
+dropping the ownership check (another session's rating returned 204 and was written),
+dropping the session check (404 rather than 401 — the endpoint still refused, with the
+wrong answer), letting an invented verdict fall through to the store (503 rather than 422),
+and sharing the turn limiter's bucket (ratings spent the customer's turns).
+
+The turn id reaches the page in the usage event, and it is not the authorisation. Ratings
+have their own rate-limit bucket at the turn limit's number: a write anybody with a session
+can make needs a ceiling, and sharing the *bucket* would let a rating cost a turn.
+
+The customer's own words in a note are erased with the conversation, by the cascade from
+`turn` and by nothing else — asserted in `internal/retention`, and seen red by removing the
+foreign key.
 
 ### 8. There are metrics and nothing watches them
 

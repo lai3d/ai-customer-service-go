@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -87,6 +88,26 @@ func (s *Store) Record(ctx context.Context, turnID string, source Source, verdic
 		return err
 	}
 	return nil
+}
+
+// ConversationOf returns the conversation a turn belongs to.
+//
+// It exists for the customer-facing endpoint, which has to answer a question the operator
+// one never asks: is this turn *yours*. A customer sends a turn id, and without this the
+// only thing the service could check is that the turn exists — which would let anybody
+// with a session rate, and read the existence of, every turn in the database.
+//
+// ErrNoSuchTurn rather than an empty string, so a caller cannot mistake "no such turn" for
+// "a turn in no conversation" and pass an empty id into an ownership check that would then
+// be comparing nothing to nothing.
+func (s *Store) ConversationOf(ctx context.Context, turnID string) (string, error) {
+	var conversationID string
+	err := s.pool.QueryRow(ctx,
+		`SELECT conversation_id FROM turn WHERE id = $1`, turnID).Scan(&conversationID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNoSuchTurn
+	}
+	return conversationID, err
 }
 
 // Item is one piece of unhandled feedback with everything needed to act on it. The

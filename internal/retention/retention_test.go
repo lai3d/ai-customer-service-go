@@ -91,6 +91,16 @@ func TestErasureRemovesWhatTheCustomerSaid(t *testing.T) {
 	id := "erase-" + fmt.Sprint(time.Now().UnixNano())
 	number := conversation(t, id, "subject-a", 0)
 
+	// A customer's rating carries free text they wrote, in a table that did not exist
+	// when this test did. It reaches the erasure by the cascade from `turn` and by
+	// nothing else, which is exactly the kind of link that is true until somebody adds a
+	// table without a foreign key.
+	if _, err := pool.Exec(ctx, `INSERT INTO turn_feedback (turn_id, source, verdict, note, actor)
+		VALUES ($1,'customer','wrong',$2,'subject-a')`,
+		id+"-turn", "this is wrong, my name is subject-a and my order is ORD-10045"); err != nil {
+		t.Fatal(err)
+	}
+
 	report, err := retention.NewStore(pool).EraseConversation(ctx, id)
 	if err != nil {
 		t.Fatal(err)
@@ -120,6 +130,13 @@ func TestErasureRemovesWhatTheCustomerSaid(t *testing.T) {
 	}
 	if n := count(t, `SELECT count(*) FROM turn_tool_call WHERE turn_id = $1`, id+"-turn"); n != 0 {
 		t.Errorf("%d tool-call rows survived", n)
+	}
+	if n := count(t, `SELECT count(*) FROM turn_feedback WHERE turn_id = $1`, id+"-turn"); n != 0 {
+		t.Errorf("%d feedback rows survived, with whatever the customer typed in them", n)
+	}
+	if n := count(t,
+		`SELECT count(*) FROM turn_feedback WHERE note LIKE '%subject-a%'`); n != 0 {
+		t.Errorf("the customer's name is still in a feedback note %d times", n)
 	}
 
 	// Nothing anywhere may still hold the customer's words.

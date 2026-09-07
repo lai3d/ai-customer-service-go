@@ -68,10 +68,13 @@ type Server struct {
 	// identity is nil when AUTH_MODE=off. See internal/httpapi/identity.go.
 	identity    *Identity
 	transcripts Transcripts
+	// verdicts is nil when no feedback store is wired, which is every configuration that
+	// has no database behind it: the benchmark and the edge tests.
+	verdicts Verdicts
 }
 
 func NewServer(service Turner, cfg config.Chat, metrics *obs.Metrics, ident *Identity,
-	transcripts Transcripts) *Server {
+	transcripts Transcripts, verdicts Verdicts) *Server {
 
 	if metrics == nil {
 		// Loud, at construction, rather than a nil dereference on the first customer
@@ -80,7 +83,7 @@ func NewServer(service Turner, cfg config.Chat, metrics *obs.Metrics, ident *Ide
 		panic("httpapi.NewServer needs metrics: a refusal at this edge is counted nowhere else")
 	}
 	return &Server{chat: service, cfg: cfg, metrics: metrics, identity: ident,
-		transcripts: transcripts}
+		transcripts: transcripts, verdicts: verdicts}
 }
 
 func (s *Server) Routes(mux *http.ServeMux) {
@@ -90,6 +93,10 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	// problem document saying sessions are disabled, rather than a 404 it has to guess at.
 	mux.HandleFunc("POST /api/v1/session", s.handleSession)
 	mux.HandleFunc("GET /api/v1/conversations/{id}", s.handleTranscript)
+	// The customer half of the feedback loop. Registered in both modes for the same
+	// reason as the session endpoint: a client running against AUTH_MODE=off gets a
+	// problem document saying so rather than a 404 it has to interpret.
+	mux.HandleFunc("POST /api/v1/turns/{id}/feedback", s.handleFeedback)
 }
 
 // validate rejects what should never reach a model call. Both limits cost nothing to

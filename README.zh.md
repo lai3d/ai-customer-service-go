@@ -204,11 +204,24 @@ event: message
 data: {"type":"message","text":"Standard delivery is free over $50"}
 
 event: usage
-data: {"type":"usage","usage":{"model":"claude-opus-5","modelCalls":2,"inputTokens":3874,…}}
+data: {"type":"usage","usage":{"turnId":"ff7121c3-…","model":"claude-opus-5","modelCalls":2,…}}
 ```
 
 `retrieval` 在**模型被调用之前**就发出，所以客户端可以在模型还在思考时就展示它 ——
 也因此它能在模型调用失败时幸存下来，而那正是排查一个糟糕回答的人最需要看到它的时刻。
+
+`usage` 里带着 `turnId`，客户的评价就指向它：
+
+```bash
+curl -sS -X POST localhost:8081/api/v1/turns/ff7121c3-…/feedback \
+  -H 'Authorization: Bearer <session token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"verdict": "wrong", "note": "退货期限是 30 天"}'
+```
+
+这个 id 不是授权：服务会先把 turn 解析成它所属的会话，再检查这个会话属不属于当前 session，
+所以"不是你的 turn"和"根本不存在的 turn"返回同一个 404。运营人员通过运维 API 记录同一个判断
+的另一半，两个来源分开存储，永远不做平均。
 
 ### 同一个请求，用中文问
 

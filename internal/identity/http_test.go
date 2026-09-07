@@ -7,11 +7,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lai3d/ai-customer-service-go/internal/chat"
 	"github.com/lai3d/ai-customer-service-go/internal/config"
+	"github.com/lai3d/ai-customer-service-go/internal/feedback"
 	"github.com/lai3d/ai-customer-service-go/internal/httpapi"
 	"github.com/lai3d/ai-customer-service-go/internal/identity"
 	"github.com/lai3d/ai-customer-service-go/internal/obs"
@@ -47,7 +50,7 @@ func serveEdge(t *testing.T, limits *identity.Limits, metrics *obs.Metrics) (*ht
 		Sessions:      identity.NewSessions(pool, time.Hour),
 		Conversations: identity.NewConversations(pool),
 		Limits:        limits,
-	}, nil).Routes(mux)
+	}, nil, feedback.NewStore(pool)).Routes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server, turner
@@ -421,5 +424,193 @@ func TestEveryRefusalAtTheEdgeIsCounted(t *testing.T) {
 	if series := testutil.CollectAndCount(metrics.Refusals); series != 4 {
 		t.Errorf("chat_edge_refusals_total has %d series; this test caused four refusals "+
 			"and there are four reasons", series)
+	}
+}
+
+// --- the customer half of the feedback loop ------------------------------------------
+
+// turnIn inserts a turn row for a conversation, which is what a rating points at. The
+// stub chat service above records no turns -- it is a stand-in for chat.Service, and the
+// turn record is written inside it -- so the row is made here rather than pretended.
+func turnIn(t *testing.T, conversationID string) string {
+	t.Helper()
+	id := uuid.NewString()
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO turn (id, conversation_id, started_at, ended_at, outcome, question, reply,
+		                  model, model_calls, input_tokens, output_tokens)
+		VALUES ($1, $2, now(), now(), 'completed', 'how long to return?', 'fourteen days',
+		        'test-model', 1, 10, 5)`, id, conversationID); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func rate(t *testing.T, server *httptest.Server, token, turnID, verdict string) *http.Response {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"verdict": verdict, "note": ""})
+	req, err := http.NewRequest("POST",
+		server.URL+"/api/v1/turns/"+turnID+"/feedback", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	return resp
+}
+
+func verdictsFor(t *testing.T, turnID string) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(),
+		`SELECT source || ':' || verdict || ':' || actor FROM turn_feedback WHERE turn_id = $1`,
+		turnID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// A rating is a write reachable with nothing but a session, and the turn it names belongs
+// to somebody. Without this check any session could rate -- and, by the status code,
+// enumerate -- every turn in the database.
+func TestACustomerCanOnlyRateTheirOwnTurn(t *testing.T) {
+	server, _ := serveWithSessions(t)
+	mine := newSession(t, server)
+	theirs := newSession(t, server)
+
+	resp := chatAs(t, server, mine, "", "/api/v1/chat")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the first turn returned %d", resp.StatusCode)
+	}
+	conversation := resp.Header.Get(httpapi.ConversationIDHeader)
+	turn := turnIn(t, conversation)
+
+	if resp := rate(t, server, theirs, turn, "wrong"); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("another session rated somebody else's turn: %d", resp.StatusCode)
+	}
+	if got := verdictsFor(t, turn); len(got) != 0 {
+		t.Errorf("the refused rating was written anyway: %v", got)
+	}
+
+	if resp := rate(t, server, mine, turn, "helpful"); resp.StatusCode != http.StatusNoContent {
+		t.Errorf("the owner was refused their own turn: %d", resp.StatusCode)
+	}
+	got := verdictsFor(t, turn)
+	if len(got) != 1 || !strings.HasPrefix(got[0], "customer:helpful:") {
+		t.Errorf("the owner's rating is recorded as %v", got)
+	}
+	// The actor is the subject, not a name and not a session token: it is the only
+	// identity a customer has, and the same one that owns the conversation.
+	if strings.HasSuffix(got[0], ":") {
+		t.Error("the rating was recorded against nobody")
+	}
+}
+
+// A turn that does not exist and a turn that is not yours are the same answer, for the
+// reason the conversation endpoints are: a status code that separates them is an oracle.
+func TestAnUnknownTurnAndSomeoneElsesTurnLookTheSame(t *testing.T) {
+	server, _ := serveWithSessions(t)
+	mine := newSession(t, server)
+	theirs := newSession(t, server)
+
+	resp := chatAs(t, server, theirs, "", "/api/v1/chat")
+	turn := turnIn(t, resp.Header.Get(httpapi.ConversationIDHeader))
+
+	notMine := rate(t, server, mine, turn, "wrong")
+	invented := rate(t, server, mine, uuid.NewString(), "wrong")
+	if notMine.StatusCode != invented.StatusCode {
+		t.Errorf("someone else's turn returned %d and an invented one %d",
+			notMine.StatusCode, invented.StatusCode)
+	}
+	if notMine.StatusCode != http.StatusNotFound {
+		t.Errorf("both returned %d, want 404", notMine.StatusCode)
+	}
+}
+
+func TestRatingWithoutASessionIsRefused(t *testing.T) {
+	server, _ := serveWithSessions(t)
+	token := newSession(t, server)
+	resp := chatAs(t, server, token, "", "/api/v1/chat")
+	turn := turnIn(t, resp.Header.Get(httpapi.ConversationIDHeader))
+
+	if resp := rate(t, server, "", turn, "helpful"); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("an anonymous rating returned %d, want 401", resp.StatusCode)
+	}
+	if got := verdictsFor(t, turn); len(got) != 0 {
+		t.Errorf("an anonymous rating was written: %v", got)
+	}
+}
+
+// An invented verdict is the client being wrong, not the service: 422 rather than a row
+// with whatever word arrived in it. The column has a CHECK constraint too, and this is
+// the difference between a validated request and a 500 from a constraint violation.
+func TestAnInventedVerdictIsRefusedByName(t *testing.T) {
+	server, _ := serveWithSessions(t)
+	token := newSession(t, server)
+	resp := chatAs(t, server, token, "", "/api/v1/chat")
+	turn := turnIn(t, resp.Header.Get(httpapi.ConversationIDHeader))
+
+	if resp := rate(t, server, token, turn, "brilliant"); resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("an invented verdict returned %d, want 422", resp.StatusCode)
+	}
+	if got := verdictsFor(t, turn); len(got) != 0 {
+		t.Errorf("an invented verdict was written: %v", got)
+	}
+}
+
+// Rating is limited, and in its own bucket. A write anybody with a session can make needs
+// a ceiling; sharing the *number* with the turn limit avoids a knob nobody knows the
+// right value for, and sharing the bucket would let a rating spend a turn the customer
+// has not had yet -- which is the one thing a rating must never cost.
+func TestRatingIsLimitedWithoutSpendingTheCustomersTurns(t *testing.T) {
+	limits := identity.NewLimits(pool)
+	limits.TurnsPerMinute = 2
+	server, turner := serveWithLimits(t, limits)
+	token := newSession(t, server)
+
+	resp := chatAs(t, server, token, "", "/api/v1/chat")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the first turn returned %d", resp.StatusCode)
+	}
+	conversation := resp.Header.Get(httpapi.ConversationIDHeader)
+	turn := turnIn(t, conversation)
+
+	// Two ratings inside the same minute as one turn. If the two shared a bucket the
+	// second rating would be the third request and would be refused.
+	if resp := rate(t, server, token, turn, "helpful"); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("the first rating returned %d", resp.StatusCode)
+	}
+	if resp := rate(t, server, token, turn, "unclear"); resp.StatusCode != http.StatusNoContent {
+		t.Errorf("the second rating returned %d: ratings are spending the turn budget",
+			resp.StatusCode)
+	}
+	// And the customer still has the turn the limit promised them.
+	before := len(turner.conversations)
+	if resp := chatAs(t, server, token, conversation, "/api/v1/chat"); resp.StatusCode != http.StatusOK {
+		t.Errorf("the second turn returned %d after two ratings", resp.StatusCode)
+	}
+	if len(turner.conversations) != before+1 {
+		t.Error("the turn did not run")
+	}
+
+	// The third rating is refused, because the bucket is a ceiling and not an exemption.
+	if resp := rate(t, server, token, turn, "wrong"); resp.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("the third rating returned %d, want 429", resp.StatusCode)
 	}
 }

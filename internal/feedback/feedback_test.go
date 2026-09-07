@@ -224,6 +224,28 @@ func TestFeedbackIsValidatedAndBounded(t *testing.T) {
 	}
 }
 
+// The customer endpoint asks this before it asks anything else, and what it needs is the
+// difference between "no such turn" and "a turn in no conversation". An empty string
+// returned for a missing turn would be passed straight into an ownership check comparing
+// nothing to nothing, and every customer would be allowed to rate it.
+func TestATurnKnowsWhichConversationItBelongsTo(t *testing.T) {
+	ctx := context.Background()
+	s := feedback.NewStore(pool)
+	id := turn(t, "owner-"+stamp(), "who owns this?", "not saying")
+
+	got, err := s.ConversationOf(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != id+"-conv" {
+		t.Errorf("the turn reports conversation %q", got)
+	}
+
+	if _, err := s.ConversationOf(ctx, "no-such-turn"); !errors.Is(err, feedback.ErrNoSuchTurn) {
+		t.Errorf("a missing turn returned %v", err)
+	}
+}
+
 func inQueue(t *testing.T, s *feedback.Store, id string) bool {
 	t.Helper()
 	items, err := s.Queue(context.Background(), false, 200)

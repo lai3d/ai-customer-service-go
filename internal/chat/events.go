@@ -49,6 +49,16 @@ type ToolEvent struct {
 }
 
 type UsageEvent struct {
+	// TurnID is the operational record this turn was written to. It is here so a
+	// customer can say the answer was wrong: a rating needs something to point at, and
+	// the turn is the only thing that already holds the question, the reply, the model
+	// and the passages it was answered from.
+	//
+	// It is safe to hand out because it is a server-issued uuid and the endpoint that
+	// takes it checks that the turn is in a conversation the session owns -- the id is
+	// not the authorisation.
+	TurnID string `json:"turnId,omitempty"`
+
 	Model string `json:"model"`
 	// ModelCalls is why this is not called "the model call". A tool-calling turn makes
 	// at least two, and each is billed.

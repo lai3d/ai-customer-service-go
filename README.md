@@ -210,12 +210,26 @@ event: message
 data: {"type":"message","text":"Standard delivery is free over $50"}
 
 event: usage
-data: {"type":"usage","usage":{"model":"claude-opus-5","modelCalls":2,"inputTokens":3874,…}}
+data: {"type":"usage","usage":{"turnId":"ff7121c3-…","model":"claude-opus-5","modelCalls":2,…}}
 ```
 
 `retrieval` arrives **before** the model is called, so a client can show it while the
 model is still thinking — and so it survives a model call that fails, which is exactly
 when someone debugging a bad answer needs it.
+
+`usage` carries the `turnId`, which is what a customer's rating points at:
+
+```bash
+curl -sS -X POST localhost:8081/api/v1/turns/ff7121c3-…/feedback \
+  -H 'Authorization: Bearer <session token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"verdict": "wrong", "note": "the window is 30 days"}'
+```
+
+The id is not the authorisation: the turn is resolved to its conversation and that
+conversation is checked against the session, so a turn that is not yours gets the same 404
+as a turn that does not exist. Operators record the other half of the same judgement
+through the operations API, and the two sources are stored separately and never averaged.
 
 ### The same request, asked in Chinese
 

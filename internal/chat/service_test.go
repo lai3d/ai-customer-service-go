@@ -849,6 +849,19 @@ func TestATurnLeavesAnOperationalRecordWithItsEvidence(t *testing.T) {
 	if toolCalls != 1 {
 		t.Errorf("recorded %d tool calls, want 1", toolCalls)
 	}
+
+	// And the client is told which record this was, because a customer saying "that
+	// answer was wrong" needs something to point at. Read against the row rather than
+	// against a second event: the id is only useful if it is the one the feedback
+	// endpoint will look up.
+	usage := f.eventsOfType(chat.EventUsage)
+	if len(usage) != 1 {
+		t.Fatalf("%d usage events, want 1", len(usage))
+	}
+	if usage[0].Usage.TurnID != id {
+		t.Errorf("the usage event carries turn id %q and the row is %q",
+			usage[0].Usage.TurnID, id)
+	}
 }
 
 // The reason the record is written at the service boundary rather than from the event

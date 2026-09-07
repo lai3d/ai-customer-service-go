@@ -225,7 +225,7 @@ func runWith(t *testing.T, name string, newEmbedder func() rag.Embedder, model l
 	mux := http.NewServeMux()
 	httpapi.NewServer(service, config.Chat{
 		MaxMessageLength: 4000, MaxConversationIDLength: 64, KeepAliveInterval: time.Second,
-	}, obs.NewMetrics(), nil, nil).Routes(mux)
+	}, obs.NewMetrics(), nil, nil, nil).Routes(mux)
 	server := httptest.NewServer(mux)
 	defer server.Close()
 

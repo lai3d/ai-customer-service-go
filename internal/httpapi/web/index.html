@@ -68,6 +68,11 @@
   .pill.found,.pill.created { border-color:var(--ok); color:var(--ok) }
   .pill.not_found,.pill.capped,.pill.duplicate_suppressed { border-color:var(--warm); color:var(--warm) }
   .note { color:var(--muted); font-size:11.5px; margin:0 }
+  .rate button { font:inherit; font-size:11.5px; padding:2.5px 9px; margin:0 5px 0 0;
+                 border:1px solid var(--line); border-radius:99px; background:none;
+                 color:inherit; cursor:pointer }
+  .rate button:hover:enabled { border-color:var(--accent); color:var(--accent) }
+  .rate button:disabled { opacity:.45; cursor:default }
   a { color:var(--accent) }
 </style>
 
@@ -252,6 +257,66 @@ function renderUsage(u) {
   }
 }
 
+// The customer half of the feedback loop.
+//
+// Three buttons rather than a comment box, because what a customer can answer reliably is
+// "did this help me" and not "was this correct" -- and because a box asks for effort the
+// same customer has already decided not to spend. The operator side records the other
+// half against the same turn, and the two are never averaged: docs/production-readiness.md
+// item 7 has the reasoning.
+//
+// The turn id comes from the usage event. It is not a secret and it is not the
+// authorisation either: the endpoint checks the turn is in a conversation this session
+// owns, and answers 404 for one that is not -- the same 404 as a turn that does not exist.
+function renderRating(turnId) {
+  if (!turnId) return;
+  const c = card('Was this any good?');
+  const row = el('div', 'rate');
+  const say = el('p', 'note', 'It reaches the queue an operator works from, with the question, the reply and what was retrieved attached.');
+  const buttons = [['helpful', 'Helped'], ['unclear', "Didn't answer it"], ['wrong', 'Wrong']];
+  for (const [verdict, label] of buttons) {
+    const b = el('button', null, label);
+    b.type = 'button';
+    b.addEventListener('click', async () => {
+      for (const other of row.querySelectorAll('button')) other.disabled = true;
+      try {
+        const res = await fetch(`/api/v1/turns/${encodeURIComponent(turnId)}/feedback`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(sessionToken ? {'Authorization': 'Bearer ' + sessionToken} : {}),
+          },
+          body: JSON.stringify({verdict}),
+        });
+        // Drained even though a 204 has nothing in it. Chrome reports a fetch whose body
+        // is never read as net::ERR_ABORTED -- the request succeeded, the row was
+        // written, and the page said so, while the browser logged a failed request.
+        // Measured: the same endpoint called twice from one page, once read and once
+        // not, and only the unread one is reported failed. It matters because the script
+        // that drives this page fails on any failed request, and a check that cries wolf
+        // is a check somebody turns off.
+        await res.text();
+        if (res.status === 404) {
+          // AUTH_MODE=off: there is no session to scope a rating to, so the endpoint
+          // does not exist. Say so rather than reporting a failure the operator of a
+          // demo cannot act on.
+          say.textContent = 'Feedback needs sessions; this service is running without them.';
+          return;
+        }
+        if (!res.ok) { say.textContent = 'That did not get through (HTTP ' + res.status + ').'; return; }
+        say.textContent = 'Recorded. Changing your mind re-opens it for whoever is working the queue.';
+        for (const other of row.querySelectorAll('button')) other.disabled = false;
+        b.disabled = true;
+      } catch (err) {
+        say.textContent = 'That did not get through: ' + err.message;
+        for (const other of row.querySelectorAll('button')) other.disabled = false;
+      }
+    });
+    row.append(b);
+  }
+  c.append(row, say);
+}
+
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
   const message = input.value.trim();
@@ -320,7 +385,7 @@ form.addEventListener('submit', async (e) => {
         }
         else if (name === 'retrieval') renderRetrieval(payload.passages || []);
         else if (name === 'tool') renderTool(payload.tool);
-        else if (name === 'usage') renderUsage(payload.usage);
+        else if (name === 'usage') { renderUsage(payload.usage); renderRating(payload.usage.turnId); }
         else if (name === 'error') {
           const detail = payload.detail ? `：${payload.detail}` : '';
           showError(`${payload.title || 'Error'}${detail}`);

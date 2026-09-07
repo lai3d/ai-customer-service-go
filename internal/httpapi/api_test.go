@@ -53,7 +53,7 @@ func testConfig() config.Chat {
 func serve(t *testing.T, turner httpapi.Turner) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
-	httpapi.NewServer(turner, testConfig(), obs.NewMetrics(), nil, nil).Routes(mux)
+	httpapi.NewServer(turner, testConfig(), obs.NewMetrics(), nil, nil, nil).Routes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server
