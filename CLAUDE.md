@@ -306,6 +306,13 @@ that show why it is not needed here.
   eight — measured at 2 of 8 after 60 reloads with autovacuum off. `TRUNCATE` rebuilds the
   index empty. `TestRetrievalSurvivesManyCorpusReloads` pins it and needs sixty cycles:
   thirty passed either way.
+- **To attribute a performance change, interleave an A/B against a worktree of the old
+  commit.** Multi-tenancy looked like it cost 10% of throughput: 513–562 req/s against a
+  published 600. Three interleaved pairs against `3b2ba86` showed the pre-tenancy code
+  scoring the same 540–563 on the same machine — the gap was the machine, not the code. A
+  consistent difference with low variance is *not* evidence on its own; the stubbed row has
+  the tightest spread of the four and both versions sit inside it. Do not edit half of a
+  side-by-side table with numbers from a different afternoon.
 - **A build tag hides a package from `go test ./...`, `go vet ./...` and CI.**
   `internal/eval` and `internal/benchmark` produce the answer-quality and throughput numbers
   this repository publishes, and both were left uncompilable by a signature change for five

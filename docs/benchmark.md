@@ -29,6 +29,45 @@ own, and they cost about 8 KB of stack each rather than an OS thread.
 Read the ratios, not the absolute timings. Run-to-run variance is a few tens of
 milliseconds on wall time and much larger on the thread count — see below.
 
+### Re-measured after multi-tenancy, and the table above is deliberately unchanged
+
+Multi-tenancy put a tenant predicate in every retrieval and memory query, a new primary key
+on `faq_document`, and a bounded label lookup on the turn's hot path. That is exactly the
+kind of change that should be suspected of costing throughput, so it was measured on
+2026-09-07 rather than argued about.
+
+**The numbers above do not reproduce on this machine today.** Four runs of the current code
+gave 513–562 req/s on the ONNX row against the 600 in the table, and 753–788 on the stubbed
+row against 865. The obvious reading is that tenancy cost about 10%.
+
+That reading is wrong, and an A/B says so. A worktree at `3b2ba86` — the commit before the
+first line of tenancy work — was run **interleaved** with the current code, three pairs, on
+the same machine within a few minutes:
+
+| row | before tenancy | current |
+| --- | --- | --- |
+| in-process ONNX | 540, 554, 563 req/s | 543, 551, 561 |
+| ONNX, bounded to 18 | 559, 562, 577 | 550, 558, 571 |
+| stubbed embedding | 762, 767, 770 | 753, 759, 788 |
+| ONNX, varying delay | 135, 159, 175 | 117, 149, 189 |
+
+The ranges overlap completely on every row, and the medians differ by under 1.5% — inside
+the spread of consecutive runs of *identical* code. **Multi-tenancy costs nothing this
+benchmark can see**, and the gap to the published figures is the machine: the pre-tenancy
+code does not reach 600 today either.
+
+So the table keeps its original numbers. Its entire purpose is a side-by-side with Java
+measured in the same session on the same machine; replacing three Go rows with figures from
+a different afternoon would leave a comparison that reads as one and is not. What today's
+run establishes is the ratio between two versions of this code, which is the question that
+was asked.
+
+The stubbed row is worth one more note, because it was briefly misread here as evidence of a
+real cost: it has the tightest spread of the four (753–788, about 1%), and a consistent gap
+with low variance looks like a signal. It is not one — *both* versions sit in that band. Low
+variance means that row is insensitive to background load, not that the difference between
+runs is attributable to code.
+
 ### The headline is not the throughput
 
 Go serves the same workload about 20% faster than Java's virtual threads (1667 ms
