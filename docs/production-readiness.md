@@ -878,7 +878,7 @@ what the import produces.
 **Mostly done, 2026-09-07.** `k8s/` now also has a NetworkPolicy set, two
 PodDisruptionBudgets, a HorizontalPodAutoscaler and an Ingress with TLS, and
 [docs/deployment.md](deployment.md) documents the path from the Dockerfile to a registry
-and to a digest. `k8s/kind/verify.sh` went from twenty-six assertions to forty-five, and
+and to a digest. `k8s/kind/verify.sh` went from twenty-six assertions to forty-seven, and
 every new one was seen red before it was trusted — the table in
 [k8s/README.md](../k8s/README.md#which-assertions-have-been-seen-to-fail) says with what
 perturbation, including one that could not be made red and turned out to be checking
@@ -912,15 +912,26 @@ version:
 
 **Still not done**, and the reason each is honest rather than deferred:
 
-- **Secrets are still base64.** The three ways out — etcd encryption, External Secrets or
-  the CSI driver, Sealed Secrets — are documented in
-  [docs/deployment.md](deployment.md#5-secrets-which-are-still-not-solved). None of them
-  changes a manifest here, because `deployment.yaml` takes the Secret through `envFrom` and
-  does not care what wrote it. It needs a cluster and a secret manager to do, not a commit.
-- **The manifests carry a tag, not a digest.** Pinning the digest is documented and is
-  verified by nobody: `kind load` moves an image by tag, so a digest-pinned manifest would
-  make every harness run pull from a registry. The harness checks the tag is explicit and
-  does not float; that is weaker and it is where this stops.
+- **Secrets: measured, then encrypted, and key custody is what is left.** "A Secret is
+  base64" was a sentence; it is now a reading — `etcdctl get /registry/secrets/…` on the
+  control-plane node returned the `data` map, and `Y3NhZ2VudA==` is `csagent`. The harness
+  then creates the cluster with an `EncryptionConfiguration` for `secrets` and asserts both
+  halves on a probe Secret: the plaintext is absent, and what is there carries the
+  `k8s:enc:aescbc:` prefix. The second assertion is what stops the first passing vacuously,
+  and it exists because the first version of the probe reported *0 occurrences* while its
+  `sh -c` was failing against a distroless etcd image.
+
+  What remains is key custody: the harness's key is on the node beside the data it
+  encrypts. A KMS provider, External Secrets or Sealed Secrets is the answer and each needs
+  infrastructure rather than a commit — none of them changes a manifest here, because
+  `deployment.yaml` takes the Secret through `envFrom` and does not care what wrote it.
+- **The manifests carry a tag, and `scripts/pin-images.sh` turns it into a digest.** The tag
+  stays where it is checked because `kind load` moves an image by tag, so a digest-pinned
+  `k8s/` would make every harness run pull from a registry. The script is the other half:
+  it replaces each tag with the digest given for that repository, refuses to leave any image
+  unpinned, and reads the result back. `internal/deployment` runs it on every `go test` —
+  the digests are arguments, so no cluster and no registry are needed — because a script
+  only ever run in the middle of a release is a script that has already stopped working.
 - **Two edges the harness cannot make red**, printed as NOTEs on every run rather than
   counted: the cloud-metadata exception (nothing answers on 169.254.169.254 in kind, so the
   probe is "blocked" whatever the policy says) and anything addressed to the node itself

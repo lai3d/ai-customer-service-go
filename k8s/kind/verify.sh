@@ -85,12 +85,65 @@ for t in kind kubectl docker; do
   command -v "$t" >/dev/null || { echo "missing: $t" >&2; exit 1; }
 done
 
+# Encryption at rest for etcd, so "a Kubernetes Secret is base64" can be measured rather
+# than asserted -- in both directions.
+#
+# Without this, the value is in etcd in the clear: `etcdctl get
+# /registry/secrets/<ns>/<name>` on the control-plane node returns it, and an etcd backup is
+# a copy of every key you hold. That was measured on this cluster before the config existed
+# and the command is in docs/deployment.md.
+#
+# The key is generated per run and gitignored. A committed key that is "only for tests" is
+# the shape a real one eventually takes, and this cluster is deleted anyway.
+#
+# aescbc rather than a KMS provider: a real deployment wants KMS, and a KMS provider needs a
+# KMS. What is being demonstrated here is the mechanism and the property, not the key
+# custody -- and the property is the part a manifest cannot show you.
+ENCRYPTION_CONF="$(dirname "$0")/encryption.yaml"
+if [ ! -f "$ENCRYPTION_CONF" ]; then
+  cat > "$ENCRYPTION_CONF" <<ENC
+apiVersion: apiserver.config.k8s.io/v1
+kind: EncryptionConfiguration
+resources:
+  - resources: ["secrets"]
+    providers:
+      - aescbc:
+          keys:
+            - name: harness
+              secret: $(head -c 32 /dev/urandom | base64)
+      # identity last: it decrypts what was written before this file existed. First, it
+      # would mean "write everything in the clear" while looking configured.
+      - identity: {}
+ENC
+fi
+
 say "cluster"
 if kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
   # The cluster exists but this kubeconfig may not describe it yet.
   kind export kubeconfig --name "$CLUSTER" >/dev/null
 else
-  kind create cluster --name "$CLUSTER" --wait 120s
+  kind create cluster --name "$CLUSTER" --wait 120s --config - <<KIND
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraMounts:
+      - hostPath: $(cd "$(dirname "$ENCRYPTION_CONF")" && pwd)/$(basename "$ENCRYPTION_CONF")
+        containerPath: /etc/kubernetes/encryption.yaml
+        readOnly: true
+    kubeadmConfigPatches:
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          extraArgs:
+            encryption-provider-config: /etc/kubernetes/encryption.yaml
+          extraVolumes:
+            - name: encryption
+              hostPath: /etc/kubernetes/encryption.yaml
+              mountPath: /etc/kubernetes/encryption.yaml
+              readOnly: true
+              pathType: File
+KIND
 fi
 
 # Never `kubectl config use-context`. It is global state in the caller's kubeconfig, and
@@ -813,6 +866,53 @@ note "not verifiable on kind: the 169.254.169.254 exception (nothing answers the
 note "anything addressed to the node itself (kindnet exempts host traffic from policy)"
 
 "${KUBECTL[@]}" -n "$NS" delete pod app-egress-probe --now >/dev/null 2>&1 || true
+
+# --- secrets at rest ------------------------------------------------------------------
+#
+# "A Kubernetes Secret is base64, not encryption" is a true sentence anybody can write. This
+# reads the bytes out of etcd and makes it a measurement -- and, with the encryption
+# provider configured above, makes the opposite one.
+#
+# Two assertions, and the second is what stops the first passing vacuously. A cluster with
+# no encryption fails both: the plaintext is there, and the value does not carry the
+# `k8s:enc:` prefix the API server writes in front of an encrypted one. A check that only
+# looked for the absence of a string would also pass against an etcd this script could not
+# read at all -- which is exactly how the first version of this probe returned "0
+# occurrences" while its `sh -c` was failing, because the etcd image is distroless and has
+# no shell.
+say "secrets at rest"
+ETCD_POD="etcd-${CLUSTER}-control-plane"
+MARKER="harness-secret-probe-$$"
+"${KUBECTL[@]}" -n "$NS" delete secret etcd-probe --now >/dev/null 2>&1 || true
+"${KUBECTL[@]}" -n "$NS" create secret generic etcd-probe --from-literal=PROBE="$MARKER" >/dev/null
+
+# No `sh -c`: the etcd image is distroless.
+etcd_raw() {
+  "${KUBECTL[@]}" -n kube-system exec "$ETCD_POD" -- etcdctl \
+    --cacert /etc/kubernetes/pki/etcd/ca.crt \
+    --cert /etc/kubernetes/pki/etcd/server.crt \
+    --key /etc/kubernetes/pki/etcd/server.key \
+    get "/registry/secrets/$NS/etcd-probe" 2>/dev/null
+}
+# LC_ALL=C: this is a protobuf blob with an encrypted payload in it, and `tr` on a UTF-8
+# locale calls that an illegal byte sequence and says so on every run. The bytes are the
+# point; the locale is not.
+RAW="$(etcd_raw | LC_ALL=C tr -d '\0' || true)"
+
+if [ -z "$RAW" ]; then
+  bad "could not read the probe secret out of etcd; this section measured nothing"
+else
+  case "$RAW" in
+    (*"k8s:enc:aescbc:"*) ok "the value in etcd is encrypted (k8s:enc:aescbc:)";;
+    (*) bad "the value in etcd carries no encryption prefix -- is this cluster older than \
+the encryption config? \`$0 --down\` and run again";;
+  esac
+  case "$RAW" in
+    (*"$MARKER"*) bad "the secret's value is in etcd in the clear";;
+    (*) ok "the secret's value is not in etcd in the clear";;
+  esac
+fi
+"${KUBECTL[@]}" -n "$NS" delete secret etcd-probe --now >/dev/null 2>&1 || true
 
 say "footprint"
 "${KUBECTL[@]}" top pods -n "$NS" -l app.kubernetes.io/component=app --no-headers 2>/dev/null \

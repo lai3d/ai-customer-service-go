@@ -1,1 +1,5 @@
 .kubeconfig
+# Generated per run by verify.sh, and never committed: it holds the encryption key for the
+# throwaway cluster's etcd. The cluster is deleted, the key is worthless, and a committed
+# key that is "only for tests" is the shape a real one eventually takes.
+encryption.yaml

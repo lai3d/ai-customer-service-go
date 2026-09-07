@@ -1,7 +1,7 @@
 # Deployment: from this Dockerfile to a cluster that is not a demo
 
 `k8s/` deploys and is verified on kind by [`k8s/kind/verify.sh`](../k8s/kind/verify.sh) —
-forty-five assertions, and [`k8s/README.md`](../k8s/README.md) keeps the honest record of
+forty-seven assertions, and [`k8s/README.md`](../k8s/README.md) keeps the honest record of
 which of them have been *seen* to fail. This document is the part that happens off that
 cluster: getting an image somewhere a real cluster can pull it, naming it in a way that
 survives a year, and the three things the harness cannot verify at all.
@@ -81,7 +81,29 @@ leaving as a silence. `kind load docker-image` moves a locally built image by ta
 manifest pinned to a registry digest would make every run pull from GHCR, which is not
 what a throwaway cluster should do to check a manifest. So the harness verifies the tag is
 explicit and not floating, and the digest is verified by whoever runs the workflow reading
-the summary. That is a weaker guarantee, and it is where this stops.
+the summary.
+
+### Doing it without editing the files by hand
+
+```sh
+scripts/pin-images.sh out/ \
+  ghcr.io/lai3d/ai-customer-service-go=sha256:428427f63d75… \
+  ghcr.io/lai3d/ai-customer-service-go-admin-ui=sha256:9f1c0a5b2e88…
+kubectl apply -f out/
+```
+
+It copies `k8s/*.yaml`, replaces each tag with the digest given for that repository, and
+reads the result back to check nothing is still on a tag. The tag is **replaced** rather
+than appended to: `repo:tag@sha256:…` is legal and is worse than either half, because the
+tag becomes decoration a reader will trust and nothing checks.
+
+It **refuses** rather than doing half the job — an image in `k8s/` with no digest given is
+an error, not a line left as it was. A manifest set where some images are pinned and some
+are not is the outcome that looks done.
+
+`internal/deployment` runs the script on every `go test ./...`: the digests are arguments,
+so it needs no cluster and no registry. A script nobody runs is a script that stops working,
+and this one is only ever run by somebody in the middle of a release.
 
 ## 4. What the manifests now include, and what each one still needs from you
 
@@ -116,10 +138,51 @@ git can see ([`k8s/README.md`](../k8s/README.md#apply)), and keeps the template 
 directory apply path so `kubectl apply -f k8s/` cannot overwrite a working Secret with
 placeholders — a mistake the Java implementation of this system made and measured.
 
-What it does not do, and what a real deployment needs one of:
+### It is base64, and here is the proof rather than the sentence
 
-- **Encryption at rest for etcd** (`EncryptionConfiguration` with a KMS provider). Without
-  it, an etcd backup is a copy of every API key you have.
+On the kind cluster, with a throwaway Secret whose value is a marker string:
+
+```sh
+kubectl -n kube-system exec etcd-ai-cs-go-control-plane -- etcdctl \
+  --cacert /etc/kubernetes/pki/etcd/ca.crt \
+  --cert /etc/kubernetes/pki/etcd/server.crt \
+  --key /etc/kubernetes/pki/etcd/server.key \
+  get /registry/secrets/ai-customer-service-go/ai-customer-service-go-secrets
+```
+
+Before the harness configured encryption, that returned the Secret's `data` map — and, via
+the `last-applied-configuration` annotation, a second copy of it:
+
+```
+{"apiVersion":"v1","data":{"ANTHROPIC_API_KEY":"cGxhY2Vob2xkZXIt…","POSTGRES_PASSWORD":"Y3NhZ2VudA==","POSTGRES_USER":"Y3NhZ2VudA=="},…}
+```
+
+`Y3NhZ2VudA==` is `csagent`. An etcd backup is a copy of every key you hold, and *"a Secret
+is base64"* is now a thing this repository has read rather than a thing it says.
+
+**The first version of that probe was measuring nothing**, which is worth more than the
+result. It piped `etcdctl` through `sh -c`, reported *0 occurrences of the marker*, and
+looked like evidence of encryption. The etcd image is distroless: there is no `sh`, the exec
+failed, and the empty output counted as an absence. The harness now asserts the encrypted
+*prefix* as well as the absent plaintext, because a check that only looks for a missing
+string also passes against an etcd it cannot read.
+
+### And the harness turns it off
+
+`k8s/kind/verify.sh` creates the cluster with an `EncryptionConfiguration` for `secrets`
+(`aescbc`, key generated per run and gitignored) mounted into the API server, then asserts
+both halves on a probe Secret: the value is **not** in etcd in the clear, and what is there
+carries the `k8s:enc:aescbc:` prefix the API server writes in front of an encrypted value.
+
+`aescbc` rather than KMS because a KMS provider needs a KMS. What that demonstrates is the
+mechanism and the property; it does not solve key custody, which is the next section's
+problem and is the harder half.
+
+What a real deployment still needs one of:
+
+- **Encryption at rest with a KMS provider**, so the key is not on the node beside the
+  data it encrypts. The harness's key is: it proves the API server encrypts, and it would
+  not survive somebody who has the disk.
 - **External Secrets Operator** or **Secrets Store CSI**, so the value lives in AWS Secrets
   Manager / GCP Secret Manager / Vault and the cluster holds a reference.
 - **Sealed Secrets**, if the values must be in git — encrypted to a controller key, so the
@@ -132,7 +195,7 @@ it. That is the one piece of good news in this section.
 ## 6. Re-verify after any of it
 
 ```sh
-k8s/kind/verify.sh            # a throwaway cluster, forty-five assertions
+k8s/kind/verify.sh            # a throwaway cluster, forty-seven assertions
 k8s/kind/verify.sh --keep     # reuse the images already built
 k8s/kind/verify.sh --down     # delete the cluster
 ```

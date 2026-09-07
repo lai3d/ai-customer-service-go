@@ -26,7 +26,7 @@ k8s/
 ├── examples/secret.yaml     a template, deliberately not in the directory apply path
 └── kind/
     ├── postgres.yaml        a Postgres for the throwaway cluster only, and its policy
-    └── verify.sh            create a cluster, deploy, assert forty-five things
+    └── verify.sh            create a cluster, deploy, assert forty-seven things
 ```
 
 ## Apply
@@ -358,6 +358,8 @@ passed for two days without its condition ever arising. So this is the honest in
 | no image reference in `k8s/` floats | **yes** — `admin-ui.yaml` pointed at `:latest`: *a manifest points at a floating image* |
 | a pod no policy names cannot reach Postgres | **yes** — with `default-deny` *and* `postgres-ingress` deleted: `PROBE_OPEN`. Deleting either one alone left it green, which is the layering working and is why the red needed both |
 | a pod no policy names cannot reach the API | **yes** — `app-ingress` widened to `podSelector: {}` (the classic over-broad rule) plus an egress rule for the probe |
+| a Secret's value is not in etcd in the clear | **yes** — the cluster recreated without the `encryption-provider-config` patch |
+| what is in etcd carries the `k8s:enc:aescbc:` prefix | **yes** — same run. This is the assertion that stops the one above passing vacuously: a check that only looks for a missing string also passes against an etcd it cannot read, which is exactly what the first version of the probe did — it piped `etcdctl` through `sh -c`, the etcd image is distroless, the exec failed, and an empty result counted as an absence. |
 | the operations UI cannot open a connection to the API | **yes** — same perturbation |
 | the operations UI cannot resolve a name | **yes**, and the red-test found the check was wrong: it asked for a short name, and busybox's `nslookup` does not walk the search path, so it exited non-zero on an NXDOMAIN *from a resolver it had reached*. The check reported "cannot resolve" while the pod was resolving. It asks for the FQDN now |
 | a controller adopted the Ingress | **yes** — `ingressClassName: does-not-exist`; the two TLS checks and the redirect went red with it |

@@ -313,6 +313,18 @@ that show why it is not needed here.
   consistent difference with low variance is *not* evidence on its own; the stubbed row has
   the tightest spread of the four and both versions sit inside it. Do not edit half of a
   side-by-side table with numbers from a different afternoon.
+- **A Kubernetes Secret is base64, and the kind harness now encrypts it and proves both
+  halves.** The cluster is created with an `EncryptionConfiguration` for `secrets`, and
+  `verify.sh` asserts a probe Secret's value is absent from etcd **and** that what is there
+  carries the `k8s:enc:aescbc:` prefix. The second assertion is not decoration: a check that
+  only looks for a missing string passes against an etcd it cannot read, which is what the
+  first version did — it piped `etcdctl` through `sh -c` and the etcd image is distroless.
+  Both were seen red by recreating the cluster without the kubeadm patch. The key is on the
+  node, so this demonstrates the mechanism and not key custody.
+- **`go test` caches a result and does not track files the test shells out to.** Editing
+  `scripts/pin-images.sh` and re-running reports the previous verdict, so every red-test of
+  a script needs `-count=1`. A perturbation "verified" from a cached pass is a claim, and
+  this repository nearly wrote one into a comment that said verified.
 - **A build tag hides a package from `go test ./...`, `go vet ./...` and CI.**
   `internal/eval` and `internal/benchmark` produce the answer-quality and throughput numbers
   this repository publishes, and both were left uncompilable by a signature change for five
