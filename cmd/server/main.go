@@ -49,6 +49,35 @@ func main() {
 	}
 }
 
+// orderSource builds the source lookup_order_status reads from, and says which one it is.
+//
+// Unset ORDER_SERVICE_URL means the fixture, and that is a warning rather than an info
+// line on purpose: it is the sentence that has to survive being skimmed. Every number in
+// this repository's tool demonstrations came from those five orders.
+func orderSource(cfg config.Orders) (tools.OrderSource, error) {
+	if cfg.BaseURL == "" {
+		slog.Warn("ORDER_SERVICE_URL is unset: lookup_order_status answers from a " +
+			"five-order fixture (ORD-10042 to ORD-10046) and reports every other number " +
+			"as not found. This is a demo source, not the order system.")
+		return tools.NewMemoryOrders(), nil
+	}
+	source, err := tools.NewHTTPOrders(tools.HTTPOptions{
+		BaseURL:  cfg.BaseURL,
+		Token:    cfg.Token,
+		Timeout:  cfg.Timeout,
+		Attempts: cfg.Attempts,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ORDER_SERVICE_URL: %w", err)
+	}
+	// The token is not here, and no line anywhere prints it. `authenticated` is the
+	// question anyone reading this log actually has.
+	slog.Info("lookup_order_status reads the order service",
+		"url", cfg.BaseURL, "timeout", cfg.Timeout, "attempts", cfg.Attempts,
+		"authenticated", cfg.Token != "")
+	return source, nil
+}
+
 // healthcheck asks the local server whether it is ready. Exit code 0 means yes.
 func healthcheck() int {
 	addr := os.Getenv("HTTP_ADDR")
@@ -184,6 +213,18 @@ func run() error {
 			"Operators still see tickets in the operations UI, and nothing tells them to look.")
 	}
 
+	// Where lookup_order_status reads from, and the start-up line that says which.
+	//
+	// The failure being prevented is not an outage. It is a service answering from five
+	// hard-coded orders while everyone -- the operator watching the dashboard, the person
+	// reading the demo, the next session -- believes it is talking to the order system.
+	// That state is indistinguishable from working, so the only thing that can reveal it
+	// is the service saying so out loud, every time it starts.
+	orders, err := orderSource(cfg.Orders)
+	if err != nil {
+		return err
+	}
+
 	service := chat.NewService(
 		chat.NewMemory(pool, cfg.Chat.MaxHistoryMessages),
 		rag.NewRetriever(embedder, vectors, cfg.RAG.TopK, cfg.RAG.SimilarityThreshold),
@@ -192,7 +233,7 @@ func run() error {
 		metrics,
 		chat.NewRecorder(pool),
 		cfg.Chat.MaxTokens,
-		tools.NewOrderLookup(),
+		tools.NewOrderLookup(orders),
 		tools.NewSupportTickets(tickets, handoffs),
 	)
 

@@ -74,3 +74,17 @@ data:
   # capability to post into that room -- put it in the Secret if yours is one.
   HANDOFF_WEBHOOK_URL: ""
   HANDOFF_TIMEOUT: "5s"
+
+  # Where lookup_order_status reads from. Empty means a five-order fixture -- ORD-10042 to
+  # ORD-10046 and not-found for everything else -- which is a demo and not a product, and
+  # the app logs a warning saying so at every start-up. Set this before this cluster takes
+  # real traffic, or the assistant confidently tells customers their orders do not exist.
+  #
+  # ORDER_SERVICE_TOKEN is a credential and belongs in the Secret, not here.
+  ORDER_SERVICE_URL: ""
+  # The budget for the whole lookup, retries included. It must be shorter than
+  # HTTP_READ_TIMEOUT (default 120s) or the pod refuses to start: a tool call happens
+  # inside the turn that is waiting on it.
+  ORDER_SERVICE_TIMEOUT: "3s"
+  # Total tries, not retries.
+  ORDER_SERVICE_ATTEMPTS: "2"

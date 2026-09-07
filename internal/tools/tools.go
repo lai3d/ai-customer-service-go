@@ -1,7 +1,10 @@
 // Package tools holds the actions the model can take.
 //
-// Both are mock implementations: what matters here is the calling contract, not an
-// order system.
+// Ticket creation is real: it writes to Postgres, and the dedupe and the cap are
+// guarantees of that schema. Order lookup is a seam -- OrderSource, with an in-memory
+// fixture as the default and an HTTP adapter for a real order service -- because there is
+// no order system to point it at. Which one is wired is a start-up decision the server
+// announces, not something a reader of this package has to work out.
 package tools
 
 import (

@@ -72,6 +72,12 @@ services:
       RETENTION_SWEEP_INTERVAL: ${RETENTION_SWEEP_INTERVAL:-1h}
       HANDOFF_WEBHOOK_URL: ${HANDOFF_WEBHOOK_URL:-}
       HANDOFF_TIMEOUT: ${HANDOFF_TIMEOUT:-5s}
+      # Unset means lookup_order_status answers from a five-order fixture, which is what
+      # this stack wants: it is the demo. The app warns about it at every start-up.
+      ORDER_SERVICE_URL: ${ORDER_SERVICE_URL:-}
+      ORDER_SERVICE_TOKEN: ${ORDER_SERVICE_TOKEN:-}
+      ORDER_SERVICE_TIMEOUT: ${ORDER_SERVICE_TIMEOUT:-3s}
+      ORDER_SERVICE_ATTEMPTS: ${ORDER_SERVICE_ATTEMPTS:-2}
       ADMIN_TOKENS: ${ADMIN_TOKENS:-}
       ADMIN_CORS_ORIGINS: ${ADMIN_CORS_ORIGINS:-}
       EMBEDDING_MAX_CONCURRENCY: ${EMBEDDING_MAX_CONCURRENCY:-0}
