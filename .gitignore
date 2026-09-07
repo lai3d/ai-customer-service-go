@@ -11,3 +11,8 @@
 
 *.test
 coverage.out
+
+# Agent worktrees. They are git worktrees of this repository, so `git add -A` sees them as
+# embedded repositories and commits a gitlink pointing at a path that exists on one
+# machine. It happened once, in the same commit that fixed two other people's oversights.
+/.claude/
