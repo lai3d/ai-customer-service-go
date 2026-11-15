@@ -464,7 +464,8 @@ does not move when someone edits `resources`.
 **The per-conversation lock is per process.** Turns are serialised within a replica, so
 one replica cannot interleave two requests on one conversation — but two replicas can.
 `sessionAffinity` would paper over it; the real fix is Postgres advisory locks on the
-conversation id. Same shape as the ticket cap, which is `replicas × 3` rather than 3.
+conversation id — which is what the ticket cap already does: it holds at 3 across
+replicas ([operations.md](../docs/operations.md#tickets-became-real-before-the-page-existed)).
 
 ## Deliberately not included
 
