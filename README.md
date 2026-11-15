@@ -299,10 +299,10 @@ model throughout.
 
 - **No Gemini.** Three providers, not four. The Java implementation's Gemini findings are
   linked and *not re-verified here*.
-- **The Kubernetes manifests are verified on kind, not on a real cluster.** Twelve
+- **The Kubernetes manifests are verified on kind, not on a real cluster.** Forty-five
   assertions run against a throwaway cluster (`k8s/kind/verify.sh`); no production
-  cluster has seen them. Ingress, HPA, PodDisruptionBudget and NetworkPolicy are
-  deliberately absent — see [k8s/README.md](k8s/README.md#deliberately-not-included).
+  cluster has seen them. Ingress, HPA, PodDisruptionBudget and NetworkPolicy are now
+  included, each with its caveat kept — see [k8s/README.md](k8s/README.md#deliberately-not-included).
 - **The per-conversation lock is per process.** Two replicas can still interleave one
   conversation; the real fix is Postgres advisory locks.
 - **`top-k: 8` is inherited, not re-measured.** It comes from the Java implementation's
@@ -329,9 +329,9 @@ model throughout.
   row. Still unverified: one browser, one operator at a time, nothing wide enough to make
   a table scroll.
 
-Deliberately out of scope: multi-tenancy and MCP. Authentication now exists, but only for
-the operations API — the chat endpoints are still unauthenticated, and shipping an operator
-login does not make this a service with customer identity.
+Deliberately out of scope: MCP. Multi-tenancy is built — an `X-API-Key` names the tenant,
+and `TENANCY=required` refuses a request without one — and the operations API has its own
+operator login; neither makes this a service with customer accounts.
 
 ---
 
