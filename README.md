@@ -143,7 +143,8 @@ flowchart LR
 ## Quick start
 
 
-**Prerequisites:** Go 1.26, Docker, and an Anthropic API key.
+**Prerequisites:** Go 1.26, Docker, and an Anthropic API key. On macOS, also `brew install llvm`
+(for `llvm-objcopy`; `make deps` uses it to strip LLVM bitcode from the tokenizer library).
 
 ```bash
 make deps                    # native libraries + the 470 MB embedding model, once

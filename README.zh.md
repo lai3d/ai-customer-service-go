@@ -137,7 +137,8 @@ flowchart LR
 ## 快速开始
 
 
-**前置条件：** Go 1.26、Docker，以及一个 Anthropic API key。
+**前置条件：** Go 1.26、Docker，以及一个 Anthropic API key。macOS 上还需要 `brew install llvm`
+（`make deps` 用其中的 `llvm-objcopy` 去掉分词库里的 LLVM bitcode）。
 
 ```bash
 make deps                    # 原生库 + 470MB 的嵌入模型，只需一次
