@@ -29,7 +29,11 @@ make deps      # libtokenizers.a into third_party/lib, the 470 MB model into mod
 ```
 
 `go build ./...` then works with nothing exported: `internal/rag/cgo.go` carries the
-linker flag as a `#cgo LDFLAGS` directive with `${SRCDIR}`. ONNX Runtime is loaded at
+linker flag as a `#cgo LDFLAGS` directive with `${SRCDIR}`. From go1.26.11 the go command
+refuses an archive with LLVM bitcode in a `#cgo -L` directory, so `make deps` strips it
+(`objcopy` on Linux, `llvm-objcopy` from `brew install llvm` on macOS). A
+`disallowed LTO section` error means the library predates that step: rerun `make deps`.
+ONNX Runtime is loaded at
 runtime, not linked — `brew install onnxruntime` on macOS, or `make deps` fetches it on
 Linux. `ONNXRUNTIME_LIB_PATH` overrides the search.
 

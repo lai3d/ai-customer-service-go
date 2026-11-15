@@ -14,13 +14,15 @@ ARG ONNXRUNTIME_VERSION=1.29.0
 ARG TOKENIZERS_VERSION=v1.27.0
 ARG TARGETARCH
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl binutils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /native
 
 # ONNX Runtime is loaded at runtime rather than linked, so the shared library travels
 # into the final image; the tokenizer is a Rust static library and is linked in stage 2.
+# Its LLVM bitcode is stripped: go1.26.11+ refuses an archive with an LTO section when a
+# `#cgo -L` points at it, and cgo linking never uses it. See scripts/fetch-deps.sh.
 RUN set -eux; \
     case "${TARGETARCH}" in \
       amd64) ORT_ARCH=x64;      TOK_ASSET=libtokenizers.linux-amd64.tar.gz ;; \
@@ -31,7 +33,8 @@ RUN set -eux; \
     curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-${ORT_ARCH}-${ONNXRUNTIME_VERSION}.tgz" \
       | tar -xz -C onnxruntime --strip-components=1; \
     curl -fsSL "https://github.com/daulet/tokenizers/releases/download/${TOKENIZERS_VERSION}/${TOK_ASSET}" \
-      | tar -xz -C lib
+      | tar -xz -C lib; \
+    objcopy --remove-section=.llvmbc --remove-section=.llvmcmd lib/libtokenizers.a
 
 # ---- 2. the embedding model -------------------------------------------------------
 # Its own stage so a code change does not re-download 470 MB, and so the layer is

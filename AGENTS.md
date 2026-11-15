@@ -8,7 +8,7 @@
 
 Use Go 1.26.1 or newer and a running Docker daemon.
 
-- `make deps`: fetch native tokenizer libraries and the embedding model; on macOS, also install ONNX Runtime with `brew install onnxruntime`.
+- `make deps`: fetch native tokenizer libraries and the embedding model; on macOS, also install ONNX Runtime with `brew install onnxruntime` and `llvm-objcopy` with `brew install llvm` (the script strips LLVM bitcode from the tokenizer archive, which go1.26.11+ refuses).
 - `make build`: compile `bin/server`.
 - `docker compose up -d postgres jaeger`: start local dependencies.
 - `make run`: build and run the server on port 8081, loading `.env`.

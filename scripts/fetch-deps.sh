@@ -30,6 +30,40 @@ if [ ! -f third_party/lib/libtokenizers.a ]; then
     | tar -xz -C third_party/lib
 fi
 
+# The prebuilt archive carries LLVM bitcode alongside its machine code (Rust embeds it
+# for link-time optimisation). From go1.26.11 the go command scans the directories a
+# `#cgo LDFLAGS: -L` names and refuses any archive with an LTO section -- bitcode is
+# code the linker would compile, which a package should not be able to smuggle in. cgo
+# linking never uses it, so it comes out here, and `internal/rag/cgo.go` keeps working
+# with nothing exported. Removing an absent section is a no-op, so this also fixes a
+# library fetched before this step existed.
+strip_bitcode() {
+  local lib=third_party/lib/libtokenizers.a
+  case "$(uname -s)" in
+    Darwin)
+      local objcopy
+      objcopy="$(command -v llvm-objcopy || true)"
+      [ -n "$objcopy" ] || [ ! -x /opt/homebrew/opt/llvm/bin/llvm-objcopy ] || objcopy=/opt/homebrew/opt/llvm/bin/llvm-objcopy
+      [ -n "$objcopy" ] || [ ! -x /usr/local/opt/llvm/bin/llvm-objcopy ] || objcopy=/usr/local/opt/llvm/bin/llvm-objcopy
+      if [ -z "$objcopy" ]; then
+        echo "llvm-objcopy is needed to strip bitcode from $lib: brew install llvm" >&2
+        exit 1
+      fi
+      "$objcopy" --remove-section=__LLVM,__bitcode --remove-section=__LLVM,__cmdline "$lib"
+      ;;
+    *)
+      local objcopy
+      objcopy="$(command -v objcopy || command -v llvm-objcopy || true)"
+      if [ -z "$objcopy" ]; then
+        echo "objcopy is needed to strip bitcode from $lib: install binutils" >&2
+        exit 1
+      fi
+      "$objcopy" --remove-section=.llvmbc --remove-section=.llvmcmd "$lib"
+      ;;
+  esac
+}
+strip_bitcode
+
 # ONNX Runtime itself is loaded at runtime rather than linked, so a system install is
 # fine. On macOS: brew install onnxruntime. On Linux the release tarball works; set
 # ONNXRUNTIME_LIB_PATH if it is somewhere this cannot guess.
