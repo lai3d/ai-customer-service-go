@@ -308,8 +308,7 @@ model throughout.
 - **`top-k: 8` is inherited, not re-measured.** It comes from the Java implementation's
   recall-against-tokens table, and the multi-intent limit it documents — one of fourteen
   long questions still misses the passage that answers it — has not been re-measured here.
-- **No evaluation harness.** The retrieval measurements say which passage was found, not
-  whether the answer built from it was good.
+- ~~No evaluation harness~~ — **fixed.** `make eval` scores 36 cases against the real model, 36/36 on each of three runs, and `make eval-control` runs the same cases with no corpus as a negative control (16/35). It is opt-in, not in CI: about $0.52 a run. See [docs/evaluation.md](docs/evaluation.md).
 - ~~The ticket cap is per replica~~ — **fixed.** Tickets are in Postgres now, with the cap and the deduplication enforced by a transaction and a unique index. `TestTheCapHoldsAcrossReplicas` runs twenty differently-worded requests across two pools: three tickets with the lock, seventeen without it.
 - **The demo page was verified headless**, with a throwaway profile. Font fallback and
   anything gated on a real display are not covered.
