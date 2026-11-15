@@ -286,13 +286,13 @@ reply      关于你的两个问题：
 
 - **没有 Gemini。** 三家 provider，不是四家。Java 实现关于 Gemini 的发现只做了链接，
   **未在此处复验**。
-- **Kubernetes 清单只在 kind 上验证过**，没有真实集群跑过。`k8s/kind/verify.sh` 有 12 项
-  断言。Ingress、HPA、PodDisruptionBudget、NetworkPolicy 都是刻意不包含的 ——
+- **Kubernetes 清单只在 kind 上验证过**，没有真实集群跑过。`k8s/kind/verify.sh` 有 45 项
+  断言。Ingress、HPA、PodDisruptionBudget、NetworkPolicy 现在都已包含，各自的注意事项保留 ——
   见 [k8s/README.md](k8s/README.md#deliberately-not-included)。
 - **按会话的锁是单进程的。** 两个副本仍可能交错同一个会话；真正的修法是 Postgres 咨询锁。
 - **`top-k: 8` 是继承的，未重新测量。** 它来自 Java 实现的"召回率对 token"那张表，而那张表
   记录的多意图限制 —— 十四个长问题里仍有一个找不到能回答它的段落 —— 也未在此处复测。
-- **没有答案质量评估框架。** 检索的测量说的是找到了哪条段落，不是基于它生成的答案好不好。
+- ~~没有答案质量评估框架~~ —— **已修复。** `make eval` 用真实模型跑 36 个用例，三次运行均为 36/36；`make eval-control` 在没有语料的情况下跑同一套用例作为阴性对照（16/35）。它需要手动运行，不在 CI 里：每次约 $0.52。见 [docs/evaluation.md](docs/evaluation.md)。
 - ~~工单上限是每副本的~~ —— **已修复。** 工单落到 Postgres，上限和去重由一个事务加唯一索引保证。`TestTheCapHoldsAcrossReplicas` 用两个连接池跑二十个措辞不同的请求：有锁时 3 张，没锁时 17 张。
 - **演示页面是无头验证的**，用的是临时 profile。字体回退以及任何依赖真实显示的东西都不在
   覆盖范围内。
@@ -309,8 +309,8 @@ reply      关于你的两个问题：
   markdown 现在被渲染而不是显示成星号，结论输入框不再从行里预填。仍未验证：一个浏览器、
   同一时刻一个操作员，没有宽到让表格需要横向滚动的场景。
 
-刻意不做：多租户、MCP。认证现在存在，但**只针对运营 API**——聊天端点仍然没有认证，
-上线一个操作员登录并不等于这个服务有了客户身份体系。
+刻意不做：MCP。多租户已经实现——`X-API-Key` 决定请求属于哪个租户，`TENANCY=required` 时
+没有 key 的请求会被拒绝；运营 API 有自己的操作员登录。两者都不等于这个服务有了客户账号体系。
 
 ---
 

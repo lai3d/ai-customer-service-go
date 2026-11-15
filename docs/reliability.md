@@ -150,11 +150,14 @@ different wording could each see two tickets and each add a third.
 asserts three tickets. That is the part that can be tested without a live model, and it is
 the part that matters: not that the model resists, but that resisting is not required.
 
-**What the cap is not.** State lives in memory in one process, so two replicas mean two
-dedupe tables and an upper bound of `replicas × 3`. A real implementation would put the
-idempotency key in Postgres behind a unique constraint and do the capacity check in the
-same transaction as the insert. The cap demonstrates where the boundary belongs; it is not
-a distributed guarantee.
+**What the cap is across replicas.** It used to live in memory in one process, so two
+replicas meant two dedupe tables and an upper bound of `replicas × 3`. Tickets are in
+Postgres now: the deduplication lookup, the capacity check and the insert run in one
+transaction holding an advisory lock on the conversation, with a unique index on
+`(conversation_id, dedupe_key)` as the backstop. `TestTheCapHoldsAcrossReplicas` sends
+twenty differently-worded requests through two connection pools and gets three tickets;
+without the lock it gets seventeen. See
+[operations.md](operations.md#tickets-became-real-before-the-page-existed).
 
 ### A turn that never answered is not a completed turn
 
